@@ -1,0 +1,42 @@
+description: >-
+  sbt build: 02-multi-module
+
+  **from** = dependent module, **to** = depended-on module (`dependsOn`) or aggregated child
+  (`aggregate`).
+
+  See https://ilograph.com/docs/spec
+
+  Source: `sbt-examples/02-multi-module/build.sbt`
+resources:
+  - name: root
+    subtitle: .
+  - name: domain
+    subtitle: modules/domain
+  - name: infra
+    subtitle: modules/infra
+  - name: service
+    subtitle: modules/service
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: Relations from sbt `.dependsOn` / `.aggregate` (subset parser; not a full Scala AST).
+    relations:
+      - from: root
+        to: domain
+        label: aggregates
+      - from: root
+        to: infra
+        label: aggregates
+      - from: root
+        to: service
+        label: aggregates
+      - from: infra
+        to: domain
+        label: depends on
+      - from: service
+        to: domain
+        label: depends on
+      - from: service
+        to: infra
+        label: depends on

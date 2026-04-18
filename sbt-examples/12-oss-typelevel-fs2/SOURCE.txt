@@ -1,0 +1,5 @@
+FS2 streaming I/O (Typelevel, many modules and platforms).
+
+Upstream: https://github.com/typelevel/fs2
+Files: branch master — build.sbt, project/build.properties
+Fetched: 2026-04-18 via raw.githubusercontent.com (see upstream LICENSE).

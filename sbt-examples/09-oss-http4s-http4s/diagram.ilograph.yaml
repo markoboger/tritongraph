@@ -1,0 +1,37 @@
+description: >-
+  sbt build: 09-oss-http4s-http4s
+
+  **from** = dependent module, **to** = depended-on module (`dependsOn`) or aggregated child
+  (`aggregate`).
+
+  See https://ilograph.com/docs/spec
+
+  Source: `sbt-examples/09-oss-http4s-http4s/build.sbt`
+resources:
+  - name: tests
+  - name: scalafixInternalRules
+    subtitle: scalafix-internal/rules
+  - name: scalafixInternalInput
+    subtitle: scalafix-internal/input
+  - name: scalafixInternalOutput
+    subtitle: scalafix-internal/output
+  - name: scalafixInternalTests
+    subtitle: scalafix-internal/tests
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: Relations from sbt `.dependsOn` / `.aggregate` (subset parser; not a full Scala AST).
+    relations:
+      - from: scalafixInternalTests
+        to: scalafixInternalInput
+        label: depends on
+      - from: scalafixInternalTests
+        to: scalafixInternalRules
+        label: depends on
+      - from: scalafixInternalTests
+        to: scalafixInternalRules
+        label: depends on
+      - from: scalafixInternalTests
+        to: scalafixInternalRules
+        label: depends on

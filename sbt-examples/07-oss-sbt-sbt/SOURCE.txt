@@ -1,0 +1,5 @@
+The sbt build tool’s own build (meta, many subprojects).
+
+Upstream: https://github.com/sbt/sbt
+Files: branch develop — build.sbt, project/build.properties
+Fetched: 2026-04-18 via raw.githubusercontent.com (see upstream LICENSE).

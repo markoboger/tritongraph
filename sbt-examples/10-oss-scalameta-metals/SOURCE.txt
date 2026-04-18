@@ -1,0 +1,5 @@
+Metals Scala language server (large multi-client build).
+
+Upstream: https://github.com/scalameta/metals
+Files: branch main — build.sbt, project/build.properties
+Fetched: 2026-04-18 via raw.githubusercontent.com (see upstream LICENSE).

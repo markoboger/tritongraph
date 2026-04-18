@@ -1,0 +1,91 @@
+description: >-
+  sbt build: 10-oss-scalameta-metals
+
+  **from** = dependent module, **to** = depended-on module (`dependsOn`) or aggregated child
+  (`aggregate`).
+
+  See https://ilograph.com/docs/spec
+
+  Source: `sbt-examples/10-oss-scalameta-metals/build.sbt`
+resources:
+  - name: interfaces
+    subtitle: mtags-interfaces
+  - name: mtagsShared
+    subtitle: mtags-shared
+  - name: mtags
+  - name: metals
+    subtitle: metals-mcp
+  - name: input
+    subtitle: tests/input
+  - name: input3
+    subtitle: tests/input3
+  - name: mtest
+    subtitle: tests/mtest
+  - name: cross
+    subtitle: tests/cross
+  - name: javapc
+    subtitle: tests/javapc
+  - name: metalsDependencies
+    subtitle: target/.dependencies
+  - name: unit
+    subtitle: tests/unit
+  - name: slow
+    subtitle: tests/slow
+  - name: bench
+    subtitle: metals-bench
+  - name: docs
+    subtitle: metals-docs
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: Relations from sbt `.dependsOn` / `.aggregate` (subset parser; not a full Scala AST).
+    relations:
+      - from: mtagsShared
+        to: interfaces
+        label: depends on
+      - from: mtags
+        to: mtagsShared
+        label: depends on
+      - from: mtags
+        to: interfaces
+        label: depends on
+      - from: mtags
+        to: mtagsShared
+        label: depends on
+      - from: metals
+        to: mtags
+        label: depends on
+      - from: metals
+        to: metals
+        label: depends on
+      - from: mtest
+        to: mtags
+        label: depends on
+      - from: cross
+        to: mtest
+        label: depends on
+      - from: javapc
+        to: mtest
+        label: depends on
+      - from: unit
+        to: input
+        label: depends on
+      - from: unit
+        to: input3
+        label: depends on
+      - from: unit
+        to: mtest
+        label: depends on
+      - from: unit
+        to: metals
+        label: depends on
+      - from: slow
+        to: unit
+        label: depends on
+      - from: bench
+        to: unit
+        label: depends on
+      - from: docs
+        to: metals
+        label: depends on

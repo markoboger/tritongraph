@@ -1,0 +1,56 @@
+description: >-
+  sbt build: 11-oss-zio-zio
+
+  **from** = dependent module, **to** = depended-on module (`dependsOn`) or aggregated child
+  (`aggregate`).
+
+  See https://ilograph.com/docs/spec
+
+  Source: `sbt-examples/11-oss-zio-zio/build.sbt`
+resources:
+  - name: rootJVM
+    subtitle: target/rootJVM
+  - name: rootJVM211
+    subtitle: target/rootJVM211
+  - name: rootJVM212
+    subtitle: target/rootJVM212
+  - name: rootJVM213
+    subtitle: target/rootJVM213
+  - name: rootJVM3
+    subtitle: target/rootJVM3
+  - name: rootJS
+    subtitle: target/rootJS
+  - name: rootNative
+    subtitle: target/rootNative
+  - name: root211
+    subtitle: target/root211
+  - name: root212
+    subtitle: target/root212
+  - name: root213
+    subtitle: target/root213
+  - name: root3
+    subtitle: target/root3
+  - name: root
+    subtitle: .
+  - name: benchmarks
+  - name: jsdocs
+  - name: docs
+    subtitle: zio-docs
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: Relations from sbt `.dependsOn` / `.aggregate` (subset parser; not a full Scala AST).
+    relations:
+      - from: rootJVM
+        to: rootJVM213
+        label: aggregates
+      - from: rootJVM212
+        to: rootJVM213
+        label: aggregates
+      - from: root212
+        to: root213
+        label: aggregates
+      - from: root
+        to: root213
+        label: aggregates

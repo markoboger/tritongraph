@@ -1,0 +1,181 @@
+description: |
+  Five dependency layers (depth 0 = foundations … depth 4 = top consumers) plus an sbt
+  **root** project. Two link kinds: **depends on** (classpath / `dependsOn`, dark blue) and
+  **aggregate** (`aggregate(...)` task scope, dark green). Ilograph **from** → **to** for both.
+
+resources:
+  # depth 0 — foundations (4)
+  - name: foundation-a
+    subtitle: storage + persistence primitives
+  - name: foundation-b
+    subtitle: networking + RPC core
+  - name: foundation-c
+    subtitle: crypto + identity primitives
+  - name: foundation-d
+    subtitle: logging + tracing base
+
+  # depth 1 — platform stack (6)
+  - name: stack-cache
+    subtitle: distributed cache client
+  - name: stack-queue
+    subtitle: message broker adapters
+  - name: stack-http
+    subtitle: HTTP server + client stack
+  - name: stack-metrics
+    subtitle: metrics + health probes
+  - name: stack-config
+    subtitle: dynamic configuration
+  - name: stack-auth
+    subtitle: authN + token validation
+
+  # depth 2 — domain cores (2)
+  - name: domain-accounts
+    subtitle: users, orgs, sessions
+  - name: domain-commerce
+    subtitle: catalog, cart, checkout rules
+
+  # depth 3 — services (5)
+  - name: svc-cart
+    subtitle: cart API + projections
+  - name: svc-payment
+    subtitle: payment orchestration
+  - name: svc-catalog
+    subtitle: product read models
+  - name: svc-notify
+    subtitle: email + push dispatch
+  - name: svc-search
+    subtitle: search indexing + queries
+
+  # depth 4 — gateways + workers (7)
+  - name: edge-public-api
+    subtitle: public REST + rate limits
+  - name: edge-partner-api
+    subtitle: B2B integrations
+  - name: edge-admin-api
+    subtitle: internal admin surface
+  - name: worker-ingest
+    subtitle: event ingestion pipeline
+  - name: worker-reconcile
+    subtitle: batch reconciliation jobs
+  - name: worker-search-sync
+    subtitle: index builders
+  - name: worker-notify-dispatch
+    subtitle: outbound notification workers
+
+  # sbt root (classpath + aggregate scope)
+  - name: triton-root
+    subtitle: sbt root — dependsOn for compile graph; aggregate for bundled projects
+
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: |
+      **depends on** (dark blue): **from** = consumer, **to** = classpath dependency — drives column depth.
+      **aggregate** (dark green): **from** = aggregating project, **to** = aggregated subproject (sbt
+      `aggregate`); shown but omitted from depth columns.
+    relations:
+      # depth 1 → depth 0
+      - from: stack-cache
+        to: foundation-a
+        label: depends on
+      - from: stack-queue
+        to: foundation-a
+        label: depends on
+      - from: stack-http
+        to: foundation-b
+        label: depends on
+      - from: stack-metrics
+        to: foundation-b
+        label: depends on
+      - from: stack-metrics
+        to: foundation-d
+        label: depends on
+      - from: stack-config
+        to: foundation-c
+        label: depends on
+      - from: stack-auth
+        to: foundation-c
+        label: depends on
+
+      # depth 2 → depth 1
+      - from: domain-accounts
+        to: stack-http
+        label: depends on
+      - from: domain-accounts
+        to: stack-auth
+        label: depends on
+      - from: domain-commerce
+        to: stack-http
+        label: depends on
+      - from: domain-commerce
+        to: stack-queue
+        label: depends on
+      - from: domain-commerce
+        to: stack-cache
+        label: depends on
+
+      # depth 3 → depth 2
+      - from: svc-cart
+        to: domain-commerce
+        label: depends on
+      - from: svc-payment
+        to: domain-commerce
+        label: depends on
+      - from: svc-catalog
+        to: domain-commerce
+        label: depends on
+      - from: svc-notify
+        to: domain-accounts
+        label: depends on
+      - from: svc-search
+        to: domain-commerce
+        label: depends on
+
+      # depth 4 → depth 3
+      - from: edge-public-api
+        to: svc-cart
+        label: depends on
+      - from: edge-public-api
+        to: svc-catalog
+        label: depends on
+      - from: edge-partner-api
+        to: svc-payment
+        label: depends on
+      - from: edge-partner-api
+        to: svc-catalog
+        label: depends on
+      - from: edge-admin-api
+        to: svc-notify
+        label: depends on
+      - from: worker-ingest
+        to: svc-cart
+        label: depends on
+      - from: worker-reconcile
+        to: svc-payment
+        label: depends on
+      - from: worker-search-sync
+        to: svc-search
+        label: depends on
+      - from: worker-notify-dispatch
+        to: svc-notify
+        label: depends on
+
+      # sbt root — classpath edge (positions root in the compile-depth graph)
+      - from: triton-root
+        to: svc-cart
+        label: depends on
+
+      # sbt aggregate(...) — same direction convention; not used for depth layout
+      - from: triton-root
+        to: edge-public-api
+        label: aggregate
+      - from: triton-root
+        to: edge-partner-api
+        label: aggregate
+      - from: triton-root
+        to: worker-ingest
+        label: aggregate
+      - from: triton-root
+        to: svc-search
+        label: aggregate

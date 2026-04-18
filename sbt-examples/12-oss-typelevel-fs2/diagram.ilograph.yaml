@@ -1,0 +1,29 @@
+description: >-
+  sbt build: 12-oss-typelevel-fs2
+
+  **from** = dependent module, **to** = depended-on module (`dependsOn`) or aggregated child
+  (`aggregate`).
+
+  See https://ilograph.com/docs/spec
+
+  Source: `sbt-examples/12-oss-typelevel-fs2/build.sbt`
+resources:
+  - name: integration
+    subtitle: integration
+  - name: reactiveStreams
+    subtitle: reactive-streams
+  - name: unidocs
+    subtitle: unidocs
+  - name: benchmark
+    subtitle: benchmark
+  - name: microsite
+    subtitle: mdoc
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: Relations from sbt `.dependsOn` / `.aggregate` (subset parser; not a full Scala AST).
+    relations:
+      - from: microsite
+        to: reactiveStreams
+        label: depends on

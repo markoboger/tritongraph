@@ -1,0 +1,5 @@
+Language marks (scala.svg, typescript.svg, javascript.svg, python.svg, java.svg from
+openjdk.svg, rust.svg, go.svg, kotlin.svg, ruby.svg, swift.svg) are from Simple Icons
+(https://github.com/simple-icons/simple-icons), dedicated to the public domain under CC0 1.0.
+
+generic.svg is a minimal local placeholder (gray circle), not from Simple Icons.

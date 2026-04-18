@@ -1,0 +1,47 @@
+description: >-
+  sbt build: 04-nested-refs
+
+  **from** = dependent module, **to** = depended-on module (`dependsOn`) or aggregated child
+  (`aggregate`).
+
+  See https://ilograph.com/docs/spec
+
+  Source: `sbt-examples/04-nested-refs/build.sbt`
+resources:
+  - name: root
+    subtitle: .
+  - name: model
+    subtitle: sub/model
+  - name: core
+    subtitle: sub/core
+  - name: api
+    subtitle: sub/api
+  - name: worker
+    subtitle: sub/worker
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: Relations from sbt `.dependsOn` / `.aggregate` (subset parser; not a full Scala AST).
+    relations:
+      - from: root
+        to: core
+        label: aggregates
+      - from: root
+        to: api
+        label: aggregates
+      - from: root
+        to: worker
+        label: aggregates
+      - from: core
+        to: model
+        label: depends on
+      - from: api
+        to: core
+        label: depends on
+      - from: api
+        to: model
+        label: depends on
+      - from: worker
+        to: core
+        label: depends on

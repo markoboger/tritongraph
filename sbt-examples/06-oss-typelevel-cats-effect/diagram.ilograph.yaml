@@ -1,0 +1,48 @@
+description: >-
+  sbt build: 06-oss-typelevel-cats-effect
+
+  **from** = dependent module, **to** = depended-on module (`dependsOn`) or aggregated child
+  (`aggregate`).
+
+  See https://ilograph.com/docs/spec
+
+  Source: `sbt-examples/06-oss-typelevel-cats-effect/build.sbt`
+resources:
+  - name: root
+    subtitle: .
+  - name: rootJVM
+  - name: rootJS
+  - name: rootNative
+  - name: ioAppTestsJVM
+    subtitle: ioapp-tests/.jvm
+  - name: ioAppTestsJS
+    subtitle: ioapp-tests/.js
+  - name: ioAppTestsNative
+    subtitle: ioapp-tests/.native
+  - name: graalVMExample
+    subtitle: graalvm-example
+  - name: benchmarks
+    subtitle: benchmarks
+  - name: docs
+    subtitle: site-docs
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: Relations from sbt `.dependsOn` / `.aggregate` (subset parser; not a full Scala AST).
+    relations:
+      - from: root
+        to: rootJVM
+        label: aggregates
+      - from: root
+        to: rootJS
+        label: aggregates
+      - from: root
+        to: rootNative
+        label: aggregates
+      - from: rootJVM
+        to: graalVMExample
+        label: aggregates
+      - from: rootJVM
+        to: benchmarks
+        label: aggregates

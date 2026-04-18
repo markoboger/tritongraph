@@ -1,0 +1,5 @@
+Large multi-module HTTP/API stack (very large root build.sbt).
+
+Upstream: https://github.com/softwaremill/tapir
+Files: branch master — build.sbt, project/build.properties
+Fetched: 2026-04-18 via raw.githubusercontent.com (see upstream LICENSE).

@@ -1,0 +1,5 @@
+ZIO effect system (large multi-module root build).
+
+Upstream: https://github.com/zio/zio
+Files: branch master — build.sbt, project/build.properties
+Fetched: 2026-04-18 via raw.githubusercontent.com (see upstream LICENSE).

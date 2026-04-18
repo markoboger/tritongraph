@@ -1,0 +1,83 @@
+description: >-
+  sbt build: 08-oss-scalameta-scalameta
+
+  **from** = dependent module, **to** = depended-on module (`dependsOn`) or aggregated child
+  (`aggregate`).
+
+  See https://ilograph.com/docs/spec
+
+  Source: `sbt-examples/08-oss-scalameta-scalameta/build.sbt`
+resources:
+  - name: semanticdbScalacCore
+    subtitle: semanticdb/scalac/library
+  - name: semanticdbScalacPlugin
+    subtitle: semanticdb/scalac/plugin
+  - name: semanticdbMetac
+    subtitle: semanticdb/metac
+  - name: semanticdbMetap
+    subtitle: semanticdb/metap
+  - name: semanticdbMetacp
+    subtitle: semanticdb/metacp
+  - name: scala3TreeLiftsMacro
+    subtitle: scala3-tree-lifts/macro
+  - name: scala3TreeLiftsCodeGen
+    subtitle: scala3-tree-lifts/impl
+  - name: parsers
+    subtitle: scalameta/parsers
+  - name: semanticdbIntegration
+    subtitle: semanticdb/integration
+  - name: semanticdbIntegrationMacros
+    subtitle: semanticdb/integration-macros
+  - name: testsSemanticdb
+    subtitle: tests-semanticdb
+  - name: communitytest
+    subtitle: community-test
+  - name: benchSemanticdb
+    subtitle: bench/semanticdb
+  - name: benchScalameta
+    subtitle: bench/scalameta
+  - name: docs
+    subtitle: scalameta-docs
+  - name: shadingSettings
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: Relations from sbt `.dependsOn` / `.aggregate` (subset parser; not a full Scala AST).
+    relations:
+      - from: semanticdbScalacPlugin
+        to: semanticdbScalacCore
+        label: depends on
+      - from: semanticdbMetac
+        to: semanticdbScalacPlugin
+        label: depends on
+      - from: semanticdbMetacp
+        to: semanticdbScalacCore
+        label: depends on
+      - from: scala3TreeLiftsCodeGen
+        to: scala3TreeLiftsMacro
+        label: depends on
+      - from: semanticdbIntegration
+        to: semanticdbIntegrationMacros
+        label: depends on
+      - from: semanticdbIntegration
+        to: semanticdbScalacPlugin
+        label: depends on
+      - from: testsSemanticdb
+        to: semanticdbScalacPlugin
+        label: depends on
+      - from: testsSemanticdb
+        to: semanticdbMetac
+        label: depends on
+      - from: testsSemanticdb
+        to: semanticdbMetacp
+        label: depends on
+      - from: testsSemanticdb
+        to: semanticdbMetap
+        label: depends on
+      - from: testsSemanticdb
+        to: semanticdbIntegration
+        label: depends on
+      - from: benchSemanticdb
+        to: testsSemanticdb
+        label: depends on

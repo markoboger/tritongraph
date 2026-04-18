@@ -1,0 +1,339 @@
+description: >-
+  sbt build: 07-oss-sbt-sbt
+
+  **from** = dependent module, **to** = depended-on module (`dependsOn`) or aggregated child
+  (`aggregate`).
+
+  See https://ilograph.com/docs/spec
+
+  Source: `sbt-examples/07-oss-sbt-sbt/build.sbt`
+resources:
+  - name: bundledLauncherProj
+    subtitle: launch
+  - name: utilInterface
+    subtitle: internal
+  - name: utilControl
+    subtitle: internal
+  - name: utilPosition
+    subtitle: internal
+  - name: utilCore
+  - name: utilLogging
+  - name: utilRelation
+    subtitle: internal
+  - name: utilCache
+    subtitle: util-cache
+  - name: utilTracking
+    subtitle: util-tracking
+  - name: utilScripted
+    subtitle: internal
+  - name: testingProj
+    subtitle: testing
+  - name: workerProj
+    subtitle: worker
+  - name: exampleWorkProj
+    subtitle: internal
+  - name: taskProj
+    subtitle: tasks
+  - name: stdTaskProj
+    subtitle: tasks-standard
+  - name: runProj
+    subtitle: run
+  - name: scriptedSbtProj
+    subtitle: scripted-sbt
+  - name: remoteCacheProj
+    subtitle: sbt-remote-cache
+  - name: actionsProj
+    subtitle: main-actions
+  - name: protocolProj
+    subtitle: protocol
+  - name: commandProj
+    subtitle: main-command
+  - name: coreMacrosProj
+    subtitle: core-macros
+  - name: mainSettingsProj
+    subtitle: main-settings
+  - name: zincLmIntegrationProj
+    subtitle: zinc-lm-integration
+  - name: buildFileProj
+    subtitle: buildfile
+  - name: mainProj
+    subtitle: main
+  - name: sbtIvyProj
+    subtitle: sbt-ivy
+  - name: sbtProj
+    subtitle: sbt-app
+  - name: serverTestProj
+    subtitle: server-test
+  - name: sbtClientProj
+    subtitle: client
+  - name: lowerUtils
+  - name: upperModules
+  - name: sbtwProj
+    subtitle: sbtw
+  - name: lmCore
+    subtitle: lm-core
+  - name: lmIvy
+    subtitle: lm-ivy
+  - name: lmCoursierDefinitions
+    subtitle: lm-coursier/definitions
+  - name: lmCoursier
+    subtitle: lm-coursier
+  - name: lmCoursierShaded
+    subtitle: lm-coursier/target/shaded-module
+  - name: lmCoursierShadedPublishing
+    subtitle: lm-coursier/target/shaded-publishing-module
+  - name: launcherPackage
+    subtitle: launcher-package
+  - name: launcherPackageIntegrationTest
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: Relations from sbt `.dependsOn` / `.aggregate` (subset parser; not a full Scala AST).
+    relations:
+      - from: bundledLauncherProj
+        to: utilPosition
+        label: depends on
+      - from: bundledLauncherProj
+        to: utilCore
+        label: depends on
+      - from: bundledLauncherProj
+        to: utilControl
+        label: depends on
+      - from: bundledLauncherProj
+        to: utilLogging
+        label: depends on
+      - from: bundledLauncherProj
+        to: utilRelation
+        label: depends on
+      - from: utilLogging
+        to: utilInterface
+        label: depends on
+      - from: utilLogging
+        to: utilCore
+        label: depends on
+      - from: utilCache
+        to: utilLogging
+        label: depends on
+      - from: utilTracking
+        to: utilCache
+        label: depends on
+      - from: utilScripted
+        to: utilLogging
+        label: depends on
+      - from: utilScripted
+        to: utilInterface
+        label: depends on
+      - from: testingProj
+        to: workerProj
+        label: depends on
+      - from: testingProj
+        to: utilLogging
+        label: depends on
+      - from: workerProj
+        to: exampleWorkProj
+        label: depends on
+      - from: taskProj
+        to: utilControl
+        label: depends on
+      - from: stdTaskProj
+        to: utilLogging
+        label: depends on
+      - from: stdTaskProj
+        to: utilCache
+        label: depends on
+      - from: stdTaskProj
+        to: taskProj
+        label: depends on
+      - from: runProj
+        to: utilLogging
+        label: depends on
+      - from: runProj
+        to: utilControl
+        label: depends on
+      - from: scriptedSbtProj
+        to: sbtProj
+        label: depends on
+      - from: scriptedSbtProj
+        to: commandProj
+        label: depends on
+      - from: scriptedSbtProj
+        to: utilLogging
+        label: depends on
+      - from: scriptedSbtProj
+        to: utilScripted
+        label: depends on
+      - from: scriptedSbtProj
+        to: lmCore
+        label: depends on
+      - from: remoteCacheProj
+        to: sbtProj
+        label: depends on
+      - from: actionsProj
+        to: runProj
+        label: depends on
+      - from: actionsProj
+        to: stdTaskProj
+        label: depends on
+      - from: actionsProj
+        to: taskProj
+        label: depends on
+      - from: actionsProj
+        to: testingProj
+        label: depends on
+      - from: actionsProj
+        to: utilCache
+        label: depends on
+      - from: actionsProj
+        to: utilLogging
+        label: depends on
+      - from: actionsProj
+        to: utilRelation
+        label: depends on
+      - from: actionsProj
+        to: utilTracking
+        label: depends on
+      - from: actionsProj
+        to: workerProj
+        label: depends on
+      - from: actionsProj
+        to: protocolProj
+        label: depends on
+      - from: actionsProj
+        to: lmCore
+        label: depends on
+      - from: protocolProj
+        to: utilLogging
+        label: depends on
+      - from: commandProj
+        to: protocolProj
+        label: depends on
+      - from: commandProj
+        to: utilLogging
+        label: depends on
+      - from: commandProj
+        to: runProj
+        label: depends on
+      - from: commandProj
+        to: utilCache
+        label: depends on
+      - from: commandProj
+        to: lmCore
+        label: depends on
+      - from: coreMacrosProj
+        to: utilCache
+        label: depends on
+      - from: mainSettingsProj
+        to: commandProj
+        label: depends on
+      - from: mainSettingsProj
+        to: stdTaskProj
+        label: depends on
+      - from: mainSettingsProj
+        to: coreMacrosProj
+        label: depends on
+      - from: mainSettingsProj
+        to: utilLogging
+        label: depends on
+      - from: mainSettingsProj
+        to: utilCache
+        label: depends on
+      - from: mainSettingsProj
+        to: utilRelation
+        label: depends on
+      - from: mainSettingsProj
+        to: lmCore
+        label: depends on
+      - from: zincLmIntegrationProj
+        to: lmCore
+        label: depends on
+      - from: zincLmIntegrationProj
+        to: lmIvy
+        label: depends on
+      - from: buildFileProj
+        to: mainSettingsProj
+        label: depends on
+      - from: buildFileProj
+        to: lmCore
+        label: depends on
+      - from: mainProj
+        to: actionsProj
+        label: depends on
+      - from: mainProj
+        to: buildFileProj
+        label: depends on
+      - from: mainProj
+        to: mainSettingsProj
+        label: depends on
+      - from: mainProj
+        to: runProj
+        label: depends on
+      - from: mainProj
+        to: commandProj
+        label: depends on
+      - from: mainProj
+        to: zincLmIntegrationProj
+        label: depends on
+      - from: mainProj
+        to: utilLogging
+        label: depends on
+      - from: mainProj
+        to: lmCore
+        label: depends on
+      - from: mainProj
+        to: lmCoursierShadedPublishing
+        label: depends on
+      - from: sbtIvyProj
+        to: sbtProj
+        label: depends on
+      - from: sbtIvyProj
+        to: lmIvy
+        label: depends on
+      - from: sbtProj
+        to: mainProj
+        label: depends on
+      - from: serverTestProj
+        to: sbtProj
+        label: depends on
+      - from: serverTestProj
+        to: scriptedSbtProj
+        label: depends on
+      - from: sbtClientProj
+        to: commandProj
+        label: depends on
+      - from: lmCore
+        to: utilLogging
+        label: depends on
+      - from: lmCore
+        to: utilPosition
+        label: depends on
+      - from: lmCore
+        to: utilCache
+        label: depends on
+      - from: lmIvy
+        to: lmCore
+        label: depends on
+      - from: lmCoursierDefinitions
+        to: lmCore
+        label: depends on
+      - from: lmCoursier
+        to: lmCore
+        label: depends on
+      - from: lmCoursierShaded
+        to: lmCore
+        label: depends on
+      - from: launcherPackageIntegrationTest
+        to: sbtwProj
+        label: depends on
+      - from: launcherPackageIntegrationTest
+        to: launcherPackage
+        label: depends on
+      - from: launcherPackageIntegrationTest
+        to: launcherPackage
+        label: depends on
+      - from: launcherPackageIntegrationTest
+        to: launcherPackage
+        label: depends on
+      - from: launcherPackageIntegrationTest
+        to: launcherPackage
+        label: depends on

@@ -1,0 +1,5 @@
+http4s HTTP stack (large multi-module Typelevel build).
+
+Upstream: https://github.com/http4s/http4s
+Files: branch master — build.sbt, project/build.properties
+Fetched: 2026-04-18 via raw.githubusercontent.com (see upstream LICENSE).

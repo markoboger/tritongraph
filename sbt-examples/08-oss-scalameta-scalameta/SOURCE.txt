@@ -1,0 +1,5 @@
+Scalameta parser / trees (large monorepo-style build).
+
+Upstream: https://github.com/scalameta/scalameta
+Files: branch master — build.sbt, project/build.properties
+Fetched: 2026-04-18 via raw.githubusercontent.com (see upstream LICENSE).
