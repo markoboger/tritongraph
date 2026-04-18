@@ -10,9 +10,9 @@ defineProps<{
 
 <template>
   <div class="group-node">
-    <Handle :id="DEP_SOURCE_HANDLE" class="gh gh-side-left gh-use-dep" type="source" :position="Position.Left" />
+    <Handle :id="DEP_TARGET_HANDLE" class="gh gh-side-left gh-use-dep" type="target" :position="Position.Left" />
     <Handle :id="AGG_TARGET_HANDLE" class="gh gh-side-left gh-use-agg" type="target" :position="Position.Left" />
-    <Handle :id="DEP_TARGET_HANDLE" class="gh gh-side-right gh-use-dep" type="target" :position="Position.Right" />
+    <Handle :id="DEP_SOURCE_HANDLE" class="gh gh-side-right gh-use-dep" type="source" :position="Position.Right" />
     <Handle :id="AGG_SOURCE_HANDLE" class="gh gh-side-right gh-use-agg" type="source" :position="Position.Right" />
     <div class="banner">{{ data.label }}</div>
     <div v-if="data.subtitle" class="banner-sub">{{ data.subtitle }}</div>

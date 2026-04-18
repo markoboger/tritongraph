@@ -7,7 +7,7 @@ import { SBT_DEPENDS_ON_STROKE } from './relationKinds'
 export const DEP_EDGE_STROKE = SBT_DEPENDS_ON_STROKE
 export const DEP_EDGE_STROKE_WIDTH = 2.75
 
-/** Closed arrow at the dependent (source) end; none at the dependency (target) end. */
+/** Closed arrow head for classpath / `depends on` edges (same marker for start or end). */
 export function dependencyMarker(color: string = DEP_EDGE_STROKE): EdgeMarker {
   return {
     type: MarkerType.ArrowClosed,
@@ -30,13 +30,13 @@ export function dependencyEdgeLabelOffsetStyle(): CSSProperties {
   return { transform: 'translateY(-15px)' }
 }
 
-/** Forward: arrow on source (dependent). Bidirectional: arrows on both ends. */
+/** Forward: arrow at target (depended-on module). Bidirectional: arrows on both ends. */
 export function markersForRelation(bidirectional: boolean, color: string = DEP_EDGE_STROKE) {
   const m = dependencyMarker(color)
   if (bidirectional) {
     return { markerStart: m, markerEnd: m }
   }
-  return { markerStart: m, markerEnd: undefined as undefined }
+  return { markerStart: undefined as undefined, markerEnd: m }
 }
 
 /** Aggregate parent → child: arrow at the **child** end (into the aggregated module). */

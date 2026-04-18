@@ -18,7 +18,7 @@ Open the URL Vite prints (by default `http://127.0.0.1:5173`) in Cursor’s **Si
 - **Single-click** a container (group with submodules) to **zoom the viewport** onto that subtree and fade unrelated context (Ilograph-style drill). **Escape** or a click on the **empty canvas** zooms back out.
 - **Double-click** a module or group to edit its name / subtitle.
 
-Auto-layout uses **from** dependent **to** dependency in YAML. The canvas places **columns by dependency depth** (longest chain of `depends on` toward foundations on the **left**, consumers on the **right**). Each column gets an **equal share of viewport width**; nodes in a column split **viewport height** (margins + stack gaps). Every box gets explicit **width/height** from that allocation so modules **scale with the pane**. Nested groups use the same rules inside the parent frame.
+Auto-layout uses **from** dependent **to** dependency in YAML. The canvas places **columns by dependency depth** (consumers on the **left**, classpath foundations on the **right**). Each column gets an **equal share of viewport width**; nodes in a column split **viewport height** (margins + stack gaps). Every box gets explicit **width/height** from that allocation so modules **scale with the pane**. Nested groups use the same rules inside the parent frame.
 
 ## Ilograph compatibility
 

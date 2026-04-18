@@ -138,9 +138,9 @@ function togglePin(ev: MouseEvent) {
     </div>
 
     <Handle
-      :id="DEP_SOURCE_HANDLE"
+      :id="DEP_TARGET_HANDLE"
       class="handle handle-side-left handle-use-dep"
-      type="source"
+      type="target"
       :position="Position.Left"
     />
     <Handle
@@ -150,9 +150,9 @@ function togglePin(ev: MouseEvent) {
       :position="Position.Left"
     />
     <Handle
-      :id="DEP_TARGET_HANDLE"
+      :id="DEP_SOURCE_HANDLE"
       class="handle handle-side-right handle-use-dep"
-      type="target"
+      type="source"
       :position="Position.Right"
     />
     <Handle

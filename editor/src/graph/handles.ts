@@ -1,11 +1,8 @@
 /**
  * Handle ids for compile-dependency edges (`source` = dependent, `target` = dependency).
  *
- * Layout uses Dagre **RL**: dependency sits **left**, consumers **right**, so edges run **leftward**.
- * Then the **source** (consumer) port must face the dependency → **left** side of the box.
- * The **target** (shared module) must accept from the right → **right** side of the box.
- *
- * (If you ever switch to LR with consumers left of a dependency, swap these positions in the node components.)
+ * Dependency columns are **LR**: dependent **left**, classpath dependency **right**; edges run **rightward**.
+ * **source** (consumer) uses the **right** face toward the dependency; **target** uses the **left** face.
  */
 export const DEP_SOURCE_HANDLE = 'dep-out'
 

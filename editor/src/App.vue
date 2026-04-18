@@ -33,8 +33,9 @@ const showYamlEditor = ref(true)
 /** All bundled repo sbt-examples build.sbt files (Vite virtual module at dev or build time). */
 const sbtExamplesAll = listSbtExamples()
 
+/** Tutorial-style bundled examples: 01–12 under sbt-examples (same menu block). */
 function isTutorialSbtFolder(dir: string): boolean {
-  return /^0[1-4]-/.test(dir)
+  return /^0[1-9]-/.test(dir) || /^1[0-2]-/.test(dir)
 }
 
 const sbtExamplesTutorial = sbtExamplesAll.filter((e) => isTutorialSbtFolder(e.dir))

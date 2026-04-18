@@ -1,4 +1,4 @@
-import { edgeContributesToClasspathDepth, isAggregateEdge } from './relationKinds'
+import { edgeContributesToClasspathDepth } from './relationKinds'
 
 /** Top + bottom gutter inside each layout region for smoothstep edges that skip ≥1 depth column. */
 const CROSS_LAYER_LANE_MAX = 28
@@ -184,9 +184,9 @@ function distributeColumnInners(maxD: number, usableW: number): number[] {
 }
 
 /**
- * Column layering depth:
- * - `depends on`: dependency must appear earlier (left) than dependent
- * - `aggregate`: aggregator appears earlier (left) than aggregated project
+ * Column layering depth (left → right):
+ * - `depends on`: **from** = dependent (left), **to** = classpath dependency (right)
+ * - `aggregate`: aggregator left of aggregated child (same as YAML from → to)
  */
 function computeLayerDepths(
   participating: Set<string>,
@@ -198,10 +198,10 @@ function computeLayerDepths(
   for (const e of edges) {
     if (!participating.has(e.source) || !participating.has(e.target)) continue
 
-    // depends-on: target (dependency) must be left of source (dependent)
-    // aggregate: source (aggregator) must be left of target (aggregated)
-    const earlier = isAggregateEdge(e) ? e.source : e.target
-    const later = isAggregateEdge(e) ? e.target : e.source
+    // depends-on: source (dependent) left of target (depended-on)
+    // aggregate: source (aggregator) left of target (aggregated)
+    const earlier = e.source
+    const later = e.target
     if (earlier === later) continue
     preds.get(later)!.push(earlier)
   }

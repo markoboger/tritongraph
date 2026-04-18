@@ -76,8 +76,8 @@ provide('tritonAfterLayerDrillOut', relayoutViewport)
 const defaultEdgeOptions = {
   type: 'smoothstep' as const,
   style: dependencyEdgeStyle(DEP_EDGE_STROKE),
-  markerStart: dependencyMarker(DEP_EDGE_STROKE),
-  markerEnd: undefined,
+  markerStart: undefined,
+  markerEnd: dependencyMarker(DEP_EDGE_STROKE),
   sourceHandle: DEP_SOURCE_HANDLE,
   targetHandle: DEP_TARGET_HANDLE,
   labelStyle: dependencyEdgeLabelOffsetStyle(),
@@ -101,8 +101,8 @@ function handleConnect(conn: Connection) {
       label: 'depends on',
       labelStyle: dependencyEdgeLabelOffsetStyle(),
       labelBgStyle: dependencyEdgeLabelOffsetStyle(),
-      markerStart: dependencyMarker(DEP_EDGE_STROKE),
-      markerEnd: undefined,
+      markerStart: undefined,
+      markerEnd: dependencyMarker(DEP_EDGE_STROKE),
       style: dependencyEdgeStyle(DEP_EDGE_STROKE),
     },
   ]

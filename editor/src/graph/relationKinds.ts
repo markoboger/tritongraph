@@ -9,10 +9,7 @@ export function isAggregateEdge(e: { label?: unknown }): boolean {
   return t === 'aggregate' || t === 'aggregates'
 }
 
-/**
- * Column depth (“layering”) uses both classpath (`depends on`) and aggregate edges.
- * The layout code interprets direction differently per relation kind.
- */
+/** Column depth (“layering”) uses both classpath (`depends on`) and aggregate edges (YAML `from` → `to` = left → right). */
 export function edgeContributesToClasspathDepth(e: { label?: unknown }): boolean {
   const t = String(e.label ?? '').trim().toLowerCase()
   if (!t) return false
