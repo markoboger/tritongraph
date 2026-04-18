@@ -90,6 +90,11 @@ function anchorAggOutTop(slot: number): string {
 const refreshDimming = inject<(() => void) | undefined>('tritonRefreshDimming', undefined)
 const relayoutViewport = inject<(() => void | Promise<void>) | undefined>('tritonRelayoutViewport', undefined)
 const graphFocusUi = inject<{ containerFocusId: string | null } | undefined>('tritonGraphFocusUi', undefined)
+/** Direct v-model patch (see GraphWorkspace) — `updateNodeData` alone does not propagate reliably. */
+const patchNodeData = inject<((id: string, patch: Record<string, unknown>) => void) | undefined>(
+  'tritonPatchNodeData',
+  undefined,
+)
 
 function moduleInContainerFocusTree(focusId: string, moduleId: string): boolean {
   const nodes = getNodes.value
@@ -155,6 +160,18 @@ function cycleColor() {
   updateNodeData(props.id, { boxColor: nextNamedBoxColor(accent) })
 }
 
+function onRename(newLabel: string) {
+  if (!newLabel || newLabel === props.data.label) return
+  patchNodeData?.(props.id, { label: newLabel })
+  updateNodeData(props.id, { label: newLabel })
+}
+
+function onDescriptionChange(newDescription: string) {
+  if (newDescription === (props.data.description ?? '')) return
+  patchNodeData?.(props.id, { description: newDescription })
+  updateNodeData(props.id, { description: newDescription })
+}
+
 function togglePin(ev: MouseEvent) {
   ev.stopPropagation()
   const next = !props.data.pinned
@@ -176,6 +193,7 @@ function togglePin(ev: MouseEvent) {
             :box-id="id"
             :label="data.label"
             :subtitle="data.subtitle"
+            :description="data.description"
             :notes="data.drillNote"
             :language="data.language"
             :box-color="data.boxColor"
@@ -185,6 +203,8 @@ function togglePin(ev: MouseEvent) {
             :show-color-tool="!!data.layerDrillFocus"
             @toggle-pin="togglePin"
             @cycle-color="cycleColor"
+            @rename="onRename"
+            @description-change="onDescriptionChange"
           />
         </DiagramSection>
       </div>

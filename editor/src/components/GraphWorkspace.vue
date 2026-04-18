@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   ConnectionMode,
+  Position,
   VueFlow,
   type Connection,
   type NodeTypesObject,
@@ -20,6 +21,12 @@ import {
   routeSmoothstepEdgesInViewport,
 } from '../graph/layoutDependencyLayers'
 import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE } from '../graph/handles'
+import { boxColorForId } from '../graph/boxColors'
+import { languageIconForId } from '../graph/languages'
+import { drillNoteForModuleId } from '../graph/sbtStyleDrillNotes'
+
+const MODULE_LAYOUT_W = 200
+const MODULE_LAYOUT_H = 72
 
 const nodes = defineModel<any[]>('nodes', { required: true })
 const edges = defineModel<any[]>('edges', { required: true })
@@ -30,12 +37,36 @@ const props = defineProps<{
   relationTypeVisibility?: Record<string, boolean>
 }>()
 
-const { fitView } = useVueFlow()
+const emit = defineEmits<{
+  /** User-facing status line updates (e.g. new module from pane connect). */
+  status: [message: string]
+}>()
+
+/**
+ * `useVueFlow()` must target the same store as `<VueFlow>`. This component’s `<script setup>`
+ * runs as the **parent** of `<VueFlow>`, so a bare `useVueFlow()` creates an orphan store:
+ * `vueFlowRef` stays null and `screenToFlowCoordinate` always returns (0,0) — pane-drop would
+ * “do nothing” visually. A stable id links parent composables to the mounted pane.
+ */
+const WORKSPACE_FLOW_ID = 'triton-workspace'
+const { fitView, screenToFlowCoordinate, setNodes, setEdges, updateNodeInternals } =
+  useVueFlow(WORKSPACE_FLOW_ID)
 const drillRef = ref<InstanceType<typeof GraphDrillIn> | null>(null)
 
 const hoveredNodeId = ref<string | null>(null)
 /** When set, only this edge is stroke-emphasized (takes precedence over node-hover). */
 const hoveredEdgeId = ref<string | null>(null)
+
+/** After connect-start from a **source** handle: if pointer up does not complete @connect, create a module on the pane. */
+const pendingPaneConnect = ref<{ nodeId: string; handleId: string | null } | null>(null)
+let connectGestureFinishedOnTarget = false
+
+/** True while depth columns reflow after a new dependency edge so node `transform` animates. */
+const depthLayoutAnimate = ref(false)
+
+async function doubleRaf(): Promise<void> {
+  await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
+}
 
 function mergeEdgeEmphClass(existing: string | undefined, emph: boolean): string | undefined {
   const parts = new Set(String(existing ?? '').split(/\s+/).filter(Boolean))
@@ -129,7 +160,7 @@ const diagramModel = computed(() => {
 async function relayoutViewport() {
   if (!nodes.value.length) return
   await nextTick()
-  await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
+  await doubleRaf()
   const vp = readFlowViewport()
   nodes.value = layoutDepthInViewport(nodes.value, edges.value, vp)
   edges.value = mergeEdgeHiddenForInvisibleEndpoints(
@@ -148,6 +179,19 @@ provide('tritonRelayoutViewport', relayoutViewport)
 /** Re-run depth layout after layer drill-out so snapshot geometry does not shrink pinned modules. */
 provide('tritonAfterLayerDrillOut', relayoutViewport)
 
+/**
+ * Update a node's `data` directly on the v-model array. `useVueFlow().updateNodeData(...)`
+ * mutates Vue Flow's internal store but does not always propagate back to the parent ref bound
+ * via v-model — the next layout pass that re-reads `nodes.value` then overwrites the change.
+ * Patching the v-model source array fixes that and triggers a normal reactive re-render.
+ */
+function tritonPatchNodeData(id: string, patch: Record<string, unknown>) {
+  nodes.value = nodes.value.map((n) =>
+    n.id === id ? { ...n, data: { ...(n.data ?? {}), ...patch } } : n,
+  )
+}
+provide('tritonPatchNodeData', tritonPatchNodeData)
+
 const defaultEdgeOptions = {
   type: 'smoothstep' as const,
   style: dependencyEdgeStyle(DEP_EDGE_STROKE),
@@ -160,6 +204,233 @@ const defaultEdgeOptions = {
 
 function uid(): string {
   return globalThis.crypto?.randomUUID?.() ?? `id-${Math.random().toString(16).slice(2)}`
+}
+
+function onConnectStart(ev: unknown) {
+  connectGestureFinishedOnTarget = false
+  const p = ev && typeof ev === 'object' ? (ev as Record<string, unknown>) : {}
+  const nodeId = typeof p.nodeId === 'string' ? p.nodeId : undefined
+  const handleType = p.handleType
+  const rawHid = p.handleId
+  const handleId = rawHid == null || rawHid === '' ? null : String(rawHid)
+  if (handleType === 'source' && nodeId) {
+    pendingPaneConnect.value = { nodeId, handleId }
+  } else {
+    pendingPaneConnect.value = null
+  }
+}
+
+/** Pointer position for connect-end / hit-testing (native or wrapped events). */
+function clientPointFromPointerLike(ev: unknown): { x: number; y: number } | null {
+  if (!ev || typeof ev !== 'object') return null
+  if ('changedTouches' in ev) {
+    const te = ev as TouchEvent
+    const t = te.changedTouches?.[0]
+    if (t) return { x: t.clientX, y: t.clientY }
+  }
+  if ('clientX' in ev && typeof (ev as { clientX: unknown }).clientX === 'number') {
+    const o = ev as { clientX: number; clientY: number }
+    return { x: o.clientX, y: o.clientY }
+  }
+  if ('event' in ev) return clientPointFromPointerLike((ev as { event: unknown }).event)
+  return null
+}
+
+function connectEndEventTarget(ev: unknown): EventTarget | null {
+  if (!ev || typeof ev !== 'object') return null
+  if ('target' in ev && (ev as { target?: EventTarget | null }).target != null) {
+    return (ev as { target: EventTarget | null }).target
+  }
+  if ('event' in ev) return connectEndEventTarget((ev as { event: unknown }).event)
+  return null
+}
+
+/**
+ * True when the pointer is over “empty” graph chrome (not a node, handle, or committed edge).
+ * Uses {@link Document.elementsFromPoint} so a transient connection preview SVG above the pane
+ * does not block pane drops; still rejects when the topmost meaningful hit is a node/handle/edge.
+ */
+function isPaneEmptyConnectDrop(client: { x: number; y: number }, fallbackTarget: EventTarget | null): boolean {
+  if (typeof document === 'undefined') return false
+  const wrap = document.querySelector('.flow-wrap')
+  const doc = document as Document & { elementsFromPoint?: (x: number, y: number) => Element[] }
+  const stack: Element[] = doc.elementsFromPoint
+    ? doc.elementsFromPoint(client.x, client.y)
+    : (() => {
+        const top = doc.elementFromPoint(client.x, client.y)
+        return top instanceof Element ? [top] : []
+      })()
+  const consider = stack.length
+    ? stack
+    : fallbackTarget instanceof Element
+      ? [fallbackTarget]
+      : []
+  for (const raw of consider) {
+    if (!(raw instanceof Element)) continue
+    const el = raw
+    const inFlow = el.closest('.vue-flow')
+    if (!inFlow) continue
+    if (wrap && !wrap.contains(el)) continue
+    if (el.closest('.vue-flow__handle')) return false
+    if (el.closest('.vue-flow__node')) return false
+    if (el.closest('.vue-flow__edge')) return false
+    if (el.closest('.vue-flow__connectionline') || el.classList.contains('vue-flow__connection-path')) continue
+    return true
+  }
+  return false
+}
+
+/** Vue Flow `@connect-end` (and internal helpers): project with the same `useVueFlow(id)` store as this pane. */
+function handleFlowConnectEnd(
+  ev: unknown,
+  screenToFlow: (p: { x: number; y: number }) => { x: number; y: number },
+) {
+  if (connectGestureFinishedOnTarget) {
+    pendingPaneConnect.value = null
+    return
+  }
+  const pending = pendingPaneConnect.value
+  if (!pending) return
+  const pt = clientPointFromPointerLike(ev)
+  if (!pt) {
+    pendingPaneConnect.value = null
+    return
+  }
+  if (!isPaneEmptyConnectDrop(pt, connectEndEventTarget(ev))) {
+    pendingPaneConnect.value = null
+    return
+  }
+
+  const src = nodes.value.find((n) => String(n.id) === pending.nodeId)
+  if (!src || (src.type !== 'module' && src.type !== 'group')) {
+    pendingPaneConnect.value = null
+    return
+  }
+
+  pendingPaneConnect.value = null
+  const flowPos = screenToFlow(pt)
+  void createModuleFromSourceHandle(pending.nodeId, pending.handleId, flowPos)
+}
+
+function onVueFlowConnectEnd(ev: MouseEvent | TouchEvent | undefined) {
+  handleFlowConnectEnd(ev, screenToFlowCoordinate)
+}
+
+async function createModuleFromSourceHandle(
+  sourceNodeId: string,
+  sourceHandleId: string | null,
+  flowPos: { x: number; y: number },
+) {
+  const src = nodes.value.find((n) => String(n.id) === sourceNodeId)
+  if (!src || (src.type !== 'module' && src.type !== 'group')) return
+
+  const id = `module-${uid()}`
+  const parentRaw = (src as { parentNode?: string }).parentNode
+  /** New module sits inside a group when the drag started from that group; otherwise inherit the source module’s parent. */
+  const parentNode =
+    src.type === 'group'
+      ? String(sourceNodeId)
+      : parentRaw !== undefined && parentRaw !== null && parentRaw !== ''
+        ? String(parentRaw)
+        : undefined
+
+  const sh = sourceHandleId ?? AGG_SOURCE_HANDLE
+
+  const newNode: Record<string, unknown> = {
+    id,
+    type: 'module',
+    position: {
+      x: flowPos.x - MODULE_LAYOUT_W / 2,
+      y: flowPos.y - MODULE_LAYOUT_H / 2,
+    },
+    sourcePosition: Position.Left,
+    targetPosition: Position.Right,
+    data: {
+      label: 'new-module',
+      subtitle: 'sbt project id',
+      boxColor: boxColorForId(id),
+      language: languageIconForId(id),
+      drillNote: drillNoteForModuleId(id),
+    },
+  }
+  if (parentNode) {
+    newNode.parentNode = parentNode
+    newNode.extent = 'parent'
+    newNode.expandParent = true
+  }
+
+  const newEdge = {
+    id: `e-${uid()}`,
+    source: sourceNodeId,
+    target: id,
+    sourceHandle: sh,
+    targetHandle: AGG_TARGET_HANDLE,
+    label: 'depends on',
+    labelStyle: dependencyEdgeLabelStyle(),
+    markerStart: undefined,
+    markerEnd: dependencyMarker(DEP_EDGE_STROKE),
+    style: dependencyEdgeStyle(DEP_EDGE_STROKE),
+  }
+
+  await nextTick()
+  await doubleRaf()
+  const vp = readFlowViewport()
+  const withEdge = [...edges.value, newEdge]
+  nodes.value = layoutDepthInViewport([...nodes.value, newNode as any], withEdge, vp)
+  edges.value = mergeEdgeHiddenForInvisibleEndpoints(
+    routeSmoothstepEdgesInViewport(nodes.value, withEdge, vp),
+    nodes.value,
+    {
+      hideEdgeForRelation: (e) => shouldHideEdgeForRelationFilter(e, props.relationTypeVisibility),
+    },
+  )
+  nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
+  void nextTick(() => syncEdgeVisualState())
+  emit(
+    'status',
+    `Added ${id} and a depends-on link from ${sourceNodeId} — double-click the box to rename; YAML diff highlights new lines until you accept the baseline.`,
+  )
+}
+
+/** New standalone module from toolbar drag-and-drop (no edge). */
+async function createModuleFromDrop(flowPos: { x: number; y: number }) {
+  const id = `module-${uid()}`
+  const newNode: Record<string, unknown> = {
+    id,
+    type: 'module',
+    position: {
+      x: flowPos.x - MODULE_LAYOUT_W / 2,
+      y: flowPos.y - MODULE_LAYOUT_H / 2,
+    },
+    sourcePosition: Position.Left,
+    targetPosition: Position.Right,
+    data: {
+      label: 'new-module',
+      subtitle: 'sbt project id',
+      boxColor: boxColorForId(id),
+      language: languageIconForId(id),
+      drillNote: drillNoteForModuleId(id),
+    },
+  }
+
+  await nextTick()
+  await doubleRaf()
+  const vp = readFlowViewport()
+  nodes.value = layoutDepthInViewport([...nodes.value, newNode as any], edges.value, vp)
+  edges.value = mergeEdgeHiddenForInvisibleEndpoints(
+    routeSmoothstepEdgesInViewport(nodes.value, edges.value, vp),
+    nodes.value,
+    {
+      hideEdgeForRelation: (e) => shouldHideEdgeForRelationFilter(e, props.relationTypeVisibility),
+    },
+  )
+  nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
+  void nextTick(() => syncEdgeVisualState())
+  emit(
+    'status',
+    `Dropped ${id} on the canvas — double-click to rename; YAML diff shows changes until you accept the baseline.`,
+  )
+  void fitToViewport()
 }
 
 function onNodeMouseEnter(ev: { node: { id: string } }) {
@@ -183,41 +454,61 @@ function onEdgeMouseLeave(ev: { edge: { id: string } }) {
   if (hoveredEdgeId.value === String(ev.edge.id)) hoveredEdgeId.value = null
 }
 
-function handleConnect(conn: Connection) {
+async function handleConnect(conn: Connection) {
+  connectGestureFinishedOnTarget = true
   if (!conn.source || !conn.target) return
-  const next = [
-    ...edges.value,
-    {
-      id: `e-${uid()}`,
-      source: conn.source,
-      target: conn.target,
-      sourceHandle: conn.sourceHandle ?? AGG_SOURCE_HANDLE,
-      targetHandle: conn.targetHandle ?? AGG_TARGET_HANDLE,
-      label: 'depends on',
-      labelStyle: dependencyEdgeLabelStyle(),
-      markerStart: undefined,
-      markerEnd: dependencyMarker(DEP_EDGE_STROKE),
-      style: dependencyEdgeStyle(DEP_EDGE_STROKE),
-    },
-  ]
-  edges.value = mergeEdgeHiddenForInvisibleEndpoints(next, nodes.value, {
-    hideEdgeForRelation: (e) => shouldHideEdgeForRelationFilter(e, props.relationTypeVisibility),
-  })
-  nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
-  void nextTick(() => syncEdgeVisualState())
-  void fitToViewport()
-}
 
-function onNodeDoubleClick(ev: { node: { id: string; data?: Record<string, unknown> } }) {
-  const n = ev.node
-  if (n.data?.label === undefined && n.data?.subtitle === undefined) return
-  const label = window.prompt('Module name (resource `name` in Ilograph)', String(n.data?.label ?? ''))
-  if (label === null) return
-  const subtitle = window.prompt('Subtitle (e.g. sbt project id)', String(n.data?.subtitle ?? ''))
-  if (subtitle === null) return
-  nodes.value = nodes.value.map((x) =>
-    x.id === n.id ? { ...x, data: { ...x.data, label, subtitle } } : x,
+  const newEdge = {
+    id: `e-${uid()}`,
+    source: conn.source,
+    target: conn.target,
+    sourceHandle: conn.sourceHandle ?? AGG_SOURCE_HANDLE,
+    targetHandle: conn.targetHandle ?? AGG_TARGET_HANDLE,
+    label: 'depends on',
+    labelStyle: dependencyEdgeLabelStyle(),
+    markerStart: undefined,
+    markerEnd: dependencyMarker(DEP_EDGE_STROKE),
+    style: dependencyEdgeStyle(DEP_EDGE_STROKE),
+  }
+  const combinedEdges = [...edges.value, newEdge]
+
+  depthLayoutAnimate.value = true
+  await nextTick()
+  await doubleRaf()
+
+  const vp = readFlowViewport()
+  const laidOut = layoutDepthInViewport(nodes.value, combinedEdges, vp)
+  const routedEdges = mergeEdgeHiddenForInvisibleEndpoints(
+    routeSmoothstepEdgesInViewport(laidOut, combinedEdges, vp),
+    laidOut,
+    {
+      hideEdgeForRelation: (e) => shouldHideEdgeForRelationFilter(e, props.relationTypeVisibility),
+    },
   )
+  const aligned = applyHandleAnchorAlignment(laidOut, routedEdges)
+
+  /**
+   * `nodes.value = …` (defineModel → parent ref → child v-model) does not always re-sync Vue Flow’s
+   * internal node store when only positions change. `setNodes` writes directly to the store and
+   * emits `update:nodes`, then `updateNodeInternals` recomputes handle bounds for the new geometry.
+   */
+  setNodes(aligned)
+  setEdges(routedEdges)
+  nodes.value = aligned
+  edges.value = routedEdges
+  await nextTick()
+  updateNodeInternals()
+  void nextTick(() => syncEdgeVisualState())
+
+  window.setTimeout(() => {
+    depthLayoutAnimate.value = false
+  }, 520)
+
+  emit(
+    'status',
+    `Linked ${conn.source} → ${conn.target} (depends on). Depth layout and edge routing updated.`,
+  )
+  await fitToViewport({ duration: 400 })
 }
 
 async function resetView() {
@@ -225,25 +516,34 @@ async function resetView() {
 }
 
 /** Fit graph to the current pane after layout (does not clear layer drill). */
-async function fitToViewport() {
+async function fitToViewport(opts?: { duration?: number }) {
   await nextTick()
-  await new Promise<void>((resolve) => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => resolve())
-    })
-  })
-  await fitView({ padding: 0.05, duration: 220, maxZoom: 2.2, minZoom: 0.05 })
+  await doubleRaf()
+  const duration = opts?.duration ?? 220
+  await fitView({ padding: 0.05, duration, maxZoom: 2.2, minZoom: 0.05 })
 }
 
-defineExpose({ resetView, fitToViewport, refreshEdgeEmphasis: syncEdgeVisualState })
+/** Toolbar / host: same timing as “Add module” — avoids a separate global bridge to `screenToFlowCoordinate`. */
+function dropProjectTemplateAtScreen(clientX: number, clientY: number) {
+  const flow = screenToFlowCoordinate({ x: clientX, y: clientY })
+  void createModuleFromDrop(flow)
+}
+
+defineExpose({
+  resetView,
+  fitToViewport,
+  refreshEdgeEmphasis: syncEdgeVisualState,
+  dropProjectTemplateAtScreen,
+})
 </script>
 
 <template>
   <DiagramContainerView :model="diagramModel" class="diagram-root-wrap">
     <VueFlow
+      :id="WORKSPACE_FLOW_ID"
       v-model:nodes="nodes"
       v-model:edges="edges"
-      class="flow"
+      :class="['flow', { 'tg-depth-layout-animate': depthLayoutAnimate }]"
       :node-types="nodeTypes"
     :default-edge-options="defaultEdgeOptions"
     :connection-mode="ConnectionMode.Strict"
@@ -262,7 +562,8 @@ defineExpose({ resetView, fitToViewport, refreshEdgeEmphasis: syncEdgeVisualStat
     :pan-on-scroll="false"
     delete-key-code="Delete"
     @connect="handleConnect"
-    @node-double-click="onNodeDoubleClick"
+    @connect-start="onConnectStart"
+    @connect-end="onVueFlowConnectEnd"
     @node-mouse-enter="onNodeMouseEnter"
     @node-mouse-leave="onNodeMouseLeave"
     @edge-mouse-enter="onEdgeMouseEnter"
@@ -298,6 +599,15 @@ defineExpose({ resetView, fitToViewport, refreshEdgeEmphasis: syncEdgeVisualStat
 /* During FLIP, inner graph node owns transform; suppress outer w/h tween to avoid double motion. */
 .flow.tg-layer-flip-animate .vue-flow__node {
   transition: opacity 0.35s ease;
+}
+
+/* New dependency edge: animate nodes into updated depth columns (transform is viewport space in Vue Flow). */
+.flow.tg-depth-layout-animate:not(.tg-layer-flip-animate) .vue-flow__node {
+  transition:
+    transform 0.48s cubic-bezier(0.4, 0, 0.2, 1),
+    width 0.48s cubic-bezier(0.4, 0, 0.2, 1),
+    height 0.48s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.35s ease;
 }
 .vue-flow__edge path,
 .vue-flow__edge .vue-flow__edge-text {

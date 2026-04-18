@@ -10,6 +10,8 @@ const props = defineProps<{
   subtitle?: string
   /** Shown when the box is focused (layer drill). */
   notes?: string
+  /** Free-text "what does this module do" — surfaced in the AI prompt. */
+  description?: string
   language?: string
   boxColor?: NamedBoxColor | string
   pinned: boolean
@@ -22,6 +24,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'toggle-pin': [MouseEvent]
   'cycle-color': []
+  rename: [string]
+  'description-change': [string]
 }>()
 
 const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
@@ -95,6 +99,59 @@ watch(
   ],
   () => void nextTick(measure),
 )
+
+const editing = ref(false)
+const draftLabel = ref('')
+const draftDescription = ref('')
+const labelInput = ref<HTMLInputElement | null>(null)
+
+function startEditing() {
+  if (editing.value) return
+  draftLabel.value = String(props.label ?? '')
+  draftDescription.value = String(props.description ?? '')
+  editing.value = true
+  void nextTick(() => {
+    const el = labelInput.value
+    if (el) {
+      el.focus()
+      el.select()
+    }
+  })
+}
+
+function commitEdit() {
+  if (!editing.value) return
+  const newLabel = draftLabel.value.trim()
+  if (newLabel && newLabel !== String(props.label ?? '')) {
+    emit('rename', newLabel)
+  }
+  const newDesc = draftDescription.value
+  if (newDesc !== String(props.description ?? '')) {
+    emit('description-change', newDesc)
+  }
+  editing.value = false
+}
+
+function cancelEdit() {
+  editing.value = false
+}
+
+function onLabelKeydown(ev: KeyboardEvent) {
+  if (ev.key === 'Enter') {
+    ev.preventDefault()
+    commitEdit()
+  } else if (ev.key === 'Escape') {
+    ev.preventDefault()
+    cancelEdit()
+  }
+}
+
+function onDescriptionKeydown(ev: KeyboardEvent) {
+  if (ev.key === 'Escape') {
+    ev.preventDefault()
+    cancelEdit()
+  }
+}
 </script>
 
 <template>
@@ -107,6 +164,7 @@ watch(
       'project-box--pinned': pinned,
       'project-box--tools-wide': showColorTool,
       'project-box--pin-only': showPinTool && !showColorTool,
+      'project-box--editing': editing,
     }"
     :style="{ '--box-accent': accent }"
   >
@@ -147,10 +205,66 @@ watch(
       <LanguageIcon :name="iconLang" />
     </div>
 
-    <div class="project-box__body">
-      <div ref="titleEl" class="title">{{ label }}</div>
+    <div
+      class="project-box__body"
+      @dblclick.stop="startEditing"
+    >
+      <div ref="titleEl" class="title" :title="'Double-click to rename / edit description'">{{ label }}</div>
       <div v-if="subtitle && !tightLayout" class="subtitle">{{ subtitle }}</div>
+      <div
+        v-if="description && !tightLayout && !focused"
+        class="description-preview"
+        :title="description"
+      >
+        {{ description }}
+      </div>
       <div v-if="focused && notes" class="drill-note">{{ notes }}</div>
+      <div v-if="focused && description" class="description-full" :title="description">
+        {{ description }}
+      </div>
+    </div>
+
+    <!--
+      Editor lives outside the box flow so it can grow vertically beyond the small (200×72) node
+      bounds. Pointer events are stopped so Vue Flow doesn't drag/zoom while typing.
+    -->
+    <div
+      v-if="editing"
+      class="project-box__editor nodrag nopan"
+      role="dialog"
+      aria-label="Edit module"
+      @pointerdown.stop
+      @mousedown.stop
+      @click.stop
+      @dblclick.stop
+      @keydown.stop
+    >
+      <label class="editor-field">
+        <span class="editor-label">Name</span>
+        <input
+          ref="labelInput"
+          v-model="draftLabel"
+          class="title-input"
+          spellcheck="false"
+          @keydown="onLabelKeydown"
+        />
+      </label>
+      <label class="editor-field">
+        <span class="editor-label">Description / AI prompt purpose</span>
+        <textarea
+          v-model="draftDescription"
+          class="description-input"
+          rows="5"
+          spellcheck="false"
+          placeholder="Describe what this module should do (included in the generated AI prompt)…"
+          @keydown="onDescriptionKeydown"
+        />
+      </label>
+      <div class="editor-actions">
+        <span class="edit-hint">Enter in name to save · Esc to cancel</span>
+        <button type="button" class="editor-btn" @click="cancelEdit">Cancel</button>
+        <button type="button" class="editor-btn editor-btn--primary" @click="commitEdit">Save</button>
+      </div>
     </div>
   </div>
 </template>
@@ -356,5 +470,136 @@ watch(
   max-height: 0;
   transform: translateY(4px);
   pointer-events: none;
+}
+.description-preview {
+  margin-top: clamp(2px, 0.5vmin, 6px);
+  font-size: clamp(0.6rem, min(1.4vmin, 2.2cqh), 0.8rem);
+  color: #64748b;
+  line-height: 1.3;
+  font-style: italic;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: 2.6em;
+}
+.description-full {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgb(15 23 42 / 0.12);
+  font-size: 11px;
+  line-height: 1.45;
+  color: #334155;
+  white-space: pre-wrap;
+  overflow: auto;
+  flex: 0 1 auto;
+  min-height: 0;
+  text-align: left;
+  font-style: italic;
+}
+/* Allow the floating editor to render above/around the small (200×72) box without being clipped. */
+.project-box--editing {
+  overflow: visible;
+}
+.project-box__editor {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 50;
+  width: max(280px, 100%);
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #ffffff;
+  border: 1px solid var(--box-accent);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgb(15 23 42 / 0.18), 0 2px 6px rgb(15 23 42 / 0.08);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  cursor: auto;
+  text-align: left;
+}
+.editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.editor-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  font-weight: 600;
+}
+.title-input {
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 14px;
+  color: #0f172a;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 5px 8px;
+  background: #fff;
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+.description-input {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #0f172a;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 6px 8px;
+  background: #fff;
+  outline: none;
+  resize: vertical;
+  min-height: 80px;
+  max-height: 240px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.description-input:focus,
+.title-input:focus {
+  border-color: var(--box-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--box-accent) 20%, transparent);
+}
+.editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.edit-hint {
+  font-size: 10px;
+  color: #94a3b8;
+  font-style: italic;
+  margin-right: auto;
+}
+.editor-btn {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid #cbd5e1;
+  background: #f1f5f9;
+  color: #0f172a;
+  cursor: pointer;
+}
+.editor-btn:hover {
+  background: #e2e8f0;
+}
+.editor-btn--primary {
+  background: var(--box-accent);
+  border-color: var(--box-accent);
+  color: #fff;
+}
+.editor-btn--primary:hover {
+  filter: brightness(0.95);
 }
 </style>
