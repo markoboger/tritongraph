@@ -17,7 +17,7 @@ import {
   stripLayerFlipsFromNodes,
   type LayerFlipRect,
 } from '../graph/layerDrillFlip'
-import { DEP_SOURCE_HANDLE, DEP_TARGET_HANDLE } from '../graph/handles'
+import { edgeContributesToClasspathDepth, isAggregateEdge } from '../graph/relationKinds'
 
 const {
   getNodes,
@@ -76,13 +76,12 @@ const FIT_DURATION_MS = 480
 const FLIP_EASING = 'cubic-bezier(0.4, 0, 0.2, 1)'
 const FLIP_FLOW_CLASS = 'tg-layer-flip-animate'
 
+/** Hide non-aggregate depth edges while module FLIP runs; aggregate-style relations stay visible. */
 function isDependencyEdge(e: GraphEdge): boolean {
-  const sh = String(e.sourceHandle ?? DEP_SOURCE_HANDLE)
-  const th = String(e.targetHandle ?? DEP_TARGET_HANDLE)
-  return sh === DEP_SOURCE_HANDLE && th === DEP_TARGET_HANDLE
+  return edgeContributesToClasspathDepth(e) && !isAggregateEdge(e)
 }
 
-/** Hide classpath “depends on” edges while module FLIP runs; aggregate edges stay visible. */
+/** Hide classpath-style depth edges while module FLIP runs; aggregate edges stay visible. */
 function withDependencyEdgesHiddenDuringFlip(es: GraphEdge[]): GraphEdge[] {
   return es.map((e) => ({
     ...e,

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Position, type NodeTypesObject } from '@vue-flow/core'
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import FlowProjectNode from './components/diagram/FlowProjectNode.vue'
 import GroupNode from './components/GroupNode.vue'
 import GraphWorkspace from './components/GraphWorkspace.vue'
@@ -11,10 +11,16 @@ import { slimEdgesForExport, slimNodesForExport } from './graph/slimFlow'
 import { boxColorForId } from './graph/boxColors'
 import { languageIconForId } from './graph/languages'
 import {
-  annotateCrossLayerEdgePathOptions,
+  applyHandleAnchorAlignment,
   layoutDepthInViewport,
   mergeEdgeHiddenForInvisibleEndpoints,
+  routeSmoothstepEdgesInViewport,
 } from './graph/layoutDependencyLayers'
+import {
+  relationTypeKeysSignature,
+  relationTypesFromSignature,
+  shouldHideEdgeForRelationFilter,
+} from './graph/relationVisibility'
 import { drillNoteForModuleId } from './graph/sbtStyleDrillNotes'
 import { listSbtExamples, sbtExampleSourceToYaml } from './sbt/sbtExampleBuilds'
 import { parseBuildSbt } from './sbt/parseBuildSbt'
@@ -27,6 +33,34 @@ const status = ref('')
 
 const graphRef = ref<InstanceType<typeof GraphWorkspace> | null>(null)
 const examplesMenu = ref<HTMLDetailsElement | null>(null)
+/** Checked relation types are visible (`false` means hidden). Synced from current edges’ labels. */
+const relationTypeVisibility = ref<Record<string, boolean>>({})
+
+const relationTypesMenuSig = computed(() => relationTypeKeysSignature(edges.value))
+
+watch(relationTypesMenuSig, (sig) => {
+  const keys = relationTypesFromSignature(sig)
+  const prev = relationTypeVisibility.value
+  const next: Record<string, boolean> = {}
+  for (const k of keys) {
+    next[k] = prev[k] !== false
+  }
+  relationTypeVisibility.value = next
+})
+
+const relationTypesList = computed(() => relationTypesFromSignature(relationTypesMenuSig.value))
+
+function mergeEdgesWithVisibility(es: any[]) {
+  return mergeEdgeHiddenForInvisibleEndpoints(es, nodes.value, {
+    hideEdgeForRelation: (e) => shouldHideEdgeForRelationFilter(e, relationTypeVisibility.value),
+  })
+}
+
+function setRelationTypeVisible(relationKey: string, visible: boolean) {
+  relationTypeVisibility.value = { ...relationTypeVisibility.value, [relationKey]: visible }
+  edges.value = mergeEdgesWithVisibility(edges.value)
+  void nextTick(() => graphRef.value?.refreshEdgeEmphasis?.())
+}
 
 const showYamlEditor = ref(true)
 
@@ -83,11 +117,12 @@ function scheduleRelayoutFromResize() {
       await waitFrameLayout()
       const vp = readFlowViewport()
       nodes.value = layoutDepthInViewport(nodes.value, edges.value, vp)
-      edges.value = mergeEdgeHiddenForInvisibleEndpoints(
-        annotateCrossLayerEdgePathOptions(nodes.value, edges.value, vp),
-        nodes.value,
+      edges.value = mergeEdgesWithVisibility(
+        routeSmoothstepEdgesInViewport(nodes.value, edges.value, vp),
       )
+      nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
       await nextTick()
+      graphRef.value?.refreshEdgeEmphasis?.()
       await graphRef.value?.fitToViewport()
     })()
   }, 160)
@@ -106,14 +141,15 @@ async function applyDoc(text: string, name: string, preferSaved: boolean) {
     type: edge.type ?? 'smoothstep',
   }))
   nodes.value = layoutDepthInViewport(n, flowEdges, vp)
-  edges.value = mergeEdgeHiddenForInvisibleEndpoints(
-    annotateCrossLayerEdgePathOptions(nodes.value, flowEdges, vp),
-    nodes.value,
+  edges.value = mergeEdgesWithVisibility(
+    routeSmoothstepEdgesInViewport(nodes.value, flowEdges, vp),
   )
+  nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
   perspectiveName.value = p ?? 'dependencies'
   fileName.value = name
   status.value = `Loaded ${n.length} modules, ${e.length} relations — depth columns, vertical fill (auto-fit).`
   await nextTick()
+  graphRef.value?.refreshEdgeEmphasis?.()
   await graphRef.value?.resetView()
 }
 
@@ -187,12 +223,11 @@ async function autoLayout() {
   await waitFrameLayout()
   const vp = readFlowViewport()
   nodes.value = layoutDepthInViewport(nodes.value, edges.value, vp)
-  edges.value = mergeEdgeHiddenForInvisibleEndpoints(
-    annotateCrossLayerEdgePathOptions(nodes.value, edges.value, vp),
-    nodes.value,
-  )
+  edges.value = mergeEdgesWithVisibility(routeSmoothstepEdgesInViewport(nodes.value, edges.value, vp))
+  nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
   status.value = 'Re-applied depth-layer layout (columns = dependency depth, vertical fill per column).'
   await nextTick()
+  graphRef.value?.refreshEdgeEmphasis?.()
   await graphRef.value?.fitToViewport()
 }
 
@@ -222,12 +257,13 @@ async function addRootModule() {
     edges.value,
     vp,
   )
-  edges.value = mergeEdgeHiddenForInvisibleEndpoints(
-    annotateCrossLayerEdgePathOptions(nodes.value, edges.value, vp),
-    nodes.value,
-  )
-  status.value = `Added ${id} — double-click to rename.`
+      edges.value = mergeEdgesWithVisibility(
+        routeSmoothstepEdgesInViewport(nodes.value, edges.value, vp),
+      )
+      nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
+      status.value = `Added ${id} — double-click to rename.`
   await nextTick()
+  graphRef.value?.refreshEdgeEmphasis?.()
   await graphRef.value?.fitToViewport()
 }
 
@@ -318,6 +354,28 @@ onUnmounted(() => {
           </template>
         </div>
       </details>
+      <details class="examples-menu relations-menu">
+        <summary class="btn menu-summary">Relations</summary>
+        <div class="menu-panel" role="menu" aria-label="Relation types visible in the diagram">
+          <template v-if="relationTypesList.length">
+            <label
+              v-for="rel in relationTypesList"
+              :key="rel"
+              class="menu-check"
+            >
+              <input
+                type="checkbox"
+                :checked="relationTypeVisibility[rel] !== false"
+                @change="
+                  setRelationTypeVisible(rel, ($event.target as HTMLInputElement).checked)
+                "
+              />
+              <span class="menu-check__text">{{ rel }}</span>
+            </label>
+          </template>
+          <div v-else class="menu-empty">No relations in this diagram.</div>
+        </div>
+      </details>
       <label class="btn file">
         Open YAML
         <input type="file" accept=".yaml,.yml,text/yaml" hidden @change="onFilePick" />
@@ -332,7 +390,13 @@ onUnmounted(() => {
 
     <div class="main" :class="{ 'main--no-side': !showYamlEditor }">
       <div class="flow-wrap">
-        <GraphWorkspace ref="graphRef" v-model:nodes="nodes" v-model:edges="edges" :node-types="nodeTypes" />
+        <GraphWorkspace
+          ref="graphRef"
+          v-model:nodes="nodes"
+          v-model:edges="edges"
+          :node-types="nodeTypes"
+          :relation-type-visibility="relationTypeVisibility"
+        />
       </div>
       <aside v-if="showYamlEditor" class="side">
         <pre class="yaml">{{ yamlPreview }}</pre>
@@ -448,6 +512,34 @@ onUnmounted(() => {
 .menu-item:focus-visible {
   outline: 2px solid #93c5fd;
   outline-offset: 1px;
+}
+.menu-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #0f172a;
+  cursor: pointer;
+  user-select: none;
+}
+.menu-check:hover {
+  background: #f1f5f9;
+}
+.menu-check input {
+  margin-top: 2px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.menu-check__text {
+  flex: 1;
+  line-height: 1.35;
+}
+.menu-empty {
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #64748b;
 }
 .main {
   flex: 1;

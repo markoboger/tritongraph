@@ -3,14 +3,9 @@ import type { IlographDocument, IlographResource } from '../ilograph/types'
 import { resourceKey, splitRefs } from '../ilograph/refs'
 import { boxColorForId, isNamedBoxColor } from './boxColors'
 import { languageIconForId } from './languages'
-import {
-  dependencyEdgeLabelOffsetStyle,
-  dependencyEdgeStyle,
-  markersForAggregateEdge,
-  markersForRelation,
-} from './edgeTheme'
+import { dependencyEdgeLabelStyle, dependencyEdgeStyle, markersForAggregateEdge, markersForRelation } from './edgeTheme'
 import { isAggregateEdge, strokeForIlographRelation } from './relationKinds'
-import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE, DEP_SOURCE_HANDLE, DEP_TARGET_HANDLE } from './handles'
+import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE } from './handles'
 import { drillNoteForModuleId } from './sbtStyleDrillNotes'
 
 const DEP_PERSPECTIVE_NAMES = new Set(['dependencies', 'module dependencies', 'depends on'])
@@ -112,11 +107,10 @@ export function ilographDocumentToFlow(
             id,
             source: f,
             target: t,
-            sourceHandle: aggregate ? AGG_SOURCE_HANDLE : DEP_SOURCE_HANDLE,
-            targetHandle: aggregate ? AGG_TARGET_HANDLE : DEP_TARGET_HANDLE,
+            sourceHandle: AGG_SOURCE_HANDLE,
+            targetHandle: AGG_TARGET_HANDLE,
             label: rel.label ?? 'depends on',
-            labelStyle: dependencyEdgeLabelOffsetStyle(),
-            labelBgStyle: dependencyEdgeLabelOffsetStyle(),
+            labelStyle: dependencyEdgeLabelStyle(),
             ...markers,
             style: dependencyEdgeStyle(stroke),
           })

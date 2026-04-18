@@ -7,32 +7,102 @@ import {
   useVueFlow,
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
-import { computed, nextTick, provide, reactive, ref } from 'vue'
+import { computed, nextTick, provide, reactive, ref, watch } from 'vue'
 import DiagramContainerView from './diagram/DiagramContainerView.vue'
 import GraphDrillIn from './GraphDrillIn.vue'
 import { buildDiagramRootModel } from '../diagram/model/buildRootDiagram'
+import { dependencyEdgeLabelStyle, dependencyEdgeStyle, dependencyMarker, DEP_EDGE_STROKE } from '../graph/edgeTheme'
+import { shouldHideEdgeForRelationFilter } from '../graph/relationVisibility'
 import {
-  dependencyEdgeLabelOffsetStyle,
-  dependencyEdgeStyle,
-  dependencyMarker,
-  DEP_EDGE_STROKE,
-} from '../graph/edgeTheme'
-import {
-  annotateCrossLayerEdgePathOptions,
+  applyHandleAnchorAlignment,
   layoutDepthInViewport,
   mergeEdgeHiddenForInvisibleEndpoints,
+  routeSmoothstepEdgesInViewport,
 } from '../graph/layoutDependencyLayers'
-import { DEP_SOURCE_HANDLE, DEP_TARGET_HANDLE } from '../graph/handles'
+import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE } from '../graph/handles'
 
 const nodes = defineModel<any[]>('nodes', { required: true })
 const edges = defineModel<any[]>('edges', { required: true })
 
-defineProps<{
+const props = defineProps<{
   nodeTypes: NodeTypesObject
+  /** When a key is `false`, edges with that relation label are hidden (merged into `hidden`). */
+  relationTypeVisibility?: Record<string, boolean>
 }>()
 
 const { fitView } = useVueFlow()
 const drillRef = ref<InstanceType<typeof GraphDrillIn> | null>(null)
+
+const hoveredNodeId = ref<string | null>(null)
+/** When set, only this edge is stroke-emphasized (takes precedence over node-hover). */
+const hoveredEdgeId = ref<string | null>(null)
+
+function mergeEdgeEmphClass(existing: string | undefined, emph: boolean): string | undefined {
+  const parts = new Set(String(existing ?? '').split(/\s+/).filter(Boolean))
+  parts.delete('tg-edge-emph')
+  if (emph) parts.add('tg-edge-emph')
+  const out = [...parts].join(' ')
+  return out || undefined
+}
+
+function edgeVisualSignature(arr: typeof edges.value): string {
+  return arr
+    .map(
+      (e) =>
+        `${String(e.id)}:${(e as { hidden?: boolean }).hidden === true ? 1 : 0}:${(e as { class?: string }).class ?? ''}`,
+    )
+    .join('\n')
+}
+
+/**
+ * Sets stroke emphasis (`tg-edge-emph`) and `hidden` from endpoints + relation filter, with a
+ * peek-through: relation-filtered edges stay visible while an endpoint box is hovered.
+ */
+function syncEdgeVisualState() {
+  const hid = hoveredNodeId.value
+  const heid = hoveredEdgeId.value
+  const hiddenIds = new Set(nodes.value.filter((n) => n.hidden).map((n) => String(n.id)))
+
+  const next = edges.value.map((e) => {
+    const id = String(e.id)
+    const emph = heid ? id === heid : !!(hid && (e.source === hid || e.target === hid))
+    const newClass = mergeEdgeEmphClass((e as { class?: string }).class, emph)
+
+    const endHidden = hiddenIds.has(String(e.source)) || hiddenIds.has(String(e.target))
+    const relHidden = shouldHideEdgeForRelationFilter(e, props.relationTypeVisibility)
+    const incident = !!(hid && (String(e.source) === hid || String(e.target) === hid))
+    const newHidden = endHidden || (relHidden && !incident)
+
+    const prevH = (e as { hidden?: boolean }).hidden === true
+    const prevC = (e as { class?: string }).class
+    if (newClass === prevC && newHidden === prevH) return e
+    return { ...e, class: newClass, hidden: newHidden }
+  })
+  if (edgeVisualSignature(next) === edgeVisualSignature(edges.value)) return
+  edges.value = next
+}
+
+watch([hoveredNodeId, hoveredEdgeId], () => void nextTick(() => syncEdgeVisualState()))
+
+watch(
+  () => props.relationTypeVisibility,
+  () => void nextTick(() => syncEdgeVisualState()),
+  { deep: true },
+)
+
+watch(
+  () =>
+    nodes.value
+      .map((n) => `${String((n as { id: string }).id)}:${(n as { hidden?: boolean }).hidden === true ? 1 : 0}`)
+      .join('|'),
+  () => void nextTick(() => syncEdgeVisualState()),
+)
+
+watch(
+  () => edges.value,
+  () => void nextTick(() => syncEdgeVisualState()),
+  { flush: 'post' },
+)
 
 /** Synced from GraphDrillIn so module chrome can show the pin only in zoom/layer-focus context. */
 const graphFocusUi = reactive({ containerFocusId: null as string | null })
@@ -63,9 +133,14 @@ async function relayoutViewport() {
   const vp = readFlowViewport()
   nodes.value = layoutDepthInViewport(nodes.value, edges.value, vp)
   edges.value = mergeEdgeHiddenForInvisibleEndpoints(
-    annotateCrossLayerEdgePathOptions(nodes.value, edges.value, vp),
+    routeSmoothstepEdgesInViewport(nodes.value, edges.value, vp),
     nodes.value,
+    {
+      hideEdgeForRelation: (e) => shouldHideEdgeForRelationFilter(e, props.relationTypeVisibility),
+    },
   )
+  nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
+  void nextTick(() => syncEdgeVisualState())
 }
 
 provide('tritonRelayoutViewport', relayoutViewport)
@@ -78,34 +153,58 @@ const defaultEdgeOptions = {
   style: dependencyEdgeStyle(DEP_EDGE_STROKE),
   markerStart: undefined,
   markerEnd: dependencyMarker(DEP_EDGE_STROKE),
-  sourceHandle: DEP_SOURCE_HANDLE,
-  targetHandle: DEP_TARGET_HANDLE,
-  labelStyle: dependencyEdgeLabelOffsetStyle(),
-  labelBgStyle: dependencyEdgeLabelOffsetStyle(),
+  sourceHandle: AGG_SOURCE_HANDLE,
+  targetHandle: AGG_TARGET_HANDLE,
+  labelStyle: dependencyEdgeLabelStyle(),
 }
 
 function uid(): string {
   return globalThis.crypto?.randomUUID?.() ?? `id-${Math.random().toString(16).slice(2)}`
 }
 
+function onNodeMouseEnter(ev: { node: { id: string } }) {
+  hoveredNodeId.value = ev.node.id
+}
+
+function onNodeMouseLeave(ev: { node: { id: string } }) {
+  if (hoveredNodeId.value === ev.node.id) hoveredNodeId.value = null
+}
+
+function onPaneClickClearHover() {
+  hoveredNodeId.value = null
+  hoveredEdgeId.value = null
+}
+
+function onEdgeMouseEnter(ev: { edge: { id: string } }) {
+  hoveredEdgeId.value = String(ev.edge.id)
+}
+
+function onEdgeMouseLeave(ev: { edge: { id: string } }) {
+  if (hoveredEdgeId.value === String(ev.edge.id)) hoveredEdgeId.value = null
+}
+
 function handleConnect(conn: Connection) {
   if (!conn.source || !conn.target) return
-  edges.value = [
+  const next = [
     ...edges.value,
     {
       id: `e-${uid()}`,
       source: conn.source,
       target: conn.target,
-      sourceHandle: conn.sourceHandle ?? DEP_SOURCE_HANDLE,
-      targetHandle: conn.targetHandle ?? DEP_TARGET_HANDLE,
+      sourceHandle: conn.sourceHandle ?? AGG_SOURCE_HANDLE,
+      targetHandle: conn.targetHandle ?? AGG_TARGET_HANDLE,
       label: 'depends on',
-      labelStyle: dependencyEdgeLabelOffsetStyle(),
-      labelBgStyle: dependencyEdgeLabelOffsetStyle(),
+      labelStyle: dependencyEdgeLabelStyle(),
       markerStart: undefined,
       markerEnd: dependencyMarker(DEP_EDGE_STROKE),
       style: dependencyEdgeStyle(DEP_EDGE_STROKE),
     },
   ]
+  edges.value = mergeEdgeHiddenForInvisibleEndpoints(next, nodes.value, {
+    hideEdgeForRelation: (e) => shouldHideEdgeForRelationFilter(e, props.relationTypeVisibility),
+  })
+  nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
+  void nextTick(() => syncEdgeVisualState())
   void fitToViewport()
 }
 
@@ -136,7 +235,7 @@ async function fitToViewport() {
   await fitView({ padding: 0.05, duration: 220, maxZoom: 2.2, minZoom: 0.05 })
 }
 
-defineExpose({ resetView, fitToViewport })
+defineExpose({ resetView, fitToViewport, refreshEdgeEmphasis: syncEdgeVisualState })
 </script>
 
 <template>
@@ -164,6 +263,11 @@ defineExpose({ resetView, fitToViewport })
     delete-key-code="Delete"
     @connect="handleConnect"
     @node-double-click="onNodeDoubleClick"
+    @node-mouse-enter="onNodeMouseEnter"
+    @node-mouse-leave="onNodeMouseLeave"
+    @edge-mouse-enter="onEdgeMouseEnter"
+    @edge-mouse-leave="onEdgeMouseLeave"
+    @pane-click="onPaneClickClearHover"
   >
       <GraphDrillIn ref="drillRef" />
       <Background pattern-color="#e2e8f0" :gap="18" />
@@ -197,13 +301,71 @@ defineExpose({ resetView, fitToViewport })
 }
 .vue-flow__edge path,
 .vue-flow__edge .vue-flow__edge-text {
-  transition: opacity 0.35s ease;
+  transition:
+    opacity 0.35s ease,
+    stroke-width 0.15s ease;
+}
+
+/* Edge path: square caps (no round “dots” at terminals); weight + emphasis below. */
+.flow.vue-flow .vue-flow__edge .vue-flow__edge-path {
+  stroke-linecap: butt !important;
+  stroke-linejoin: miter !important;
+  stroke-width: 1.35 !important;
+}
+
+.flow.vue-flow .vue-flow__edge.tg-edge-emph .vue-flow__edge-path {
+  stroke-width: 2.75 !important;
+}
+
+.flow.vue-flow .vue-flow__edge.tg-edge-emph .vue-flow__edge-text {
+  opacity: 0.85;
+}
+
+/* Core marks edges `.inactive` unless selectable or @edge-click; re-enable hits so @edge-mouse-* runs (pan is off). */
+.flow.vue-flow .vue-flow__edge.inactive {
+  pointer-events: all;
+}
+
+/* @vue-flow/core always renders a label rect with theme fill; hide it for caption-only labels. */
+.flow.vue-flow .vue-flow__edge-textbg {
+  display: none;
 }
 
 .vue-flow__node.tg-dimmed {
   opacity: 0.4;
   pointer-events: none;
 }
+
+/* Relation-colored circular anchors on the module/group outline (not edge geometry). */
+.flow.vue-flow .vue-flow__handle.tg-handle-anchor {
+  pointer-events: all !important;
+  z-index: 30 !important;
+  border-radius: 50% !important;
+  width: 10px !important;
+  min-width: 10px !important;
+  height: 10px !important;
+  min-height: 10px !important;
+  background: var(--tg-handle-stroke, #64748b) !important;
+  border: 1.5px solid color-mix(in srgb, var(--tg-handle-stroke, #64748b) 72%, #0f172a) !important;
+  box-sizing: border-box !important;
+  transition:
+    box-shadow 0.15s ease,
+    filter 0.15s ease;
+}
+
+.flow.vue-flow .vue-flow__handle.tg-handle-anchor:hover {
+  filter: brightness(1.08);
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.96),
+    0 0 0 5px color-mix(in srgb, var(--tg-handle-stroke, #64748b) 48%, transparent);
+}
+
+.vue-flow__node.tg-dimmed .vue-flow__handle.tg-handle-anchor {
+  opacity: 0.42;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
 .vue-flow__edge.tg-dimmed path {
   opacity: 0.35 !important;
 }

@@ -1,3 +1,4 @@
+import { aggregateSourceHandleId, DEP_SOURCE_HANDLE } from './handles'
 import { edgeContributesToClasspathDepth } from './relationKinds'
 
 /** Top + bottom gutter inside each layout region for smoothstep edges that skip ≥1 depth column. */
@@ -120,11 +121,24 @@ export function computeModuleHiddenForDependencyLayout(
  * Do not OR with the previous `e.hidden`: after unpinning, endpoints become visible and edges must
  * show again; stale `hidden: true` from the collapsed layout would otherwise never clear.
  */
-export function mergeEdgeHiddenForInvisibleEndpoints(edges: readonly any[], nodes: readonly any[]): any[] {
+export type MergeEdgeHiddenOptions = {
+  /** When true, edge is hidden in addition to endpoint-based hiding (e.g. relation-type filter). */
+  hideEdgeForRelation?: (e: any) => boolean
+}
+
+export function mergeEdgeHiddenForInvisibleEndpoints(
+  edges: readonly any[],
+  nodes: readonly any[],
+  opts?: MergeEdgeHiddenOptions,
+): any[] {
   const hiddenIds = new Set(nodes.filter((n) => n.hidden).map((n) => String(n.id)))
+  const relHide = opts?.hideEdgeForRelation
   return edges.map((e) => ({
     ...e,
-    hidden: hiddenIds.has(String(e.source)) || hiddenIds.has(String(e.target)),
+    hidden:
+      hiddenIds.has(String(e.source)) ||
+      hiddenIds.has(String(e.target)) ||
+      (relHide?.(e) ?? false),
   }))
 }
 
@@ -662,6 +676,166 @@ function stripRoutingFromEdge(edge: any): any {
 }
 
 /**
+ * Assign distinct **source** handles (`agg-out-0` …) for parallel depth relations from the same
+ * module (classpath, aggregate, or any labeled relation) so Vue Flow gets distinct anchor points.
+ */
+export function annotateParallelAggregateEdgeOffsets(
+  nodes: readonly any[],
+  edges: readonly any[],
+): any[] {
+  const byId = new Map<string, any>(nodes.map((n) => [String(n.id), n]))
+  const out = edges.map((e) => ({ ...e }))
+  const byOutId = new Map(out.map((e) => [String(e.id), e]))
+
+  for (const e of out) {
+    if (!edgeContributesToClasspathDepth(e)) continue
+    const sh = String((e as { sourceHandle?: string }).sourceHandle ?? '')
+    if (sh === DEP_SOURCE_HANDLE || sh === 'dep-out') {
+      e.sourceHandle = aggregateSourceHandleId(0)
+    } else if (sh === 'agg-out') {
+      e.sourceHandle = aggregateSourceHandleId(0)
+    }
+  }
+
+  function centerYWorld(nodeId: string): number {
+    const n = byId.get(nodeId)
+    if (!n) return 0
+    const top = worldTopLeft(nodeId, byId).y
+    const h = typeof n.height === 'number' && Number.isFinite(n.height) ? n.height : MODULE_H
+    return top + h / 2
+  }
+
+  const groups = new Map<string, string[]>()
+  for (const e of out) {
+    if ((e as { hidden?: boolean }).hidden) continue
+    if (!edgeContributesToClasspathDepth(e)) continue
+    const src = byId.get(String(e.source))
+    const tgt = byId.get(String(e.target))
+    if (!src || !tgt) continue
+    if (parentKey(src) !== parentKey(tgt)) continue
+    const region = parentKey(src) ?? '__root__'
+    const key = `${region}|${e.source}`
+    const ids = groups.get(key) ?? []
+    ids.push(String(e.id))
+    groups.set(key, ids)
+  }
+
+  for (const ids of groups.values()) {
+    if (ids.length < 2) continue
+    ids.sort((a, b) => {
+      const ea = byOutId.get(a)!
+      const eb = byOutId.get(b)!
+      const dy = centerYWorld(String(ea.target)) - centerYWorld(String(eb.target))
+      if (dy !== 0) return dy
+      return String(ea.target).localeCompare(String(eb.target))
+    })
+    for (let i = 0; i < ids.length; i++) {
+      const edge = byOutId.get(ids[i]!)!
+      edge.sourceHandle = aggregateSourceHandleId(i)
+    }
+  }
+
+  return out
+}
+
+const AGG_LANE_STAGGER_PX = 5
+
+/**
+ * Route depth-relation smoothstep edges through the region’s top/bottom padding lanes (outside the
+ * module stack band) with a small stagger so parallel lines stay separated and off boxes.
+ */
+export function annotateAggregateVerticalPaths(
+  nodes: readonly any[],
+  edges: readonly any[],
+  rootViewport: ViewportSize,
+): any[] {
+  const byId = new Map<string, any>(nodes.map((n) => [String(n.id), n]))
+
+  type SlotEdge = { id: string; slot: number }
+  const bySourceRegion = new Map<string, SlotEdge[]>()
+
+  for (const e of edges) {
+    if ((e as { hidden?: boolean }).hidden) continue
+    if (!edgeContributesToClasspathDepth(e)) continue
+    const src = byId.get(String(e.source))
+    const tgt = byId.get(String(e.target))
+    if (!src || !tgt) continue
+    if (parentKey(src) !== parentKey(tgt)) continue
+    const region = parentKey(src) ?? '__root__'
+    const key = `${region}|${e.source}`
+    const sh = String((e as { sourceHandle?: string }).sourceHandle ?? '')
+    const m = sh.match(/^agg-out-(\d+)$/)
+    const slot = m ? Number(m[1]) : 0
+    const list = bySourceRegion.get(key) ?? []
+    list.push({ id: String((e as { id: string }).id), slot })
+    bySourceRegion.set(key, list)
+  }
+
+  const indexInFan = new Map<string, { idx: number; count: number }>()
+  for (const list of bySourceRegion.values()) {
+    list.sort((a, b) => a.slot - b.slot || a.id.localeCompare(b.id))
+    const n = list.length
+    for (let i = 0; i < n; i++) {
+      indexInFan.set(list[i]!.id, { idx: i, count: n })
+    }
+  }
+
+  const depthMemo = new Map<string | undefined, Map<string, number>>()
+  function depthsIn(region: string | undefined): Map<string, number> {
+    if (!depthMemo.has(region)) {
+      depthMemo.set(region, dependencyDepthsInRegion(nodes, edges, region))
+    }
+    return depthMemo.get(region)!
+  }
+
+  return edges.map((edge) => {
+    if (!edgeContributesToClasspathDepth(edge)) return { ...edge }
+    const src = byId.get(String(edge.source))
+    const tgt = byId.get(String(edge.target))
+    if (!src || !tgt) return { ...edge }
+    if (parentKey(src) !== parentKey(tgt)) return { ...edge }
+
+    const regionParent = parentKey(src)
+    const fan = indexInFan.get(String(edge.id))
+    const parallelCount = Math.max(1, fan?.count ?? 1)
+    const dmap = depthsIn(regionParent)
+    const d1 = dmap.get(String(src.id))
+    const d2 = dmap.get(String(tgt.id))
+    const depthOk = d1 !== undefined && d2 !== undefined
+    const depthDelta = depthOk ? Math.abs(d1 - d2) : 0
+    /** Skip lane detour when a single shallow edge can run straight; use lanes when skipping columns or fanning parallels. */
+    const needDetour = (depthOk && depthDelta >= 2) || parallelCount > 1
+    if (!needDetour) {
+      return stripRoutingFromEdge({ ...edge })
+    }
+
+    const regionH =
+      regionParent === undefined
+        ? rootViewport.height
+        : Number(byId.get(regionParent)?.style?.height) || GROUP_MIN_H
+
+    const geo = regionStackMetrics(regionH, regionParent)
+    const originY = regionParent === undefined ? 0 : worldTopLeft(regionParent, byId).y
+
+    const idx = fan?.idx ?? 0
+    const count = parallelCount
+    const useTop = idx % 2 === 0
+    const baseLane = useTop ? geo.laneTopCenterY : geo.laneBottomCenterY
+    const mid = (count - 1) / 2
+    const staggerRaw = (idx - mid) * AGG_LANE_STAGGER_PX
+    const maxSt = Math.max(6, geo.laneEach * 0.38 - 1)
+    const stagger = Math.max(-maxSt, Math.min(maxSt, staggerRaw))
+    const centerY = originY + baseLane + stagger
+
+    const baseOpts = edge.pathOptions && typeof edge.pathOptions === 'object' ? { ...edge.pathOptions } : {}
+    return {
+      ...edge,
+      pathOptions: { ...baseOpts, centerY },
+    }
+  })
+}
+
+/**
  * For edges whose endpoints differ by ≥2 depth columns within the same parent region,
  * set smoothstep `pathOptions.centerY` to the reserved top or bottom routing lane so
  * the path does not run through intermediate modules.
@@ -669,10 +843,9 @@ function stripRoutingFromEdge(edge: any): any {
 export function annotateCrossLayerEdgePathOptions(
   nodes: readonly any[],
   edges: readonly any[],
-  rootViewport: ViewportSize,
+  _rootViewport: ViewportSize,
 ): any[] {
   const byId = new Map<string, any>(nodes.map((n) => [String(n.id), n]))
-  let stripe = 0
 
   return edges.map((edge) => {
     const src = byId.get(String(edge.source))
@@ -683,30 +856,132 @@ export function annotateCrossLayerEdgePathOptions(
     const pkT = parentKey(tgt)
     if (pkS !== pkT) return stripRoutingFromEdge({ ...edge })
 
-    if (!edgeContributesToClasspathDepth(edge)) return stripRoutingFromEdge({ ...edge })
+    /** Cross-column banding used to live here; all labeled depth relations now use {@link annotateAggregateVerticalPaths}. */
+    return stripRoutingFromEdge({ ...edge })
+  })
+}
 
-    const regionParent = pkS
-    const depths = dependencyDepthsInRegion(nodes, edges, regionParent)
-    const d1 = depths.get(String(src.id))
-    const d2 = depths.get(String(tgt.id))
-    if (d1 === undefined || d2 === undefined) return stripRoutingFromEdge({ ...edge })
-    if (Math.abs(d1 - d2) < 2) return stripRoutingFromEdge({ ...edge })
+/** Cross-layer classpath routing, aggregate handle fan-out, then aggregate vertical lanes. */
+export function routeSmoothstepEdgesInViewport(
+  nodes: readonly any[],
+  edges: readonly any[],
+  rootViewport: ViewportSize,
+): any[] {
+  const afterDepth = annotateCrossLayerEdgePathOptions(nodes, edges, rootViewport)
+  const afterHandles = annotateParallelAggregateEdgeOffsets(nodes, afterDepth)
+  return annotateAggregateVerticalPaths(nodes, afterHandles, rootViewport)
+}
 
-    const regionH =
-      regionParent === undefined
-        ? rootViewport.height
-        : Number(byId.get(regionParent)?.style?.height) || GROUP_MIN_H
+/** Per-module handle `top` % (0–100) derived from partner box centers — call after layout + routing. */
+export type ModuleAnchorTops = {
+  aggIn?: number
+  aggOut?: Record<string, number>
+}
 
-    const geo = regionStackMetrics(regionH, regionParent)
-    const originY = regionParent === undefined ? 0 : worldTopLeft(regionParent, byId).y
-    const useTop = (stripe++ & 1) === 0
-    const laneCenterY = originY + (useTop ? geo.laneTopCenterY : geo.laneBottomCenterY)
+type AnchorAcc = {
+  /** Target world Y (flow space) for each incident edge on this handle — median → one shared Y → local %. */
+  aggInY: number[]
+  aggOutY: Map<number, number[]>
+}
 
-    const baseOpts = edge.pathOptions && typeof edge.pathOptions === 'object' ? { ...edge.pathOptions } : {}
-    return {
-      ...edge,
-      pathOptions: { ...baseOpts, centerY: laneCenterY },
+function moduleHeightPx(n: any): number {
+  return typeof n?.height === 'number' && Number.isFinite(n.height) ? n.height : MODULE_H
+}
+
+function worldCenterYForNode(id: string, byId: Map<string, any>): number {
+  const n = byId.get(id)
+  if (!n) return 0
+  const tl = worldTopLeft(id, byId)
+  return tl.y + moduleHeightPx(n) / 2
+}
+
+function roundWorldY(y: number): number {
+  return Math.round(y * 64) / 64
+}
+
+function worldYToLocalTopPct(nodeId: string, worldY: number, byId: Map<string, any>): number {
+  const y = roundWorldY(worldY)
+  const tl = worldTopLeft(nodeId, byId)
+  const h = moduleHeightPx(byId.get(nodeId))
+  if (h < 1) return 50
+  const raw = ((y - tl.y) / h) * 100
+  const clamped = Math.max(8, Math.min(92, raw))
+  return Math.round(clamped * 1000) / 1000
+}
+
+function median(nums: number[]): number | undefined {
+  if (!nums.length) return undefined
+  const s = [...nums].sort((a, b) => a - b)
+  const m = Math.floor(s.length / 2)
+  return s.length % 2 === 1 ? s[m]! : (s[m - 1]! + s[m]!) / 2
+}
+
+/** Aligns module handles so paired endpoints share one world Y (median when several edges share a handle), then local `top` %. */
+export function applyHandleAnchorAlignment(nodes: readonly any[], edges: readonly any[]): any[] {
+  const byId = new Map<string, any>(nodes.map((n) => [String(n.id), n]))
+  const acc = new Map<string, AnchorAcc>()
+
+  function accFor(id: string): AnchorAcc {
+    let a = acc.get(id)
+    if (!a) {
+      a = { aggInY: [], aggOutY: new Map() }
+      acc.set(id, a)
     }
+    return a
+  }
+
+  for (const e of edges) {
+    if ((e as { hidden?: boolean }).hidden) continue
+    if (!edgeContributesToClasspathDepth(e)) continue
+    const s = String(e.source)
+    const t = String(e.target)
+    const src = byId.get(s)
+    const tgt = byId.get(t)
+    if (!src || !tgt) continue
+    if (src.type !== 'module' || tgt.type !== 'module') continue
+    if (parentKey(src) !== parentKey(tgt)) continue
+
+    const midY = roundWorldY((worldCenterYForNode(s, byId) + worldCenterYForNode(t, byId)) / 2)
+
+    const sh = String((e as { sourceHandle?: string }).sourceHandle ?? '')
+    const m = sh.match(/^agg-out-(\d+)$/)
+    const slot = m ? Number(m[1]) : 0
+    const sa = accFor(s)
+    const ta = accFor(t)
+    let arr = sa.aggOutY.get(slot)
+    if (!arr) {
+      arr = []
+      sa.aggOutY.set(slot, arr)
+    }
+    arr.push(midY)
+    ta.aggInY.push(midY)
+  }
+
+  const anchorById = new Map<string, ModuleAnchorTops>()
+  for (const [id, a] of acc) {
+    const tops: ModuleAnchorTops = {}
+    const gIy = median(a.aggInY)
+    if (gIy !== undefined) tops.aggIn = worldYToLocalTopPct(id, gIy, byId)
+    const aggOutRec: Record<string, number> = {}
+    for (const [slot, ys] of a.aggOutY) {
+      const y = median(ys)
+      if (y !== undefined) aggOutRec[String(slot)] = worldYToLocalTopPct(id, y, byId)
+    }
+    if (Object.keys(aggOutRec).length) tops.aggOut = aggOutRec
+    if (Object.keys(tops).length) anchorById.set(id, tops)
+  }
+
+  return nodes.map((n) => {
+    if (n.type !== 'module') return n
+    const tops = anchorById.get(String(n.id))
+    const prev =
+      n.data && typeof n.data === 'object' ? { ...(n.data as Record<string, unknown>) } : {}
+    if (tops && Object.keys(tops).length > 0) {
+      prev.anchorTops = tops
+    } else {
+      delete prev.anchorTops
+    }
+    return { ...n, data: prev }
   })
 }
 

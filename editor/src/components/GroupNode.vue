@@ -1,19 +1,76 @@
 <script setup lang="ts">
 /** Nested diagram container (group): frame only for now; child modules still use root layout. */
-import { Handle, Position } from '@vue-flow/core'
-import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE, DEP_SOURCE_HANDLE, DEP_TARGET_HANDLE } from '../graph/handles'
+import { Handle, Position, useVueFlow } from '@vue-flow/core'
+import { computed } from 'vue'
+import {
+  AGG_TARGET_HANDLE,
+  aggregateFanTopPctForUsedSlots,
+  aggregateSourceHandleId,
+} from '../graph/handles'
+import { edgeContributesToClasspathDepth, strokeColorForFlowEdge } from '../graph/relationKinds'
+import { usedHandlesForNode } from '../graph/usedFlowHandles'
 
-defineProps<{
+const props = defineProps<{
+  id: string
   data: { label: string; subtitle?: string }
 }>()
+
+const { getEdges } = useVueFlow()
+const used = computed(() => usedHandlesForNode(props.id, getEdges.value))
+
+function edgeVisible(e: { hidden?: boolean }): boolean {
+  return !(e as { hidden?: boolean }).hidden
+}
+
+const strokeAggIn = computed(() => {
+  const hit = getEdges.value.find(
+    (e) =>
+      edgeVisible(e) &&
+      edgeContributesToClasspathDepth(e) &&
+      String(e.target) === props.id &&
+      String(e.targetHandle ?? AGG_TARGET_HANDLE) === AGG_TARGET_HANDLE,
+  )
+  return hit ? strokeColorForFlowEdge(hit) : '#64748b'
+})
+
+const strokeAggOutBySlot = computed(() => {
+  const out: Record<number, string> = {}
+  for (const slot of used.value.aggOutSlots) {
+    const hid = aggregateSourceHandleId(slot)
+    const hit = getEdges.value.find(
+      (e) =>
+        edgeVisible(e) &&
+        edgeContributesToClasspathDepth(e) &&
+        String(e.source) === props.id &&
+        String(e.sourceHandle ?? '') === hid,
+    )
+    out[slot] = hit ? strokeColorForFlowEdge(hit) : '#64748b'
+  }
+  return out
+})
 </script>
 
 <template>
   <div class="group-node">
-    <Handle :id="DEP_TARGET_HANDLE" class="gh gh-side-left gh-use-dep" type="target" :position="Position.Left" />
-    <Handle :id="AGG_TARGET_HANDLE" class="gh gh-side-left gh-use-agg" type="target" :position="Position.Left" />
-    <Handle :id="DEP_SOURCE_HANDLE" class="gh gh-side-right gh-use-dep" type="source" :position="Position.Right" />
-    <Handle :id="AGG_SOURCE_HANDLE" class="gh gh-side-right gh-use-agg" type="source" :position="Position.Right" />
+    <Handle
+      :id="AGG_TARGET_HANDLE"
+      class="gh gh-agg-in-target tg-handle-anchor"
+      type="target"
+      :position="Position.Left"
+      :style="{ '--tg-handle-stroke': strokeAggIn }"
+    />
+    <Handle
+      v-for="slot in used.aggOutSlots"
+      :key="aggregateSourceHandleId(slot)"
+      :id="aggregateSourceHandleId(slot)"
+      class="gh gh-agg-fan-out tg-handle-anchor"
+      type="source"
+      :position="Position.Right"
+      :style="{
+        top: `${aggregateFanTopPctForUsedSlots(slot, used.aggOutSlots)}%`,
+        '--tg-handle-stroke': strokeAggOutBySlot[slot] ?? '#64748b',
+      }"
+    />
     <div class="banner">{{ data.label }}</div>
     <div v-if="data.subtitle" class="banner-sub">{{ data.subtitle }}</div>
   </div>
@@ -25,7 +82,8 @@ defineProps<{
   height: 100%;
   border-radius: 12px;
   border: 1px dashed #94a3b8;
-  background: rgb(248 250 252 / 0.6);
+  /* ~10% transparent over opaque fill so routing behind stays visible */
+  background: rgb(248 250 252 / 0.9);
   box-sizing: border-box;
   position: relative;
 }
@@ -47,24 +105,10 @@ defineProps<{
   font-family: ui-sans-serif, system-ui, sans-serif;
 }
 .gh {
-  width: 8px;
-  height: 8px;
-  background: #94a3b8;
-  border: 1px solid #64748b;
   position: absolute;
-  transform: translateY(-50%);
-  z-index: 2;
+  z-index: 12;
 }
-.gh-side-left {
-  left: -6px;
-}
-.gh-side-right {
-  right: -6px;
-}
-.gh-use-dep {
-  top: 42%;
-}
-.gh-use-agg {
-  top: 58%;
+.gh-agg-in-target {
+  top: 50%;
 }
 </style>

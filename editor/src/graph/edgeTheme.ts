@@ -5,29 +5,40 @@ import { SBT_DEPENDS_ON_STROKE } from './relationKinds'
 
 /** Default stroke for new connections and edges without a stored kind. */
 export const DEP_EDGE_STROKE = SBT_DEPENDS_ON_STROKE
-export const DEP_EDGE_STROKE_WIDTH = 2.75
+/** Default edge thickness; use {@link DEP_EDGE_STROKE_WIDTH_EMPHASIS} when an endpoint is hovered. */
+export const DEP_EDGE_STROKE_WIDTH = 1.35
+export const DEP_EDGE_STROKE_WIDTH_EMPHASIS = 2.75
 
 /** Closed arrow head for classpath / `depends on` edges (same marker for start or end). */
 export function dependencyMarker(color: string = DEP_EDGE_STROKE): EdgeMarker {
   return {
     type: MarkerType.ArrowClosed,
     color,
-    width: 14,
-    height: 14,
-    strokeWidth: 1.5,
+    width: 11,
+    height: 11,
+    strokeWidth: 1.25,
   }
 }
 
+/** Stroke color only; width comes from global CSS (thin) + `.tg-edge-emph` when an endpoint is hovered. */
 export function dependencyEdgeStyle(color: string = DEP_EDGE_STROKE) {
   return {
     stroke: color,
-    strokeWidth: DEP_EDGE_STROKE_WIDTH,
   }
 }
 
-/** Move label + background above the edge path (SVG y grows downward). */
-export function dependencyEdgeLabelOffsetStyle(): CSSProperties {
+/** Nudge label above the path (SVG y grows downward). */
+function edgeLabelVerticalNudge(): Pick<CSSProperties, 'transform'> {
   return { transform: 'translateY(-15px)' }
+}
+
+/** ~60% transparent label text (40% opaque). */
+export function dependencyEdgeLabelStyle(): CSSProperties {
+  return {
+    ...edgeLabelVerticalNudge(),
+    opacity: 0.4,
+    fill: '#334155',
+  }
 }
 
 /** Forward: arrow at target (depended-on module). Bidirectional: arrows on both ends. */

@@ -171,8 +171,9 @@ watch(
   padding: clamp(6px, 1.2vmin, 14px) clamp(6px, 1.35vmin, 14px);
   padding-right: clamp(6px, 1.35vmin, 14px);
   border-radius: 8px;
-  border: 1px solid #1e293b;
-  background: #ffffff;
+  border: 1px solid rgb(30 41 59 / 0.88);
+  /* 10% transparent fill so edges behind the box remain visible */
+  background: rgb(255 255 255 / 0.9);
   box-shadow: inset 5px 0 0 0 var(--box-accent), 0 1px 2px rgb(15 23 42 / 0.08);
   font-family: ui-sans-serif, system-ui, sans-serif;
   overflow: hidden;

@@ -2,7 +2,14 @@
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { computed, inject, nextTick } from 'vue'
 import { boxColorForId, nextNamedBoxColor } from '../../graph/boxColors'
-import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE, DEP_SOURCE_HANDLE, DEP_TARGET_HANDLE } from '../../graph/handles'
+import {
+  AGG_TARGET_HANDLE,
+  aggregateFanTopPctForUsedSlots,
+  aggregateSourceHandleId,
+} from '../../graph/handles'
+import type { ModuleAnchorTops } from '../../graph/layoutDependencyLayers'
+import { edgeContributesToClasspathDepth, strokeColorForFlowEdge } from '../../graph/relationKinds'
+import { usedHandlesForNode } from '../../graph/usedFlowHandles'
 import DiagramSection from './DiagramSection.vue'
 import ProjectBox from './ProjectBox.vue'
 
@@ -30,10 +37,56 @@ const props = defineProps<{
     pinned?: boolean
     boxColor?: string
     language?: string
+    /** Set by layout: handle `top` % aligned to partner module centers. */
+    anchorTops?: ModuleAnchorTops
   }
 }>()
 
-const { updateNodeData, getNodes } = useVueFlow()
+const { updateNodeData, getNodes, getEdges } = useVueFlow()
+
+const used = computed(() => usedHandlesForNode(props.id, getEdges.value))
+
+function edgeVisible(e: { hidden?: boolean }): boolean {
+  return !(e as { hidden?: boolean }).hidden
+}
+
+const strokeAggIn = computed(() => {
+  const hit = getEdges.value.find(
+    (e) =>
+      edgeVisible(e) &&
+      edgeContributesToClasspathDepth(e) &&
+      String(e.target) === props.id &&
+      String(e.targetHandle ?? AGG_TARGET_HANDLE) === AGG_TARGET_HANDLE,
+  )
+  return hit ? strokeColorForFlowEdge(hit) : '#64748b'
+})
+
+const strokeAggOutBySlot = computed(() => {
+  const out: Record<number, string> = {}
+  for (const slot of used.value.aggOutSlots) {
+    const hid = aggregateSourceHandleId(slot)
+    const hit = getEdges.value.find(
+      (e) =>
+        edgeVisible(e) &&
+        edgeContributesToClasspathDepth(e) &&
+        String(e.source) === props.id &&
+        String(e.sourceHandle ?? '') === hid,
+    )
+    out[slot] = hit ? strokeColorForFlowEdge(hit) : '#64748b'
+  }
+  return out
+})
+
+function anchorTopAggIn(fallback: number): string {
+  const v = props.data.anchorTops?.aggIn
+  return `${v != null && Number.isFinite(v) ? v : fallback}%`
+}
+
+function anchorAggOutTop(slot: number): string {
+  const fb = aggregateFanTopPctForUsedSlots(slot, used.value.aggOutSlots)
+  const v = props.data.anchorTops?.aggOut?.[String(slot)]
+  return `${v != null && Number.isFinite(v) ? v : fb}%`
+}
 const refreshDimming = inject<(() => void) | undefined>('tritonRefreshDimming', undefined)
 const relayoutViewport = inject<(() => void | Promise<void>) | undefined>('tritonRelayoutViewport', undefined)
 const graphFocusUi = inject<{ containerFocusId: string | null } | undefined>('tritonGraphFocusUi', undefined)
@@ -138,28 +191,23 @@ function togglePin(ev: MouseEvent) {
     </div>
 
     <Handle
-      :id="DEP_TARGET_HANDLE"
-      class="handle handle-side-left handle-use-dep"
-      type="target"
-      :position="Position.Left"
-    />
-    <Handle
       :id="AGG_TARGET_HANDLE"
-      class="handle handle-side-left handle-use-agg"
+      class="handle handle-agg-in-target tg-handle-anchor"
       type="target"
       :position="Position.Left"
+      :style="{ top: anchorTopAggIn(50), '--tg-handle-stroke': strokeAggIn }"
     />
     <Handle
-      :id="DEP_SOURCE_HANDLE"
-      class="handle handle-side-right handle-use-dep"
+      v-for="slot in used.aggOutSlots"
+      :key="aggregateSourceHandleId(slot)"
+      :id="aggregateSourceHandleId(slot)"
+      class="handle handle-agg-fan-out tg-handle-anchor"
       type="source"
       :position="Position.Right"
-    />
-    <Handle
-      :id="AGG_SOURCE_HANDLE"
-      class="handle handle-side-right handle-use-agg"
-      type="source"
-      :position="Position.Right"
+      :style="{
+        top: anchorAggOutTop(slot),
+        '--tg-handle-stroke': strokeAggOutBySlot[slot] ?? '#64748b',
+      }"
     />
   </div>
 </template>
@@ -191,23 +239,7 @@ function togglePin(ev: MouseEvent) {
 }
 .handle {
   position: absolute;
-  width: 8px;
-  height: 8px;
-  background: #64748b;
-  border: 1px solid #334155;
-  z-index: 5;
-  transform: translateY(-50%);
-}
-.handle-side-left {
-  left: -6px;
-}
-.handle-side-right {
-  right: -6px;
-}
-.handle-use-dep {
-  top: 42%;
-}
-.handle-use-agg {
-  top: 58%;
+  /* Above edge SVG so anchors sit on the visible box border */
+  z-index: 12;
 }
 </style>
