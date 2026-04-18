@@ -1,0 +1,3 @@
+[debug] not up to date. inChanged = true, force = false
+[debug] Updating ProjectRef(uri("file:/Users/markoboger/workspace/tritongraph/sbt-examples/01-single-module/project/"), "root-01-single-module-build")...
+[debug] Done updating ProjectRef(uri("file:/Users/markoboger/workspace/tritongraph/sbt-examples/01-single-module/project/"), "root-01-single-module-build")

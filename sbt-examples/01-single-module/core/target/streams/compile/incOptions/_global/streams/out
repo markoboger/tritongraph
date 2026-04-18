@@ -1,0 +1,17 @@
+[debug] Created transactional ClassFileManager with tempDir = /Users/markoboger/workspace/tritongraph/sbt-examples/01-single-module/core/target/scala-2.13/classes.bak
+[debug] About to delete class files:
+[debug] We backup class files:
+[debug] Created transactional ClassFileManager with tempDir = /Users/markoboger/workspace/tritongraph/sbt-examples/01-single-module/core/target/scala-2.13/classes.bak
+[debug] About to delete class files:
+[debug] We backup class files:
+[debug] Registering generated classes:
+[debug] 	Domain$DomainError$.class
+[debug] 	Domain$UserId.class
+[debug] 	Domain$DomainError.class
+[debug] 	Domain$UserId$.class
+[debug] 	Domain$.class
+[debug] 	Domain$DomainError$Validation.class
+[debug] 	Domain$DomainError$Validation$.class
+[debug] 	Domain$Validator.class
+[debug] 	Domain.class
+[debug] Removing the temporary directory used for backing up class files: /Users/markoboger/workspace/tritongraph/sbt-examples/01-single-module/core/target/scala-2.13/classes.bak
