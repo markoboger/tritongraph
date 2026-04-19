@@ -6,7 +6,15 @@ export function slimNodesForExport(nodes: readonly any[]): ExportFlowNode[] {
     const raw = n.data as Record<string, unknown> | undefined
     let data = raw
     if (raw && typeof raw === 'object') {
-      const { layerDrillFocus: _lf, drillNote: _dn, layerFlip: _flip, anchorTops: _at, ...rest } = raw
+      const {
+        layerDrillFocus: _lf,
+        drillNote: _dn,
+        layerFlip: _flip,
+        anchorTops: _at,
+        innerDrillPath: _idp,
+        innerArtefactFocusId: _iaf,
+        ...rest
+      } = raw
       data = rest as Record<string, unknown>
     }
     return {

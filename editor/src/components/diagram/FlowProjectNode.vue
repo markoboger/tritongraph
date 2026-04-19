@@ -95,6 +95,15 @@ const patchNodeData = inject<((id: string, patch: Record<string, unknown>) => vo
   'tritonPatchNodeData',
   undefined,
 )
+/** Bubbles markdown-link clicks from {@link ProjectBox} subtitle up to App.vue (see GraphWorkspace). */
+const emitLinkAction = inject<((nodeId: string, href: string) => void) | undefined>(
+  'tritonEmitLinkAction',
+  undefined,
+)
+
+function onLinkAction(href: string) {
+  emitLinkAction?.(props.id, href)
+}
 
 function moduleInContainerFocusTree(focusId: string, moduleId: string): boolean {
   const nodes = getNodes.value
@@ -205,6 +214,7 @@ function togglePin(ev: MouseEvent) {
             @cycle-color="cycleColor"
             @rename="onRename"
             @description-change="onDescriptionChange"
+            @link-action="onLinkAction"
           />
         </DiagramSection>
       </div>

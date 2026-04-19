@@ -15,11 +15,14 @@
     "@vue-flow/minimap": "^1.5.4",
     "js-yaml": "^4.1.0",
     "monaco-editor": "^0.55.1",
-    "vue": "^3.5.13"
+    "vue": "^3.5.13",
+    "web-tree-sitter": "^0.26.8"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@vitejs/plugin-vue": "^5.2.1",
+    "tree-sitter-cli": "^0.26.8",
+    "tree-sitter-scala": "^0.24.0",
     "typescript": "~5.7.2",
     "vite": "^6.2.0",
     "vite-plugin-monaco-editor": "^1.1.0",

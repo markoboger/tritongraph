@@ -8,7 +8,7 @@ import {
   useVueFlow,
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
-import { computed, nextTick, provide, reactive, ref, watch } from 'vue'
+import { computed, nextTick, provide, reactive, ref, unref, watch } from 'vue'
 import DiagramContainerView from './diagram/DiagramContainerView.vue'
 import GraphDrillIn from './GraphDrillIn.vue'
 import { buildDiagramRootModel } from '../diagram/model/buildRootDiagram'
@@ -22,6 +22,7 @@ import {
 } from '../graph/layoutDependencyLayers'
 import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE } from '../graph/handles'
 import { boxColorForId } from '../graph/boxColors'
+import { isLeafBoxNode } from '../graph/nodeKinds'
 import { languageIconForId } from '../graph/languages'
 import { drillNoteForModuleId } from '../graph/sbtStyleDrillNotes'
 
@@ -40,6 +41,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** User-facing status line updates (e.g. new module from pane connect). */
   status: [message: string]
+  /** Markdown-link click on a project box subtitle. `href` is the raw link target (e.g. `triton:packages`). */
+  'link-action': [payload: { nodeId: string; href: string }]
 }>()
 
 /**
@@ -172,6 +175,9 @@ async function relayoutViewport() {
   )
   nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
   void nextTick(() => syncEdgeVisualState())
+  /** Keep the full graph in view after geometry changes; skip while layer drill owns the camera. */
+  const layerDrill = drillRef.value && 'layerDrillId' in drillRef.value ? (drillRef.value as any).layerDrillId : null
+  if (!unref(layerDrill)) await fitToViewport({ duration: 0 })
 }
 
 provide('tritonRelayoutViewport', relayoutViewport)
@@ -192,8 +198,19 @@ function tritonPatchNodeData(id: string, patch: Record<string, unknown>) {
 }
 provide('tritonPatchNodeData', tritonPatchNodeData)
 
+/** Surface link-action clicks from FlowProjectNode → ProjectBox subtitle to the App-level handler. */
+function tritonEmitLinkAction(nodeId: string, href: string) {
+  emit('link-action', { nodeId, href })
+}
+provide('tritonEmitLinkAction', tritonEmitLinkAction)
+
 const defaultEdgeOptions = {
   type: 'smoothstep' as const,
+  /**
+   * Vue Flow draws the edge layer before nodes; default z 0 leaves arrowheads tucked under boxes.
+   * Keep edges above node chrome so classpath / imports markers stay visible at the target.
+   */
+  zIndex: 1000,
   style: dependencyEdgeStyle(DEP_EDGE_STROKE),
   markerStart: undefined,
   markerEnd: dependencyMarker(DEP_EDGE_STROKE),
@@ -302,7 +319,7 @@ function handleFlowConnectEnd(
   }
 
   const src = nodes.value.find((n) => String(n.id) === pending.nodeId)
-  if (!src || (src.type !== 'module' && src.type !== 'group')) {
+  if (!src || (!isLeafBoxNode(src) && src.type !== 'group')) {
     pendingPaneConnect.value = null
     return
   }
@@ -322,7 +339,7 @@ async function createModuleFromSourceHandle(
   flowPos: { x: number; y: number },
 ) {
   const src = nodes.value.find((n) => String(n.id) === sourceNodeId)
-  if (!src || (src.type !== 'module' && src.type !== 'group')) return
+  if (!src || (!isLeafBoxNode(src) && src.type !== 'group')) return
 
   const id = `module-${uid()}`
   const parentRaw = (src as { parentNode?: string }).parentNode
@@ -390,47 +407,6 @@ async function createModuleFromSourceHandle(
     'status',
     `Added ${id} and a depends-on link from ${sourceNodeId} — double-click the box to rename; YAML diff highlights new lines until you accept the baseline.`,
   )
-}
-
-/** New standalone module from toolbar drag-and-drop (no edge). */
-async function createModuleFromDrop(flowPos: { x: number; y: number }) {
-  const id = `module-${uid()}`
-  const newNode: Record<string, unknown> = {
-    id,
-    type: 'module',
-    position: {
-      x: flowPos.x - MODULE_LAYOUT_W / 2,
-      y: flowPos.y - MODULE_LAYOUT_H / 2,
-    },
-    sourcePosition: Position.Left,
-    targetPosition: Position.Right,
-    data: {
-      label: 'new-module',
-      subtitle: 'sbt project id',
-      boxColor: boxColorForId(id),
-      language: languageIconForId(id),
-      drillNote: drillNoteForModuleId(id),
-    },
-  }
-
-  await nextTick()
-  await doubleRaf()
-  const vp = readFlowViewport()
-  nodes.value = layoutDepthInViewport([...nodes.value, newNode as any], edges.value, vp)
-  edges.value = mergeEdgeHiddenForInvisibleEndpoints(
-    routeSmoothstepEdgesInViewport(nodes.value, edges.value, vp),
-    nodes.value,
-    {
-      hideEdgeForRelation: (e) => shouldHideEdgeForRelationFilter(e, props.relationTypeVisibility),
-    },
-  )
-  nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
-  void nextTick(() => syncEdgeVisualState())
-  emit(
-    'status',
-    `Dropped ${id} on the canvas — double-click to rename; YAML diff shows changes until you accept the baseline.`,
-  )
-  void fitToViewport()
 }
 
 function onNodeMouseEnter(ev: { node: { id: string } }) {
@@ -523,17 +499,10 @@ async function fitToViewport(opts?: { duration?: number }) {
   await fitView({ padding: 0.05, duration, maxZoom: 2.2, minZoom: 0.05 })
 }
 
-/** Toolbar / host: same timing as “Add module” — avoids a separate global bridge to `screenToFlowCoordinate`. */
-function dropProjectTemplateAtScreen(clientX: number, clientY: number) {
-  const flow = screenToFlowCoordinate({ x: clientX, y: clientY })
-  void createModuleFromDrop(flow)
-}
-
 defineExpose({
   resetView,
   fitToViewport,
   refreshEdgeEmphasis: syncEdgeVisualState,
-  dropProjectTemplateAtScreen,
 })
 </script>
 
@@ -550,7 +519,7 @@ defineExpose({
     :nodes-draggable="false"
     :nodes-connectable="true"
     :edges-updatable="false"
-    :edges-focusable="false"
+    :edges-focusable="true"
     :snap-to-grid="true"
     :snap-grid="[12, 12]"
     :min-zoom="0.05"
@@ -628,7 +597,7 @@ defineExpose({
 }
 
 .flow.vue-flow .vue-flow__edge.tg-edge-emph .vue-flow__edge-text {
-  opacity: 0.85;
+  opacity: 1;
 }
 
 /* Core marks edges `.inactive` unless selectable or @edge-click; re-enable hits so @edge-mouse-* runs (pan is off). */

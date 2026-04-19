@@ -23,6 +23,22 @@ export interface IlographPerspective {
   notes?: string
 }
 
+/** Nested package metadata for the Scala package view (`x-triton-inner-packages`). */
+export type TritonInnerPackageSpec = {
+  id: string
+  name: string
+  subtitle?: string
+  innerPackages?: readonly TritonInnerPackageSpec[]
+}
+
+/** Scala top-level members listed inside a layer-drill–focused package box (not separate flow nodes). */
+export type TritonInnerArtefactSpec = {
+  id: string
+  name: string
+  /** Scala kind keyword (`case class`, `object`, `trait`, …). */
+  subtitle?: string
+}
+
 export interface IlographResource {
   name: string
   id?: string
@@ -34,6 +50,27 @@ export interface IlographResource {
   abstract?: boolean
   instanceOf?: string
   children?: IlographResource[]
+  /**
+   * Non-standard editor extension: forces a specific Vue Flow `type` for this resource (overrides
+   * the document-level `moduleNodeType` default). Used by the package diagram so the same document
+   * can mix `package` containers and `artefact` leaves under the same parent. Stripped on YAML
+   * export to keep the Ilograph document strictly conformant.
+   */
+  'x-triton-node-type'?: string
+  /**
+   * Non-standard: immediate child packages shown inside a focused root package box (not
+   * separate Vue Flow nodes). Used by the Scala package view so the outer package can render
+   * direct sub-packages as stacked inner cards while the outer node stays a single leaf.
+   */
+  'x-triton-inner-packages'?: ReadonlyArray<TritonInnerPackageSpec>
+  /** Top-level Scala artefacts for this package, shown only when the package is layer-drill focused. */
+  'x-triton-inner-artefacts'?: ReadonlyArray<TritonInnerArtefactSpec>
+  /**
+   * Non-standard: this resource is the **outer Scala package scope** rendered as a Vue Flow
+   * `group` — {@link GroupNode} uses it to show package-style chrome (folder + title) while
+   * descendant packages are laid out inside as separate `package` nodes.
+   */
+  'x-triton-package-scope'?: boolean
   /** Non-standard: coordinates last saved by this editor (Ilograph ignores unknown top-level keys on resources if nested — we keep under a namespace key at doc level instead). */
 }
 

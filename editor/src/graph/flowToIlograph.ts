@@ -1,6 +1,7 @@
 import type { IlographDocument, IlographPerspective, IlographResource } from '../ilograph/types'
 import type { ExportFlowEdge, ExportFlowNode } from './flowExportModel'
 import { isNamedBoxColor } from './boxColors'
+import { isLeafBoxNode } from './nodeKinds'
 
 function exportResourceName(n: ExportFlowNode): string {
   return String(n.data?.label ?? n.id)
@@ -31,12 +32,21 @@ function buildResourceTree(nodes: ExportFlowNode[]): IlographResource[] {
         resources.push(res)
         continue
       }
-      if (n.type !== 'module') continue
+      if (!isLeafBoxNode(n)) continue
       const res: IlographResource = {
+        id: n.id,
         name: exportResourceName(n),
         subtitle: String(n.data?.subtitle ?? ''),
       }
       if (n.data?.description) res.description = String(n.data.description)
+      const ip = (n.data as Record<string, unknown> | undefined)?.innerPackages
+      if (Array.isArray(ip) && ip.length) {
+        res['x-triton-inner-packages'] = ip as NonNullable<IlographResource['x-triton-inner-packages']>
+      }
+      const ia = (n.data as Record<string, unknown> | undefined)?.innerArtefacts
+      if (Array.isArray(ia) && ia.length) {
+        res['x-triton-inner-artefacts'] = ia as NonNullable<IlographResource['x-triton-inner-artefacts']>
+      }
       const nested = subtree(n.id)
       if (nested.length) res.children = nested
       resources.push(res)
@@ -101,7 +111,7 @@ export function flowToIlographDocument(
   const pinnedModuleIds: string[] = []
   for (const n of nodes) {
     positions[n.id] = { ...n.position }
-    if (n.type === 'module') {
+    if (isLeafBoxNode(n)) {
       const c = n.data?.boxColor
       if (isNamedBoxColor(c)) moduleColors[n.id] = c
       if (n.data?.pinned === true) pinnedModuleIds.push(n.id)

@@ -14,8 +14,9 @@ export function dependencyMarker(color: string = DEP_EDGE_STROKE): EdgeMarker {
   return {
     type: MarkerType.ArrowClosed,
     color,
-    width: 11,
-    height: 11,
+    /** Slightly larger than handle dots so the arrow reads clearly at the target. */
+    width: 14,
+    height: 14,
     strokeWidth: 1.25,
   }
 }
@@ -32,12 +33,14 @@ function edgeLabelVerticalNudge(): Pick<CSSProperties, 'transform'> {
   return { transform: 'translateY(-15px)' }
 }
 
-/** ~60% transparent label text (40% opaque). */
+/** Legible caption above the path; {@link GraphWorkspace} bumps opacity further on hover emphasis. */
 export function dependencyEdgeLabelStyle(): CSSProperties {
   return {
     ...edgeLabelVerticalNudge(),
-    opacity: 0.4,
+    opacity: 0.82,
     fill: '#334155',
+    fontSize: '11px',
+    fontWeight: 500,
   }
 }
 

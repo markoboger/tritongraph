@@ -2,16 +2,21 @@
 import { Position, type NodeTypesObject } from '@vue-flow/core'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import FlowProjectNode from './components/diagram/FlowProjectNode.vue'
+import FlowPackageNode from './components/diagram/FlowPackageNode.vue'
+import FlowScalaArtefactNode from './components/diagram/FlowScalaArtefactNode.vue'
 import GroupNode from './components/GroupNode.vue'
 import GraphWorkspace from './components/GraphWorkspace.vue'
 import YamlDiffEditor from './components/YamlDiffEditor.vue'
 import { parseIlographYaml, stringifyIlographYaml } from './ilograph/parse'
 import type { IlographDocument } from './ilograph/types'
 import sbtLogoUrl from './assets/language-icons/sbt.svg'
+import cubeIconUrl from './assets/language-icons/cube.svg'
+import folderIconUrl from './assets/language-icons/folder.svg'
 import { ilographDocumentToFlow } from './graph/ilographToFlow'
 import { flowToIlographDocument } from './graph/flowToIlograph'
 import { slimEdgesForExport, slimNodesForExport } from './graph/slimFlow'
 import { boxColorForId } from './graph/boxColors'
+import { isLeafBoxNode } from './graph/nodeKinds'
 import { languageIconForId } from './graph/languages'
 import {
   applyHandleAnchorAlignment,
@@ -27,6 +32,11 @@ import {
 import { drillNoteForModuleId } from './graph/sbtStyleDrillNotes'
 import { listSbtExamples, sbtExampleSourceToYaml } from './sbt/sbtExampleBuilds'
 import { parseBuildSbt } from './sbt/parseBuildSbt'
+import { listScalaSourcesIn } from './scala/scalaSourceLoader'
+import {
+  buildScalaPackageGraph,
+  scalaPackageGraphToIlographDocument,
+} from './scala/scalaPackagesToIlograph'
 const nodes = ref<any[]>([])
 const edges = ref<any[]>([])
 const perspectiveName = ref<string | undefined>('dependencies')
@@ -79,22 +89,95 @@ function setRelationTypeVisible(relationKey: string, visible: boolean) {
 
 const showYamlEditor = ref(true)
 
-/** All bundled repo sbt-examples build.sbt files (Vite virtual module at dev or build time). */
+/** Which sub-panel is visible in the right column (YAML diff, AI prompt, or canvas templates). */
+const sidePanelTab = ref<'yaml' | 'prompt' | 'templates'>('yaml')
+
+/** All bundled examples (`build.sbt` files) across every registered examples-root. */
 const sbtExamplesAll = listSbtExamples()
 
-/** Tutorial-style bundled examples: 01–12 under sbt-examples (same menu block). */
+/** Tutorial-style bundled examples: 01–12 numbered prefixes (the `sbt-examples` tutorial set). */
 function isTutorialSbtFolder(dir: string): boolean {
   return /^0[1-9]-/.test(dir) || /^1[0-2]-/.test(dir)
 }
 
-const sbtExamplesTutorial = sbtExamplesAll.filter((e) => isTutorialSbtFolder(e.dir))
-const sbtExamplesLargeOss = sbtExamplesAll.filter((e) => !isTutorialSbtFolder(e.dir))
+/** Stable id for the dropdown option that targets one bundled `build.sbt`. */
+function exampleSelectionId(root: string, dir: string): string {
+  return `sbt:${root}/${dir}`
+}
 
-/** __builtin__ loads public example YAML; sbt:dir parses that folder build.sbt in the repo bundle. */
-const selectedExample = ref<string>('__builtin__')
+const sbtExamplesTutorial = sbtExamplesAll.filter(
+  (e) => e.root === 'sbt-examples' && isTutorialSbtFolder(e.dir),
+)
+const sbtExamplesLargeOss = sbtExamplesAll.filter(
+  (e) => e.root === 'sbt-examples' && !isTutorialSbtFolder(e.dir),
+)
+const scalaExamples = sbtExamplesAll.filter((e) => e.root === 'scala-examples')
+
+/**
+ * One opened diagram = one entry here. The active tab's payload is held in the top-level
+ * `nodes` / `edges` / `sourcePath` / `yamlBaseline` / … refs (so all existing logic and the
+ * GraphWorkspace v-model continue to work unchanged); on switch we snapshot the outgoing tab and
+ * restore the incoming one.
+ *
+ * `key` is a stable identity used to dedupe re-opens (e.g. clicking the same example twice
+ * activates the existing tab instead of opening a second one). Format:
+ *   - `builtin`                          — the bundled Ilograph YAML demo
+ *   - `sbt:<root>/<dir>`                 — sbt build view of `<root>/<dir>/build.sbt`
+ *   - `packages:<root>/<dir>`            — Scala package graph for the same `(root, dir)` example
+ *   - `file:<name>#<uuid>`               — local YAML upload (always fresh, never deduped)
+ *
+ * `root` and `dir` are split on `/` so a single example can be opened in both an sbt tab and a
+ * package tab simultaneously (different `key`, different snapshots).
+ */
+interface DiagramTab {
+  id: string
+  key: string
+  title: string
+  iconUrl?: string
+  /** Tooltip on the tab + value used by the source-path overlay when this tab is active. */
+  sourcePath: string
+  fileName: string
+  perspectiveName: string | undefined
+  yamlBaseline: string
+  nodes: any[]
+  edges: any[]
+}
+
+const tabs = ref<DiagramTab[]>([])
+const activeTabId = ref<string | null>(null)
+
+const activeTab = computed<DiagramTab | undefined>(() =>
+  tabs.value.find((t) => t.id === activeTabId.value),
+)
+
+/**
+ * Which dropdown row should look "active". The packages view of an example highlights the same
+ * sbt menu entry — a packages tab is conceptually a sub-view of that example, not its own pick.
+ */
+const activeExampleSelectionKey = computed<string>(() => {
+  const k = activeTab.value?.key ?? ''
+  if (k === 'builtin') return '__builtin__'
+  if (k.startsWith('sbt:')) return k
+  if (k.startsWith('packages:')) return `sbt:${k.slice('packages:'.length)}`
+  return ''
+})
+
+/** `(root, dir)` of the example backing the active tab; `null` for builtin / file uploads. */
+const activeExample = computed<{ root: string; dir: string } | null>(() => {
+  const k = activeTab.value?.key ?? ''
+  let body = ''
+  if (k.startsWith('sbt:')) body = k.slice('sbt:'.length)
+  else if (k.startsWith('packages:')) body = k.slice('packages:'.length)
+  else return null
+  const slash = body.indexOf('/')
+  if (slash < 0) return null
+  return { root: body.slice(0, slash), dir: body.slice(slash + 1) }
+})
 
 const nodeTypes = {
   module: FlowProjectNode,
+  package: FlowPackageNode,
+  artefact: FlowScalaArtefactNode,
   group: GroupNode,
 } as NodeTypesObject
 
@@ -143,10 +226,16 @@ function scheduleRelayoutFromResize() {
   }, 160)
 }
 
-async function applyDoc(text: string, name: string, preferSaved: boolean) {
+async function applyDoc(
+  text: string,
+  name: string,
+  preferSaved: boolean,
+  options: { moduleNodeType?: 'module' | 'package' } = {},
+) {
   const doc = parseIlographYaml(text)
   const { nodes: n, edges: e, perspectiveName: p } = ilographDocumentToFlow(doc, {
     preferSavedPositions: preferSaved,
+    moduleNodeType: options.moduleNodeType ?? 'module',
   })
   await nextTick()
   await waitFrameLayout()
@@ -181,29 +270,248 @@ function exampleOptionLabel(dir: string): string {
 }
 
 async function selectExample(id: string) {
-  selectedExample.value = id
   if (examplesMenu.value) examplesMenu.value.open = false
-  await applyExampleSelection()
-}
-
-async function applyExampleSelection() {
-  const v = selectedExample.value
-  if (v === '__builtin__') {
-    await loadBuiltinExample()
+  if (id === '__builtin__') {
+    await openBuiltinTab()
     return
   }
-  if (!v.startsWith('sbt:')) return
-  const dir = v.slice('sbt:'.length)
-  const hit = sbtExamplesAll.find((e) => e.dir === dir)
+  if (id.startsWith('sbt:')) {
+    /** Body shape: `<root>/<dir>` (see `exampleSelectionId`). */
+    const body = id.slice('sbt:'.length)
+    const slash = body.indexOf('/')
+    if (slash < 0) return
+    await openSbtExampleTab(body.slice(0, slash), body.slice(slash + 1))
+  }
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * Tab management
+ *
+ * Active tab's payload lives in the top-level refs (`nodes`, `edges`, …) so the GraphWorkspace
+ * v-model and every existing helper continue to work unchanged. On switch-away we snapshot the
+ * refs into the outgoing tab; on switch-to we restore the saved snapshot. Loaders just write to
+ * the refs as before — `openOrActivateTab` activates the tab first, then snapshots after the load
+ * resolves.
+ * ---------------------------------------------------------------------------------------------- */
+
+function snapshotActiveTab(): void {
+  const t = activeTab.value
+  if (!t) return
+  t.nodes = nodes.value
+  t.edges = edges.value
+  t.perspectiveName = perspectiveName.value
+  t.sourcePath = sourcePath.value
+  t.fileName = fileName.value
+  t.yamlBaseline = yamlBaseline.value
+}
+
+async function activateTabById(id: string): Promise<void> {
+  if (activeTabId.value === id) return
+  snapshotActiveTab()
+  const target = tabs.value.find((t) => t.id === id)
+  if (!target) return
+  activeTabId.value = id
+  /** Assign whole arrays so Vue Flow re-syncs from the saved snapshot (object identities differ
+   *  per tab, which is fine — it gives a clean rebuild rather than mixing previous-tab state). */
+  nodes.value = target.nodes
+  edges.value = target.edges
+  perspectiveName.value = target.perspectiveName ?? 'dependencies'
+  sourcePath.value = target.sourcePath
+  fileName.value = target.fileName
+  yamlBaseline.value = target.yamlBaseline
+  await nextTick()
+  graphRef.value?.refreshEdgeEmphasis?.()
+  await graphRef.value?.fitToViewport()
+}
+
+async function closeTab(id: string): Promise<void> {
+  const idx = tabs.value.findIndex((t) => t.id === id)
+  if (idx < 0) return
+  const wasActive = activeTabId.value === id
+  tabs.value = tabs.value.filter((t) => t.id !== id)
+  if (!wasActive) return
+  if (!tabs.value.length) {
+    activeTabId.value = null
+    nodes.value = []
+    edges.value = []
+    perspectiveName.value = 'dependencies'
+    sourcePath.value = ''
+    fileName.value = 'diagram.ilograph.yaml'
+    yamlBaseline.value = ''
+    status.value = 'No diagram open. Pick an example or open a YAML file.'
+    return
+  }
+  /** Activate the neighbor that "took the closed tab's slot" (next to the right; or the new last). */
+  const next = tabs.value[Math.min(idx, tabs.value.length - 1)]
+  await activateTabById(next.id)
+}
+
+async function openOrActivateTab(
+  spec: { key: string; title: string; iconUrl?: string },
+  loader: () => Promise<void>,
+): Promise<void> {
+  const existing = tabs.value.find((t) => t.key === spec.key)
+  if (existing) {
+    await activateTabById(existing.id)
+    return
+  }
+  snapshotActiveTab()
+  const tab: DiagramTab = {
+    id: uid(),
+    key: spec.key,
+    title: spec.title,
+    iconUrl: spec.iconUrl,
+    sourcePath: '',
+    fileName: '',
+    perspectiveName: 'dependencies',
+    yamlBaseline: '',
+    nodes: [],
+    edges: [],
+  }
+  tabs.value = [...tabs.value, tab]
+  activeTabId.value = tab.id
+  /** Reset the refs so the loader starts from a clean slate; otherwise the previous tab's
+   *  nodes/edges briefly flash through the GraphWorkspace before the loader assigns the new ones. */
+  nodes.value = []
+  edges.value = []
+  perspectiveName.value = 'dependencies'
+  sourcePath.value = ''
+  fileName.value = ''
+  yamlBaseline.value = ''
+  await loader()
+  /** Capture loader-produced state so re-activation via `activateTabById` later restores it. */
+  snapshotActiveTab()
+}
+
+async function openBuiltinTab(): Promise<void> {
+  await openOrActivateTab(
+    { key: 'builtin', title: 'example.ilograph.yaml' },
+    () => loadBuiltinExample(),
+  )
+}
+
+async function openSbtExampleTab(root: string, dir: string): Promise<void> {
+  await openOrActivateTab(
+    { key: `sbt:${root}/${dir}`, title: dir, iconUrl: sbtLogoUrl },
+    () => loadSbtBuildForExample(root, dir),
+  )
+}
+
+async function openScalaPackagesTab(root: string, dir: string): Promise<void> {
+  await openOrActivateTab(
+    { key: `packages:${root}/${dir}`, title: dir, iconUrl: cubeIconUrl },
+    () => loadScalaPackagesForExample(root, dir),
+  )
+}
+
+async function loadSbtBuildForExample(root: string, dir: string) {
+  const hit = sbtExamplesAll.find((e) => e.root === root && e.dir === dir)
   if (!hit) {
     status.value = 'No sbt example selected (or examples failed to bundle).'
     return
   }
-  const yaml = sbtExampleSourceToYaml(hit.dir, hit.source)
   const projects = parseBuildSbt(hit.source)
-  sourcePath.value = `sbt-examples/${hit.dir}/build.sbt`
-  await applyDoc(yaml, `sbt-examples/${hit.dir}/diagram.ilograph.yaml`, false)
-  status.value = `Parsed sbt \`sbt-examples/${hit.dir}/build.sbt\` → ${projects.length} project(s); loaded generated YAML.`
+  const projectsWithScalaSources = computeProjectsWithScalaSources(hit.root, hit.dir, projects)
+  const yaml = sbtExampleSourceToYaml(hit.root, hit.dir, hit.source, { projectsWithScalaSources })
+  sourcePath.value = `${hit.root}/${hit.dir}/build.sbt`
+  await applyDoc(yaml, `${hit.root}/${hit.dir}/diagram.ilograph.yaml`, false)
+  const linkable = projectsWithScalaSources.size
+  status.value = `Parsed sbt \`${hit.root}/${hit.dir}/build.sbt\` → ${projects.length} project(s)${
+    linkable ? `, ${linkable} with .scala sources (click [packages] in subtitle to switch view)` : ''
+  }.`
+}
+
+/**
+ * Decide which sbt subprojects expose Scala sources we can render in the package view.
+ * A subproject's `baseDir` is matched against the bundled `.scala` files' relative paths under
+ * the `(root, dir)` example (e.g. baseDir `core` → matches `core/src/main/scala/...`). If a
+ * subproject has no explicit `baseDir`, we fall back to the project id as the directory name
+ * (sbt's own default). The single-project case (`baseDir = '.'`) is special-cased: the whole
+ * example dir counts, so any `.scala` file at all means the project has Scala sources.
+ */
+function computeProjectsWithScalaSources(
+  root: string,
+  exampleDir: string,
+  projects: ReadonlyArray<{ id: string; baseDir?: string }>,
+): Set<string> {
+  const files = listScalaSourcesIn(root, exampleDir)
+  if (!files.length) return new Set()
+  const out = new Set<string>()
+  for (const p of projects) {
+    const rawDir = (p.baseDir ?? p.id).replace(/^\/+|\/+$/g, '')
+    if (rawDir === '' || rawDir === '.') {
+      /** `project in file(".")`: the project's base IS the example root, so any source counts. */
+      out.add(p.id)
+      continue
+    }
+    const prefix = `${rawDir}/`
+    if (files.some((f) => f.relPath === rawDir || f.relPath.startsWith(prefix))) {
+      out.add(p.id)
+    }
+  }
+  return out
+}
+
+async function loadScalaPackagesForExample(root: string, dir: string) {
+  const files = listScalaSourcesIn(root, dir)
+  if (!files.length) {
+    sourcePath.value = `${root}/${dir}/`
+    nodes.value = []
+    edges.value = []
+    yamlBaseline.value = yamlPreview.value
+    status.value = `No .scala files found under ${root}/${dir}/.`
+    return
+  }
+  status.value = `Parsing ${files.length} Scala file${files.length === 1 ? '' : 's'} with tree-sitter…`
+  try {
+    const graph = await buildScalaPackageGraph(files)
+    const sourceLabel = `${root}/${dir}/`
+    sourcePath.value = sourceLabel
+    const doc = scalaPackageGraphToIlographDocument(graph, {
+      title: `Scala packages: ${dir}`,
+      sourcePath: sourceLabel,
+    })
+    const yaml = stringifyIlographYaml(doc)
+    await applyDoc(yaml, `${root}/${dir}/packages.ilograph.yaml`, false, {
+      moduleNodeType: 'package',
+    })
+    status.value = `Parsed ${files.length} Scala file${files.length === 1 ? '' : 's'} → outer package group with sub-package nodes; package imports (wildcard and explicit) as LR edges.`
+  } catch (err) {
+    status.value = `Failed to parse Scala sources: ${(err as Error).message}`
+  }
+}
+
+/**
+ * Internal `triton:` URL scheme used by markdown links inside project-box subtitles.
+ * Examples: `triton:packages` (open/activate the packages tab for the current example),
+ * `triton:sbt` (open/activate the sbt build tab). Unknown links fall through to a normal
+ * `window.open` so authors can also embed external docs links.
+ */
+function onNodeLinkAction(payload: { nodeId: string; href: string }) {
+  const href = payload.href.trim()
+  if (href === 'triton:packages' || href === 'triton://diagram/packages') {
+    const ex = activeExample.value
+    if (!ex) {
+      status.value = 'Cannot open packages view — no sbt example loaded.'
+      return
+    }
+    void openScalaPackagesTab(ex.root, ex.dir)
+    return
+  }
+  if (href === 'triton:sbt' || href === 'triton://diagram/sbt') {
+    const ex = activeExample.value
+    if (!ex) {
+      status.value = 'Cannot open sbt view — no sbt example loaded.'
+      return
+    }
+    void openSbtExampleTab(ex.root, ex.dir)
+    return
+  }
+  if (/^https?:/i.test(href)) {
+    window.open(href, '_blank', 'noopener,noreferrer')
+    return
+  }
+  status.value = `Ignored link with unrecognized target: ${href}`
 }
 
 function onFilePick(ev: Event) {
@@ -212,8 +520,16 @@ function onFilePick(ev: Event) {
   if (!file) return
   const reader = new FileReader()
   reader.onload = () => {
-    sourcePath.value = file.name
-    void applyDoc(String(reader.result), file.name, true)
+    const text = String(reader.result)
+    const name = file.name
+    /** Each upload gets a unique key so re-picking the same file opens a fresh tab. */
+    void openOrActivateTab(
+      { key: `file:${name}#${uid()}`, title: name },
+      async () => {
+        sourcePath.value = name
+        await applyDoc(text, name, true)
+      },
+    )
     input.value = ''
   }
   reader.readAsText(file)
@@ -241,6 +557,15 @@ function downloadYaml() {
 async function autoLayout() {
   await nextTick()
   await waitFrameLayout()
+  /**
+   * Vue Flow syncs its viewport size from `window.resize` and a ResizeObserver on the pane.
+   * Toggling the right column changes `.flow-wrap` width without a window resize, so `fitView`
+   * can run against stale dimensions until the user resizes the window — nudge the same path.
+   */
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('resize'))
+    await waitFrameLayout()
+  }
   const vp = readFlowViewport()
   nodes.value = layoutDepthInViewport(nodes.value, edges.value, vp)
   edges.value = mergeEdgesWithVisibility(routeSmoothstepEdgesInViewport(nodes.value, edges.value, vp))
@@ -249,40 +574,6 @@ async function autoLayout() {
   await nextTick()
   graphRef.value?.refreshEdgeEmphasis?.()
   await graphRef.value?.fitToViewport()
-}
-
-/**
- * Pointer “drag” from the project chip: finish on the graph pane via {@link GraphWorkspace.dropProjectTemplateAtScreen}
- * (same component path as Add module — no global bridge).
- */
-function onPalettePointerDown(e: PointerEvent) {
-  if (e.button !== 0) return
-  const pointerId = e.pointerId
-  let finished = false
-  const cleanup = () => {
-    window.removeEventListener('pointerup', onPointerUp, true)
-    window.removeEventListener('pointercancel', onPointerUp, true)
-    document.removeEventListener('mouseup', onMouseUp, true)
-  }
-  const tryDrop = (clientX: number, clientY: number) => {
-    if (finished) return
-    finished = true
-    cleanup()
-    const hit = document.elementFromPoint(clientX, clientY)
-    if (!(hit instanceof Element) || !hit.closest('.flow-wrap')) return
-    graphRef.value?.dropProjectTemplateAtScreen(clientX, clientY)
-  }
-  const onPointerUp = (ev: PointerEvent) => {
-    if (ev.pointerId !== pointerId) return
-    tryDrop(ev.clientX, ev.clientY)
-  }
-  const onMouseUp = (ev: MouseEvent) => {
-    if (ev.button !== 0) return
-    tryDrop(ev.clientX, ev.clientY)
-  }
-  window.addEventListener('pointerup', onPointerUp, true)
-  window.addEventListener('pointercancel', onPointerUp, true)
-  document.addEventListener('mouseup', onMouseUp, true)
 }
 
 async function addRootModule() {
@@ -321,12 +612,48 @@ async function addRootModule() {
   await graphRef.value?.fitToViewport()
 }
 
+async function addRootPackage() {
+  const id = `package-${uid()}`
+  await nextTick()
+  await waitFrameLayout()
+  const vp = readFlowViewport()
+  nodes.value = layoutDepthInViewport(
+    [
+      ...nodes.value,
+      {
+        id,
+        type: 'package',
+        position: { x: 0, y: 0 },
+        sourcePosition: Position.Left,
+        targetPosition: Position.Right,
+        data: {
+          label: 'new-package',
+          subtitle: 'Scala package',
+          description: '',
+          boxColor: boxColorForId(id),
+          drillNote: drillNoteForModuleId(id),
+        },
+      },
+    ],
+    edges.value,
+    vp,
+  )
+  edges.value = mergeEdgesWithVisibility(routeSmoothstepEdgesInViewport(nodes.value, edges.value, vp))
+  nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
+  status.value = `Added ${id} — double-click to rename.`
+  await nextTick()
+  graphRef.value?.refreshEdgeEmphasis?.()
+  await graphRef.value?.fitToViewport()
+}
+
 const yamlPreview = ref('')
 /** YAML snapshot for Monaco diff “original” pane; reset when loading a file/example; use Accept to clear highlights. */
 const yamlBaseline = ref('')
 
 function acceptYamlBaseline() {
   yamlBaseline.value = yamlPreview.value
+  /** Persist into the tab so a switch-away/-back doesn't drop the freshly accepted baseline. */
+  if (activeTab.value) activeTab.value.yamlBaseline = yamlBaseline.value
 }
 
 /**
@@ -405,7 +732,7 @@ function computeSbtDiff(original: string, modified: string): SbtDiff {
 
 function descriptionForModuleName(name: string): string {
   const hit = nodes.value.find(
-    (n) => n.type === 'module' && String((n.data as { label?: string })?.label ?? '') === name,
+    (n) => isLeafBoxNode(n) && String((n.data as { label?: string })?.label ?? '') === name,
   )
   const d = (hit?.data as { description?: string } | undefined)?.description
   return typeof d === 'string' ? d.trim() : ''
@@ -580,7 +907,18 @@ watch(showYamlEditor, () => {
 
 onMounted(() => {
   window.addEventListener('resize', scheduleRelayoutFromResize)
-  void selectExample('__builtin__')
+  /**
+   * Boot into the first bundled Scala example (currently `scala-examples/animal-fruit`)
+   * because the Scala package + artefact diagram is the showcase view we iterate on most.
+   * Fall back to the Ilograph reference demo if the Scala bundle is empty so the editor
+   * still has *something* to show on first load.
+   */
+  const scalaDefault = scalaExamples[0]
+  if (scalaDefault) {
+    void openSbtExampleTab(scalaDefault.root, scalaDefault.dir)
+  } else {
+    void openBuiltinTab()
+  }
 })
 
 onUnmounted(() => {
@@ -596,11 +934,27 @@ onUnmounted(() => {
       <details ref="examplesMenu" class="examples-menu">
         <summary class="btn menu-summary">Examples</summary>
         <div class="menu-panel" role="menu" aria-label="Example diagrams">
+          <template v-if="scalaExamples.length">
+            <div class="menu-heading" role="presentation">Scala examples</div>
+            <button
+              v-for="e in scalaExamples"
+              :key="e.root + '/' + e.dir"
+              type="button"
+              class="menu-item"
+              role="menuitem"
+              :class="{ 'menu-item--active': activeExampleSelectionKey === exampleSelectionId(e.root, e.dir) }"
+              :title="e.path"
+              @click="selectExample(exampleSelectionId(e.root, e.dir))"
+            >
+              {{ exampleOptionLabel(e.dir) }}
+            </button>
+            <div class="menu-sep" role="separator" />
+          </template>
           <button
             type="button"
             class="menu-item"
             role="menuitem"
-            :class="{ 'menu-item--active': selectedExample === '__builtin__' }"
+            :class="{ 'menu-item--active': activeExampleSelectionKey === '__builtin__' }"
             @click="selectExample('__builtin__')"
           >
             Ilograph demo (five layers)
@@ -610,13 +964,13 @@ onUnmounted(() => {
             <div class="menu-heading" role="presentation">Bundled sbt (tutorial)</div>
             <button
               v-for="e in sbtExamplesTutorial"
-              :key="e.dir"
+              :key="e.root + '/' + e.dir"
               type="button"
               class="menu-item"
               role="menuitem"
-              :class="{ 'menu-item--active': selectedExample === 'sbt:' + e.dir }"
-              :title="e.dir"
-              @click="selectExample('sbt:' + e.dir)"
+              :class="{ 'menu-item--active': activeExampleSelectionKey === exampleSelectionId(e.root, e.dir) }"
+              :title="e.path"
+              @click="selectExample(exampleSelectionId(e.root, e.dir))"
             >
               {{ exampleOptionLabel(e.dir) }}
             </button>
@@ -626,13 +980,13 @@ onUnmounted(() => {
             <div class="menu-heading" role="presentation">Bundled sbt (large OSS)</div>
             <button
               v-for="e in sbtExamplesLargeOss"
-              :key="e.dir"
+              :key="e.root + '/' + e.dir"
               type="button"
               class="menu-item"
               role="menuitem"
-              :class="{ 'menu-item--active': selectedExample === 'sbt:' + e.dir }"
-              :title="e.dir"
-              @click="selectExample('sbt:' + e.dir)"
+              :class="{ 'menu-item--active': activeExampleSelectionKey === exampleSelectionId(e.root, e.dir) }"
+              :title="e.path"
+              @click="selectExample(exampleSelectionId(e.root, e.dir))"
             >
               {{ exampleOptionLabel(e.dir) }}
             </button>
@@ -667,27 +1021,46 @@ onUnmounted(() => {
       </label>
       <button type="button" class="btn" @click="downloadYaml">Download YAML</button>
       <button type="button" class="btn" @click="showYamlEditor = !showYamlEditor">
-        {{ showYamlEditor ? 'Hide YAML' : 'Show YAML' }}
+        {{ showYamlEditor ? 'Hide Panel' : 'Show Panel' }}
       </button>
-      <button type="button" class="btn primary" @click="addRootModule">Add module</button>
-      <div
-        class="tg-drag-project"
-        title="Drag onto the diagram canvas to add a project box"
-        role="button"
-        tabindex="0"
-        aria-label="Project template: drag onto canvas"
-        @pointerdown="onPalettePointerDown"
-      >
-        <span class="tg-drag-project__label">Project</span>
-        <span class="tg-drag-project__hint">→ canvas</span>
-      </div>
       <span class="status">{{ status }}</span>
     </header>
+
+    <div
+      v-if="tabs.length"
+      class="tab-strip"
+      role="tablist"
+      aria-label="Open diagrams"
+    >
+      <button
+        v-for="tab in tabs"
+        :key="tab.id"
+        type="button"
+        class="tab"
+        role="tab"
+        :class="{ 'tab--active': tab.id === activeTabId }"
+        :aria-selected="tab.id === activeTabId"
+        :title="tab.sourcePath || tab.title"
+        @click="activateTabById(tab.id)"
+      >
+        <img v-if="tab.iconUrl" class="tab__icon" :src="tab.iconUrl" alt="" aria-hidden="true" />
+        <span class="tab__title">{{ tab.title }}</span>
+        <span
+          class="tab__close"
+          role="button"
+          tabindex="0"
+          aria-label="Close tab"
+          @click.stop="closeTab(tab.id)"
+          @keydown.enter.stop.prevent="closeTab(tab.id)"
+          @keydown.space.stop.prevent="closeTab(tab.id)"
+        >×</span>
+      </button>
+    </div>
 
     <div class="main" :class="{ 'main--no-side': !showYamlEditor }">
       <div class="flow-wrap">
         <div v-if="sourcePath" class="source-path-overlay" :title="sourcePath">
-          <img class="source-path-overlay__logo" :src="sbtLogoUrl" alt="sbt" aria-hidden="true" />
+          <img class="source-path-overlay__logo" :src="cubeIconUrl" alt="" aria-hidden="true" />
           <span class="source-path-overlay__text">{{ sourcePath }}</span>
         </div>
         <GraphWorkspace
@@ -697,31 +1070,100 @@ onUnmounted(() => {
           :node-types="nodeTypes"
           :relation-type-visibility="relationTypeVisibility"
           @status="(s) => (status = s)"
+          @link-action="onNodeLinkAction"
         />
       </div>
       <aside v-if="showYamlEditor" class="side">
-        <div class="side-yaml-bar">
-          <span class="side-yaml-bar__hint">
-            Monaco diff: additions vs baseline (green). Load file/example resets baseline.
-          </span>
-          <button type="button" class="btn side-yaml-bar__btn" @click="acceptYamlBaseline">Accept baseline</button>
+        <div class="side-panel-tabs" role="tablist" aria-label="YAML and tools">
+          <button
+            type="button"
+            class="side-tab"
+            role="tab"
+            :class="{ 'side-tab--active': sidePanelTab === 'yaml' }"
+            :aria-selected="sidePanelTab === 'yaml'"
+            @click="sidePanelTab = 'yaml'"
+          >
+            YAML editor
+          </button>
+          <button
+            type="button"
+            class="side-tab"
+            role="tab"
+            :class="{ 'side-tab--active': sidePanelTab === 'prompt' }"
+            :aria-selected="sidePanelTab === 'prompt'"
+            @click="sidePanelTab = 'prompt'"
+          >
+            Prompt
+          </button>
+          <button
+            type="button"
+            class="side-tab"
+            role="tab"
+            :class="{ 'side-tab--active': sidePanelTab === 'templates' }"
+            :aria-selected="sidePanelTab === 'templates'"
+            @click="sidePanelTab = 'templates'"
+          >
+            Templates
+          </button>
         </div>
-        <YamlDiffEditor class="yaml-diff" :original="yamlBaseline" :modified="yamlPreview" />
-        <div class="prompt-section">
-          <div class="prompt-bar">
-            <span class="prompt-bar__hint">
-              Generated edit prompt — paste into an AI assistant to apply the same change to the YAML source.
-            </span>
-            <button type="button" class="btn prompt-bar__btn" @click="copyEditPrompt">Copy prompt</button>
-            <span v-if="promptCopyHint" class="prompt-bar__copied">{{ promptCopyHint }}</span>
+        <div class="side-panel-body">
+          <div
+            v-show="sidePanelTab === 'yaml'"
+            class="side-panel-pane side-panel-pane--yaml"
+            role="tabpanel"
+          >
+            <div class="side-yaml-bar">
+              <span class="side-yaml-bar__hint">
+                Monaco diff: additions vs baseline (green). Load file/example resets baseline.
+              </span>
+              <button type="button" class="btn side-yaml-bar__btn" @click="acceptYamlBaseline">
+                Accept baseline
+              </button>
+            </div>
+            <YamlDiffEditor class="yaml-diff" :original="yamlBaseline" :modified="yamlPreview" />
           </div>
-          <textarea
-            class="prompt-textarea"
-            readonly
-            spellcheck="false"
-            :value="editPrompt"
-            aria-label="Generated AI prompt describing the YAML diff"
-          />
+          <div
+            v-show="sidePanelTab === 'prompt'"
+            class="side-panel-pane side-panel-pane--prompt"
+            role="tabpanel"
+          >
+            <div class="prompt-section prompt-section--tab">
+              <div class="prompt-bar">
+                <span class="prompt-bar__hint">
+                  Generated edit prompt — paste into an AI assistant to apply the same change to the
+                  YAML source.
+                </span>
+                <button type="button" class="btn prompt-bar__btn" @click="copyEditPrompt">
+                  Copy prompt
+                </button>
+                <span v-if="promptCopyHint" class="prompt-bar__copied">{{ promptCopyHint }}</span>
+              </div>
+              <textarea
+                class="prompt-textarea"
+                readonly
+                spellcheck="false"
+                :value="editPrompt"
+                aria-label="Generated AI prompt describing the YAML diff"
+              />
+            </div>
+          </div>
+          <div
+            v-show="sidePanelTab === 'templates'"
+            class="side-panel-pane side-panel-pane--templates"
+            role="tabpanel"
+          >
+            <p class="side-templates-hint">Add a standalone project or Scala package box to the graph.</p>
+            <div class="side-templates-actions">
+              <button type="button" class="btn primary side-template-btn" @click="addRootModule">
+                <img class="side-template-btn__icon" :src="cubeIconUrl" alt="" aria-hidden="true" />
+                <span>Add Project</span>
+              </button>
+              <button type="button" class="btn side-template-btn" @click="addRootPackage">
+                <img class="side-template-btn__icon" :src="folderIconUrl" alt="" aria-hidden="true" />
+                <span>Add Package</span>
+              </button>
+            </div>
+          </div>
         </div>
       </aside>
     </div>
@@ -761,6 +1203,85 @@ onUnmounted(() => {
 .btn:hover {
   background: #f1f5f9;
 }
+/*
+ * Browser-like tab strip — one tab per opened diagram. The active tab's payload lives in the
+ * top-level Vue refs (see `DiagramTab` in the script); inactive tabs hold a snapshot until they
+ * become active again. Close buttons are spans (not nested <button>) because nesting interactive
+ * elements inside a <button class="tab"> is invalid HTML.
+ */
+.tab-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px 12px 0;
+  background: #f1f5f9;
+  border-bottom: 1px solid #e2e8f0;
+}
+.tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 6px 8px 6px 10px;
+  border: 1px solid #cbd5e1;
+  border-bottom-color: transparent;
+  border-radius: 6px 6px 0 0;
+  background: #e2e8f0;
+  color: #475569;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  /* Sit on top of the bottom border so the active tab visually merges with the canvas below. */
+  margin-bottom: -1px;
+}
+.tab:hover {
+  background: #f8fafc;
+  color: #0f172a;
+}
+.tab--active {
+  background: #fff;
+  color: #0f172a;
+  border-color: #cbd5e1;
+  border-bottom-color: #fff;
+  font-weight: 600;
+}
+.tab__icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  display: block;
+  object-fit: contain;
+}
+.tab__title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.tab__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  color: #64748b;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+.tab__close:hover {
+  background: rgba(15, 23, 42, 0.1);
+  color: #0f172a;
+}
+.tab__close:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 1px;
+}
 .btn.primary {
   border-color: #2563eb;
   background: #2563eb;
@@ -778,34 +1299,6 @@ onUnmounted(() => {
   color: #64748b;
 }
 
-.tg-drag-project {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  min-width: 88px;
-  padding: 6px 10px;
-  border: 1px dashed #64748b;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
-  cursor: grab;
-  user-select: none;
-  font-size: 11px;
-  line-height: 1.2;
-  color: #334155;
-}
-.tg-drag-project:active {
-  cursor: grabbing;
-}
-.tg-drag-project__label {
-  font-weight: 700;
-  font-size: 12px;
-  letter-spacing: 0.02em;
-}
-.tg-drag-project__hint {
-  font-size: 10px;
-  color: #64748b;
-}
 .examples-menu {
   position: relative;
 }
@@ -944,11 +1437,90 @@ onUnmounted(() => {
 .side {
   border-left: 1px solid #e2e8f0;
   background: #fff;
+  padding: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.side-panel-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0;
+  flex-shrink: 0;
+  padding: 0 4px;
+  background: #f1f5f9;
+  border-bottom: 1px solid #e2e8f0;
+}
+.side-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 10px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  color: #64748b;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+}
+.side-tab:hover {
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.6);
+}
+.side-tab--active {
+  color: #0f172a;
+  font-weight: 600;
+  background: #fff;
+  border-bottom-color: #2563eb;
+}
+.side-panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 12px;
+  gap: 8px;
+}
+.side-panel-pane {
+  flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.side-panel-pane--templates {
+  flex: 0 1 auto;
+  align-items: flex-start;
+}
+.side-templates-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #64748b;
+  max-width: 36em;
+}
+.side-templates-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+  margin-top: 4px;
+}
+.side-template-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.side-template-btn__icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+.btn.primary .side-template-btn__icon {
+  filter: brightness(0) invert(1);
 }
 .side-yaml-bar {
   display: flex;
@@ -980,6 +1552,10 @@ onUnmounted(() => {
   gap: 6px;
   flex: 0 0 auto;
 }
+.prompt-section--tab {
+  flex: 1;
+  min-height: 0;
+}
 .prompt-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1005,7 +1581,8 @@ onUnmounted(() => {
 }
 .prompt-textarea {
   width: 100%;
-  height: 200px;
+  flex: 1;
+  min-height: 160px;
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;

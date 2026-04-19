@@ -9,6 +9,8 @@ import {
   computeLayerDrillColumnLayout,
   dependencyDepthsInRegion,
   focusedModuleWidthForDrill,
+  relayoutSubtreeIntoBounds,
+  verticalBandForLayerDrill,
 } from '../graph/layoutDependencyLayers'
 import {
   attachLayerFlipInvert,
@@ -17,6 +19,7 @@ import {
   stripLayerFlipsFromNodes,
   type LayerFlipRect,
 } from '../graph/layerDrillFlip'
+import { isLayerDrillBoxNode, isLeafBoxNode } from '../graph/nodeKinds'
 import { edgeContributesToClasspathDepth, isAggregateEdge } from '../graph/relationKinds'
 
 const {
@@ -176,7 +179,12 @@ function readFlowViewport(): { width: number; height: number } {
   }
 }
 
-/** Module layout rects (pre-drill) for FLIP — same region, excluding hidden same-depth peers. */
+/**
+ * Pre-drill layout rects of every box (leaf or group) that participates in the drilled
+ * region's depth column layout, excluding the same-depth peers that the drill is about to hide.
+ * Used as the FLIP "first" geometry so groups animate from their old bounds to their new ones,
+ * not just leaf project boxes.
+ */
 function collectVisibleModuleRectsBeforeDrill(
   preNodes: GraphNode[],
   regionParent: string | undefined,
@@ -184,7 +192,7 @@ function collectVisibleModuleRectsBeforeDrill(
 ): Map<string, LayerFlipRect> {
   const map = new Map<string, LayerFlipRect>()
   for (const n of preNodes) {
-    if (n.type !== 'module') continue
+    if (!isLayerDrillBoxNode(n)) continue
     const nParent = n.parentNode ? String(n.parentNode) : undefined
     const sameRegion =
       (regionParent === undefined && nParent === undefined) ||
@@ -195,7 +203,11 @@ function collectVisibleModuleRectsBeforeDrill(
   return map
 }
 
-/** Top + height spanning all module boxes in this layout region (flow coordinates). */
+/**
+ * Top + height spanning all drill-participating boxes in this region (flow coordinates). Includes
+ * groups so that drilling a single package container in a layer with no leaf siblings still maps
+ * to the layer's full vertical band.
+ */
 function diagramModuleVerticalSpan(
   modNodes: GraphNode[],
   regionParent: string | undefined,
@@ -203,7 +215,7 @@ function diagramModuleVerticalSpan(
   let top = Infinity
   let bot = -Infinity
   for (const n of modNodes) {
-    if (n.type !== 'module') continue
+    if (!isLayerDrillBoxNode(n)) continue
     const nParent = n.parentNode ? String(n.parentNode) : undefined
     const same =
       (regionParent === undefined && nParent === undefined) ||
@@ -270,11 +282,20 @@ function brightIdsFor(focusId: string | null): Set<string> {
 function pinnedModuleIdSet(): Set<string> {
   const s = new Set<string>()
   for (const n of getNodes.value) {
-    if (n.type !== 'module') continue
+    if (!isLeafBoxNode(n)) continue
     const d = n.data && typeof n.data === 'object' ? (n.data as Record<string, unknown>) : null
     if (d?.pinned === true) s.add(n.id)
   }
   return s
+}
+
+/** Preserve stroke-emphasis class from {@link GraphWorkspace.syncEdgeVisualState} while toggling dimming. */
+function mergeEdgeDimClass(existing: string | undefined, dimmed: boolean): string | undefined {
+  const parts = new Set(String(existing ?? '').split(/\s+/).filter(Boolean))
+  parts.delete('tg-dimmed')
+  if (dimmed) parts.add('tg-dimmed')
+  const out = [...parts].join(' ')
+  return out || undefined
 }
 
 function applyDimming(focusId: string | null) {
@@ -298,7 +319,7 @@ function applyDimming(focusId: string | null) {
       const base = (typeof e.style === 'object' && e.style) || {}
       return {
         ...e,
-        class: lit ? undefined : 'tg-dimmed',
+        class: mergeEdgeDimClass(e.class as string | undefined, !lit),
         style: { ...base, opacity: lit ? 1 : 0.32 },
       }
     }),
@@ -408,7 +429,7 @@ async function clearLayerDrillWithFlip(): Promise<void> {
   }
   const firstById = new Map<string, LayerFlipRect>()
   for (const n of getNodes.value) {
-    if (n.type !== 'module') continue
+    if (!isLayerDrillBoxNode(n)) continue
     if (n.hidden) continue
     firstById.set(n.id, moduleLayoutRect(n))
   }
@@ -441,18 +462,47 @@ function isModulePinnedIn(nodes: GraphNode[], id: string): boolean {
   return d?.pinned === true
 }
 
+/**
+ * Region-participant input shape for the drill column layout. A "participant" is any node
+ * directly under the region parent — leaf boxes (modules / packages / artefacts) AND group
+ * containers — so that, for example, three sibling package groups can each claim a column
+ * within their parent diagram and one of them can be drilled into without losing animation.
+ */
+function collectRegionParticipants(
+  nodes: readonly GraphNode[],
+  regionParent: string | undefined,
+  depths: Map<string, number>,
+): { id: string; depth: number; position: { x: number; y: number }; width: number; height: number; style?: unknown }[] {
+  return nodes
+    .filter((n) => {
+      const nParent = n.parentNode ? String(n.parentNode) : undefined
+      const sr =
+        (regionParent === undefined && nParent === undefined) ||
+        (regionParent !== undefined && nParent === regionParent)
+      return sr && isLayerDrillBoxNode(n)
+    })
+    .map((n) => ({
+      id: n.id,
+      depth: depths.get(n.id) ?? 0,
+      position: { ...n.position },
+      width: typeof n.width === 'number' ? n.width : 200,
+      height: typeof n.height === 'number' ? n.height : 72,
+      style: n.style,
+    }))
+}
+
 async function applyLayerDrill(moduleId: string) {
   let nodes = getNodes.value
   let edges = getEdges.value
   let target = nodes.find((n) => n.id === moduleId)
-  if (!target || target.type !== 'module') return
+  if (!target || !isLayerDrillBoxNode(target)) return
 
   if (layerDrillId.value && layerDrillId.value !== moduleId) {
     clearLayerDrill()
     nodes = getNodes.value
     edges = getEdges.value
     target = nodes.find((n) => n.id === moduleId)
-    if (!target || target.type !== 'module') return
+    if (!target || !isLayerDrillBoxNode(target)) return
   }
   if (layerDrillId.value === moduleId) {
     await clearLayerDrillWithFlip()
@@ -471,41 +521,42 @@ async function applyLayerDrill(moduleId: string) {
   captureLayerSnapshot()
   layerDrillId.value = moduleId
 
+  const targetIsGroup = target.type === 'group'
   const regionParent = target.parentNode ? String(target.parentNode) : undefined
   const depths = dependencyDepthsInRegion(nodes, edges, regionParent)
 
   const maxD = depths.size ? Math.max(0, ...depths.values()) : 0
   const numCols = maxD + 1
   const vp = readFlowViewport()
-  const { top: diagramTop, height: diagramH } = diagramModuleVerticalSpan(nodes, regionParent)
+  /**
+   * Group focus claims the full band of its parent (which, for the outermost package, is the
+   * diagram viewport — the layout pins the singleton root group to the canvas). Leaf focus keeps
+   * the historical "tight to the modules' own Y span" behavior so pinned-row drills don't end up
+   * with a stretched-tall leaf box.
+   */
+  let diagramTop: number
+  let diagramH: number
+  if (targetIsGroup) {
+    const band = verticalBandForLayerDrill(nodes, regionParent, vp.height)
+    diagramTop = band.padTop
+    diagramH = band.usable
+  } else {
+    ;({ top: diagramTop, height: diagramH } = diagramModuleVerticalSpan(nodes, regionParent))
+  }
   const baseW = typeof target.width === 'number' ? target.width : 200
   const focusW = focusedModuleWidthForDrill(vp, numCols, baseW, regionParent, nodes)
 
-  const regionModuleInputs = nodes
-    .filter((n) => {
-      const nParent = n.parentNode ? String(n.parentNode) : undefined
-      const sr =
-        (regionParent === undefined && nParent === undefined) ||
-        (regionParent !== undefined && nParent === regionParent)
-      return sr && n.type === 'module'
-    })
-    .map((n) => ({
-      id: n.id,
-      depth: depths.get(n.id) ?? 0,
-      position: { ...n.position },
-      width: typeof n.width === 'number' ? n.width : 200,
-      height: typeof n.height === 'number' ? n.height : 72,
-      style: n.style,
-    }))
+  const regionParticipants = collectRegionParticipants(nodes, regionParent, depths)
 
   const fd = depths.get(moduleId) ?? 0
+  /** Pin semantics only apply to leaf modules today; groups are never pinned. */
   const depthsWithPinned = new Set<number>()
-  for (const m of regionModuleInputs) {
+  for (const m of regionParticipants) {
     if (isModulePinnedIn(nodes, m.id)) depthsWithPinned.add(m.depth)
   }
 
   const hiddenSiblingIds = new Set<string>()
-  for (const m of regionModuleInputs) {
+  for (const m of regionParticipants) {
     if (m.id === moduleId) continue
     if (m.depth === fd && !isModulePinnedIn(nodes, m.id)) {
       hiddenSiblingIds.add(m.id)
@@ -515,35 +566,41 @@ async function applyLayerDrill(moduleId: string) {
     }
   }
 
+  /**
+   * Hiding a group also hides every node nested inside it; otherwise the descendants would
+   * remain rendered in flow space and overlap the focused box.
+   */
+  if (targetIsGroup || regionParticipants.some((m) => hiddenSiblingIds.has(m.id))) {
+    const expand = new Set(hiddenSiblingIds)
+    for (const id of expand) {
+      for (const desc of descendantIds(id)) {
+        if (desc !== id) hiddenSiblingIds.add(desc)
+      }
+    }
+  }
+
   const wideAtFocusDepthIds = new Set(
-    regionModuleInputs.filter((m) => m.depth === fd && isModulePinnedIn(nodes, m.id)).map((m) => m.id),
+    regionParticipants.filter((m) => m.depth === fd && isModulePinnedIn(nodes, m.id)).map((m) => m.id),
   )
 
   /** Same-layer peers are hidden — omit them from width conservation so the focus column can grow. */
-  const layoutModules = regionModuleInputs.filter((m) => !hiddenSiblingIds.has(m.id))
+  const layoutParticipants = regionParticipants.filter((m) => !hiddenSiblingIds.has(m.id))
 
   const geoMap = computeLayerDrillColumnLayout({
-    regionModules: layoutModules,
+    regionModules: layoutParticipants,
     focusId: moduleId,
     focusWidth: focusW,
     siblingWidthScale: 0.42,
     wideAtFocusDepthIds,
   })
 
-  const nextNodes = nodes.map((n) => {
+  let nextNodes = nodes.map((n) => {
     const nParent = n.parentNode ? String(n.parentNode) : undefined
     const sameRegion =
       (regionParent === undefined && nParent === undefined) ||
       (regionParent !== undefined && nParent === regionParent)
 
-    if (!sameRegion) {
-      return { ...n, hidden: false } as GraphNode
-    }
-
-    if (n.type !== 'module') {
-      return { ...n, hidden: false } as GraphNode
-    }
-
+    /** Hidden via a hidden ancestor (group sibling subtree). */
     if (hiddenSiblingIds.has(n.id)) {
       const prevData =
         n.data && typeof n.data === 'object' ? { ...(n.data as Record<string, unknown>) } : {}
@@ -556,6 +613,10 @@ async function applyLayerDrill(moduleId: string) {
       } as GraphNode
     }
 
+    if (!sameRegion || !isLayerDrillBoxNode(n)) {
+      return { ...n, hidden: false } as GraphNode
+    }
+
     const geo = geoMap.get(n.id)
     if (!geo) {
       return { ...n, hidden: false } as GraphNode
@@ -565,7 +626,7 @@ async function applyLayerDrill(moduleId: string) {
       n.data && typeof n.data === 'object' ? { ...(n.data as Record<string, unknown>) } : {}
     if (n.id === moduleId) {
       prevData.layerDrillFocus = true
-      /** Match the diagram’s vertical extent (all modules in this region) so zoom does not refit the camera. */
+      /** Match the diagram's vertical extent (all participants in this region) so the focus claims the layer's full height. */
       const h = diagramH
       const prevStyle = geo.style && typeof geo.style === 'object' ? { ...(geo.style as Styles) } : {}
       return {
@@ -616,7 +677,21 @@ async function applyLayerDrill(moduleId: string) {
       data: prevData,
       style: geo.style as Styles,
     } as GraphNode
-  })
+  }) as GraphNode[]
+
+  /**
+   * Group target: re-run depth layout for the focused container's subtree so its children
+   * (Scala artefacts in the package case) stretch to fill the new bounds. Restricted to the
+   * subtree so the drill geometry computed for the region peers stays intact.
+   */
+  if (targetIsGroup) {
+    nextNodes = relayoutSubtreeIntoBounds(
+      moduleId,
+      nextNodes,
+      edges,
+      { width: focusW, height: diagramH },
+    ) as GraphNode[]
+  }
 
   const firstRects = collectVisibleModuleRectsBeforeDrill(nodes, regionParent, hiddenSiblingIds)
   const finalEdgesForDrill = getEdges.value.map((e) => ({
@@ -669,13 +744,21 @@ function containerHasChildren(nodeId: string): boolean {
 
 const MODULE_CLICK_DELAY_MS = 280
 
+/**
+ * Click semantics share the same "scale this box to its layer" intent across leaf project
+ * boxes and group package containers. Both go through `applyLayerDrill`: clicking a box
+ * grows it to fill its column / layer (with FLIP animation), clicking the same box again
+ * — or the parent group frame — drills back out. Clicking on the empty pane returns to the
+ * overview. The fallback `zoomIntoContainer` is only for groups that aren't part of a
+ * depth-layered region (e.g. legacy ilograph documents without dependency edges).
+ */
 onNodeClick(({ node }) => {
   if (clickTimer) {
     clearTimeout(clickTimer)
     clickTimer = null
   }
 
-  if (node.type === 'module') {
+  if (isLeafBoxNode(node)) {
     if (layerDrillId.value === node.id) {
       void applyLayerDrill(node.id)
       return
@@ -691,7 +774,7 @@ onNodeClick(({ node }) => {
     return
   }
 
-  /** Click the parent group frame (zoomed box) to drill out of layer focus. */
+  /** Click the parent group frame (drill-out): exit current focus. */
   if (node.type === 'group' && layerDrillId.value && containerHasChildren(node.id)) {
     const drilled = getNodes.value.find((n) => n.id === layerDrillId.value)
     const parentId = drilled?.parentNode != null ? String(drilled.parentNode) : undefined
@@ -702,6 +785,21 @@ onNodeClick(({ node }) => {
   }
 
   if (!containerHasChildren(node.id)) return
+
+  /**
+   * Group containers go through the same drill machinery as leaf boxes: the focus group is
+   * stretched to fill its layer band, sibling groups in the same region are hidden, and the
+   * focused group's interior is re-laid-out into the new bounds. This keeps PackageBox
+   * scaling identical to ProjectBox scaling.
+   */
+  if (node.type === 'group') {
+    clickTimer = setTimeout(() => {
+      clickTimer = null
+      void applyLayerDrill(node.id)
+    }, MODULE_CLICK_DELAY_MS)
+    return
+  }
+
   clickTimer = setTimeout(() => {
     clickTimer = null
     void zoomIntoContainer(node.id)

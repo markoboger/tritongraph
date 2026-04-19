@@ -1,4 +1,5 @@
 import { dependencyDepthsInRegion } from '../../graph/layoutDependencyLayers'
+import { isLeafBoxNode } from '../../graph/nodeKinds'
 import type {
   BoxId,
   DiagramContainer,
@@ -41,7 +42,7 @@ export function buildRootDiagramContainer(
   edges: readonly FlowEdge[],
   bounds: { x: number; y: number; width: number; height: number },
 ): DiagramContainer {
-  const rootModules = nodes.filter((n) => n.type === 'module' && !n.parentNode)
+  const rootModules = nodes.filter((n) => isLeafBoxNode(n) && !n.parentNode)
   const depths = dependencyDepthsInRegion(nodes as any, edges, undefined)
   const maxD = depths.size ? Math.max(0, ...depths.values()) : 0
 
@@ -98,6 +99,6 @@ export function buildDiagramRootModel(
   bounds: { x: number; y: number; width: number; height: number },
 ): DiagramRootModel {
   const container = buildRootDiagramContainer(nodes, edges, bounds)
-  const projectGraphNodeIds = nodes.filter((n) => n.type === 'module').map((n) => n.id)
+  const projectGraphNodeIds = nodes.filter(isLeafBoxNode).map((n) => n.id)
   return { container, projectGraphNodeIds }
 }

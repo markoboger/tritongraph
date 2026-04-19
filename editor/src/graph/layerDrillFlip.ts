@@ -1,5 +1,7 @@
 import type { GraphNode } from '@vue-flow/core'
 
+import { isLayerDrillBoxNode } from './nodeKinds'
+
 export type LayerFlipRect = { x: number; y: number; w: number; h: number }
 
 export type LayerFlipState = {
@@ -54,7 +56,7 @@ export function attachLayerFlipInvert(
   transition: string,
 ): GraphNode[] {
   return ns.map((n) => {
-    if (n.type !== 'module') return n
+    if (!isLayerDrillBoxNode(n)) return n
     if (n.hidden) return stripLayerFlipFromNode(n)
     const first = firstById.get(n.id)
     if (!first) return stripLayerFlipFromNode(n)
@@ -68,7 +70,7 @@ export function playLayerFlip(ns: GraphNode[], durationMs: number, easing: strin
   const tr = `transform ${durationMs}ms ${easing}`
   return ns.map((n) => {
     const raw = n.data as Record<string, unknown> | undefined
-    if (n.type !== 'module' || !raw?.layerFlip) return n
+    if (!isLayerDrillBoxNode(n) || !raw?.layerFlip) return n
     return mergeLayerFlip(n, { tx: 0, ty: 0, sx: 1, sy: 1, transition: tr })
   })
 }

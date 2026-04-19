@@ -1,4 +1,5 @@
 import { aggregateSourceHandleId, DEP_SOURCE_HANDLE } from './handles'
+import { isLeafBoxNode } from './nodeKinds'
 import { edgeContributesToClasspathDepth } from './relationKinds'
 
 /** Top + bottom gutter inside each layout region for smoothstep edges that skip ≥1 depth column. */
@@ -18,11 +19,22 @@ const GROUP_MIN_H = 280
 
 const MARGIN_X = 28
 const MARGIN_Y = 36
-const INNER_PAD_X = 24
-const INNER_PAD_Y = 44
+/**
+ * Inset between a nested group's outer border and the leftmost / topmost child. Bumped beyond
+ * the previous values (24 / 44) so nested package containers have visible margin on the LEFT
+ * and TOP — the GROUP banner already lives in the top inset, so we keep more pixels there.
+ */
+const INNER_PAD_X = 32
+const INNER_PAD_Y = 52
 const COLUMN_GUTTER = 64
-const STACK_GAP = 18
-const GROUP_WRAP = 24
+const STACK_GAP = 24
+/**
+ * Extra slack added on the RIGHT and BOTTOM when sizing a group container around its laid-out
+ * children. Combined with `INNER_PAD_*` this gives roughly symmetric breathing room on all
+ * four sides (top / left = `INNER_PAD_*`, right / bottom = `INNER_PAD_* + GROUP_WRAP`) plus
+ * a little extra room for edge stubs leaving the rightmost children.
+ */
+const GROUP_WRAP = 28
 
 /** Small inset so handles are not flush with column boundary */
 const COL_INSET = 3
@@ -43,7 +55,7 @@ function collectRegionParents(nodes: readonly { type?: string; parentNode?: unkn
   const keys = new Map<string | undefined, true>()
   keys.set(undefined, true)
   for (const n of nodes) {
-    if (n.type !== 'module' || n.parentNode === undefined || n.parentNode === null || n.parentNode === '') continue
+    if (!isLeafBoxNode(n) || n.parentNode === undefined || n.parentNode === null || n.parentNode === '') continue
     keys.set(String(n.parentNode), true)
   }
   return [...keys.keys()]
@@ -54,7 +66,7 @@ function modulesInRegion(
   regionParent: string | undefined,
 ): any[] {
   return nodes.filter((n) => {
-    if (n.type !== 'module') return false
+    if (!isLeafBoxNode(n)) return false
     const p = n.parentNode
     const pk = p === undefined || p === null || p === '' ? undefined : String(p)
     return pk === regionParent
@@ -162,6 +174,31 @@ function sizeOf(n: {
 }
 
 /**
+ * Required size of a child during this parent's layout pass.
+ *
+ * For leaf boxes we always return the standard module footprint. For group containers we read
+ * the dimensions written back by THIS child's own (deeper-first) `layoutOneParent` pass — that
+ * pass measures the bounding box of its grand-children and stores the result on the group's
+ * `style.width` / `style.height`. By the time the outer parent runs (deepest-first ordering
+ * in `layoutDepthInViewport`), every group child therefore has up-to-date min-required
+ * dimensions on its style. If for any reason no inner pass has run (no children in the
+ * group), we fall back to `GROUP_MIN_*` to keep the container visually meaningful.
+ *
+ * This is what makes nested package containers (e.g. `animal` with 12+ artefacts) NOT get
+ * crushed into their parent's equal-height cell allocation: the outer layout sees the actual
+ * height the inner content needs and reserves it.
+ */
+function requiredChildSize(child: any): { w: number; h: number } {
+  if (isLeafBoxNode(child)) return { w: MODULE_W, h: MODULE_H }
+  const w = Number(child.style?.width)
+  const h = Number(child.style?.height)
+  return {
+    w: Number.isFinite(w) && w > 0 ? w : GROUP_MIN_W,
+    h: Number.isFinite(h) && h > 0 ? h : GROUP_MIN_H,
+  }
+}
+
+/**
  * Per-depth inner box width (layout uses `inner + 2*COL_INSET` as column track).
  */
 function distributeColumnInners(maxD: number, usableW: number): number[] {
@@ -250,10 +287,16 @@ function nestDepth(id: string, byId: Map<string, { parentNode?: string }>): numb
 
 function estimateInnerViewport(
   parentId: string,
-  out: { id: string; parentNode?: string; type?: string; style?: Record<string, unknown>; data?: unknown }[],
+  out: { id: string; parentNode?: string; type?: string; style?: Record<string, unknown>; data?: unknown; hidden?: boolean }[],
   edges: readonly { source: string; target: string; label?: unknown }[],
 ): ViewportSize {
-  const children = out.filter((n) => String(n.parentNode) === parentId)
+  /**
+   * Skip hidden children: they don't render and `layoutOneParent` already filters them out
+   * before placing nodes. Counting their required size here would inflate the parent's
+   * estimated viewport — which matters for the package expand affordance, where sibling
+   * groups are temporarily hidden so the focused group can claim the full layer height.
+   */
+  const children = out.filter((n) => String(n.parentNode) === parentId && !n.hidden)
   const childIds = new Set(children.map((c) => c.id))
   const internal = edges.filter(
     (e) => childIds.has(e.source) && childIds.has(e.target) && edgeContributesToClasspathDepth(e),
@@ -275,24 +318,32 @@ function estimateInnerViewport(
   for (const arr of byDepth.values()) {
     arr.sort((a, b) => String(a.id).localeCompare(String(b.id)))
   }
-  const byLayer = new Map<number, number>()
-  for (const c of children) {
-    const d = depths.get(c.id) ?? 0
-    byLayer.set(d, (byLayer.get(d) ?? 0) + 1)
-  }
-  const maxStack = Math.max(1, ...byLayer.values())
+  /**
+   * Per-column required size: WIDTH = max child width in the column (so groups that need a
+   * wider footprint than a leaf module get the column track they need), HEIGHT = sum of child
+   * heights + gaps (so a column of `n` children allocates space proportional to each child's
+   * own needs rather than dividing a fixed band into `n` equal cells). This is what allows a
+   * tall package container next to short artefacts to coexist without the tall one being
+   * crushed.
+   */
   let trackSum = 0
+  let maxColH = 0
   for (let d = 0; d <= maxD; d++) {
-    trackSum += MODULE_W + 2 * COL_INSET
+    const arr = byDepth.get(d) ?? []
+    let colW = MODULE_W
+    let colH = 0
+    for (const c of arr) {
+      const sz = requiredChildSize(c)
+      colW = Math.max(colW, sz.w)
+      colH += sz.h
+    }
+    colH += Math.max(0, arr.length - 1) * STACK_GAP
+    trackSum += colW + 2 * COL_INSET
+    maxColH = Math.max(maxColH, colH)
   }
   trackSum += Math.max(0, cols - 1) * COLUMN_GUTTER
   const innerW = 2 * INNER_PAD_X + trackSum + 48
-  const innerH =
-    2 * INNER_PAD_Y +
-    maxStack * Math.max(MODULE_H, 120) +
-    Math.max(0, maxStack - 1) * STACK_GAP +
-    2 * CROSS_LAYER_LANE_MAX +
-    48
+  const innerH = 2 * INNER_PAD_Y + Math.max(MODULE_H, maxColH) + 2 * CROSS_LAYER_LANE_MAX + 48
   return { width: Math.max(340, innerW), height: Math.max(260, innerH) }
 }
 
@@ -369,32 +420,64 @@ function layoutOneParent(
     const visibleLayerNodes = layerNodes.filter((c) => !(c as { hidden?: boolean }).hidden)
     const n = visibleLayerNodes.length
     const totalGaps = Math.max(0, n - 1) * STACK_GAP
-    const cellH = n > 0 ? (stackBand - totalGaps) / n : stackBand
-    const boxW = Math.max(64, columnInner[d] ?? 64)
-    const boxH = Math.max(44, cellH)
+
+    /**
+     * Two-pass cell sizing for mixed leaf+group columns:
+     *   1. Group children KEEP the size their inner layout already determined (read via
+     *      `requiredChildSize`). Crushing them would make their grand-children overflow.
+     *   2. Leaf children share whatever vertical space remains in the stack band (or fall
+     *      back to MODULE_H if nothing remains). They still get the column's full track
+     *      width (`baseColW`).
+     * Column width is the max of the layout-distributed track width and the widest group
+     * child in the column — so a wide nested container forces its column wider rather than
+     * being cropped.
+     */
+    const childSizes = visibleLayerNodes.map((c) => requiredChildSize(c))
+    const sumGroupH = visibleLayerNodes.reduce(
+      (s, c, i) => s + (isLeafBoxNode(c) ? 0 : childSizes[i]!.h),
+      0,
+    )
+    const numLeaves = visibleLayerNodes.reduce((s, c) => s + (isLeafBoxNode(c) ? 1 : 0), 0)
+    const remainingH = Math.max(0, stackBand - sumGroupH - totalGaps)
+    const leafH = numLeaves > 0 ? Math.max(MODULE_H, remainingH / numLeaves) : Math.max(44, stackBand)
+    const maxGroupChildW = visibleLayerNodes.reduce(
+      (m, c, i) => (isLeafBoxNode(c) ? m : Math.max(m, childSizes[i]!.w)),
+      0,
+    )
+    const baseColW = Math.max(64, columnInner[d] ?? 64)
+    const boxW = Math.max(baseColW, maxGroupChildW)
     const colTrackW = boxW + 2 * COL_INSET
 
+    let yCursor = stackTop
     for (let i = 0; i < n; i++) {
       const node = visibleLayerNodes[i]!
       const idx = out.findIndex((x) => x.id === node.id)
-      if (idx === -1) continue
+      if (idx === -1) {
+        // Still advance cursor so subsequent siblings don't collapse onto missing slot.
+        yCursor += (isLeafBoxNode(node) ? leafH : childSizes[i]!.h) + STACK_GAP
+        continue
+      }
       const x = xCursor + COL_INSET
-      const y = stackTop + i * (cellH + STACK_GAP)
+      const y = yCursor
+      const isLeaf = isLeafBoxNode(node)
+      const childH = isLeaf ? leafH : childSizes[i]!.h
+      const childW = isLeaf ? boxW : Math.max(boxW, childSizes[i]!.w)
 
       const prevStyle = out[idx].style && typeof out[idx].style === 'object' ? { ...out[idx].style } : {}
       out[idx] = {
         ...out[idx],
         position: { x, y },
-        width: boxW,
-        height: boxH,
+        width: childW,
+        height: childH,
         style: {
           ...prevStyle,
-          width: `${boxW}px`,
-          height: `${boxH}px`,
+          width: `${childW}px`,
+          height: `${childH}px`,
           opacity: 1,
           pointerEvents: 'auto',
         },
       }
+      yCursor += childH + STACK_GAP
     }
 
     for (const node of layerNodes) {
@@ -432,12 +515,16 @@ function layoutOneParent(
     const pidx = out.findIndex((n) => n.id === parentId)
     if (pidx !== -1) {
       const prev = out[pidx].style ?? {}
+      /** Outer Scala package frame: match left inset on the right/bottom (no extra `GROUP_WRAP`). */
+      const tight = isPackageScopeGroupNode(out, parentId)
+      const padR = tight ? INNER_PAD_X : INNER_PAD_X + GROUP_WRAP
+      const padB = tight ? INNER_PAD_Y : INNER_PAD_Y + GROUP_WRAP
       out[pidx] = {
         ...out[pidx],
         style: {
           ...prev,
-          width: Math.max(GROUP_MIN_W, maxR + INNER_PAD_X + GROUP_WRAP),
-          height: Math.max(GROUP_MIN_H, maxB + INNER_PAD_Y + GROUP_WRAP),
+          width: Math.max(GROUP_MIN_W, maxR + padR),
+          height: Math.max(GROUP_MIN_H, maxB + padB),
         },
       }
     }
@@ -938,7 +1025,7 @@ export function applyHandleAnchorAlignment(nodes: readonly any[], edges: readonl
     const src = byId.get(s)
     const tgt = byId.get(t)
     if (!src || !tgt) continue
-    if (src.type !== 'module' || tgt.type !== 'module') continue
+    if (!isLeafBoxNode(src) || !isLeafBoxNode(tgt)) continue
     if (parentKey(src) !== parentKey(tgt)) continue
 
     const midY = roundWorldY((worldCenterYForNode(s, byId) + worldCenterYForNode(t, byId)) / 2)
@@ -972,7 +1059,7 @@ export function applyHandleAnchorAlignment(nodes: readonly any[], edges: readonl
   }
 
   return nodes.map((n) => {
-    if (n.type !== 'module') return n
+    if (!isLeafBoxNode(n)) return n
     const tops = anchorById.get(String(n.id))
     const prev =
       n.data && typeof n.data === 'object' ? { ...(n.data as Record<string, unknown>) } : {}
@@ -1043,7 +1130,7 @@ export function layoutDepthInViewport(
       position: { x: n.position?.x ?? 0, y: n.position?.y ?? 0 },
       style: n.style ? { ...n.style } : undefined,
     }
-    if (n.type === 'module') {
+    if (isLeafBoxNode(n)) {
       return { ...base, hidden: hiddenById.get(n.id) ?? false }
     }
     return base
@@ -1059,6 +1146,229 @@ export function layoutDepthInViewport(
   }
 
   layoutOneParent(undefined, out, edges, viewport)
+
+  const topLevel = out.filter((n) => !n.parentNode)
+  /** Hidden nodes must not break singleton detection (e.g. stray invisible roots). */
+  const topVisible = topLevel.filter((n) => !(n as { hidden?: boolean }).hidden)
+
+  /**
+   * Single top-level leaf (one `module` / `package` / `artefact` with no parent): stretch it to
+   * the diagram viewport so it matches a full-canvas project card. Used by the simplified Scala
+   * package view (one outermost package only) and keeps parity with how users expect one box to
+   * read at a glance.
+   */
+  const singletonRootLeaf = topVisible.length === 1 && isLeafBoxNode(topVisible[0]!) ? topVisible[0]! : null
+  if (singletonRootLeaf) {
+    const innerW = Math.max(64, viewport.width - 2 * MARGIN_X)
+    const innerH = Math.max(80, viewport.height - 2 * MARGIN_Y)
+    const idx = out.findIndex((n) => n.id === singletonRootLeaf.id)
+    if (idx !== -1) {
+      const prevStyle = out[idx].style && typeof out[idx].style === 'object' ? { ...out[idx].style } : {}
+      out[idx] = {
+        ...out[idx],
+        position: { x: MARGIN_X, y: MARGIN_Y },
+        width: innerW,
+        height: innerH,
+        style: {
+          ...prevStyle,
+          width: `${innerW}px`,
+          height: `${innerH}px`,
+        },
+      }
+    }
+    return out
+  }
+
+  /**
+   * Outermost package container always claims the full canvas.
+   *
+   * When the diagram has a single top-level `group` node (e.g. the root package
+   * `com.example.animalsfruit` in the package view), the user's mental model is that this
+   * IS the viewport — clicking a nested package should let it fill the screen, and there's
+   * no useful information conveyed by drawing whitespace around the outer container. So we
+   * pin the singleton root group to the viewport bounds and re-run the depth layout for
+   * its subtree into those bounds. This also gives `applyLayerDrill` a consistent ceiling:
+   * `verticalBandForLayerDrill` reads the parent's `style.height`, which is now guaranteed
+   * to be the diagram height, so a drilled child group fills the canvas vertically.
+   *
+   * Top-level leaf modules (sbt project view) and multi-root layouts are unaffected.
+   */
+  const singletonRootGroup = topVisible.length === 1 && topVisible[0]?.type === 'group' ? topVisible[0]! : null
+  if (singletonRootGroup) {
+    const innerW = Math.max(GROUP_MIN_W, viewport.width - 2 * MARGIN_X)
+    const innerH = Math.max(GROUP_MIN_H, viewport.height - 2 * MARGIN_Y)
+    singletonRootGroup.position = { x: MARGIN_X, y: MARGIN_Y }
+    return relayoutSubtreeIntoBounds(
+      singletonRootGroup.id,
+      out,
+      edges,
+      { width: innerW, height: innerH },
+    )
+  }
+
+  return out
+}
+
+function isPackageScopeGroupNode(out: readonly any[], groupId: string): boolean {
+  const n = out.find((x) => x.id === groupId)
+  const d = n?.data as Record<string, unknown> | undefined
+  return d?.packageScope === true
+}
+
+function readNodePixelDim(styleVal: unknown, numVal: unknown, fallback: number): number {
+  if (typeof numVal === 'number' && Number.isFinite(numVal) && numVal > 0) return numVal
+  if (typeof styleVal === 'number' && Number.isFinite(styleVal) && styleVal > 0) return styleVal
+  if (typeof styleVal === 'string') {
+    const n = parseFloat(styleVal)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  return fallback
+}
+
+/**
+ * Scala outer package group (`data.packageScope`): after depth layout, the group is pinned to
+ * the full viewport but column math can leave the child bounding box small — scale + translate
+ * direct children so they **fill** the inner frame (same intent as a PackageBox body filling the
+ * outer card).
+ */
+function stretchPackageScopeGroupChildrenToFillBounds(
+  rootGroupId: string,
+  out: any[],
+  bounds: ViewportSize,
+): void {
+  const gidx = out.findIndex((n) => n.id === rootGroupId)
+  if (gidx === -1) return
+  const group = out[gidx] as { data?: Record<string, unknown> }
+  if (group.data?.packageScope !== true) return
+
+  const children = out.filter(
+    (n) => String(n.parentNode) === rootGroupId && !(n as { hidden?: boolean }).hidden,
+  )
+  if (!children.length) return
+
+  const geo = regionStackMetrics(bounds.height, rootGroupId)
+  const innerLeft = INNER_PAD_X
+  const innerTop = geo.stackTop
+  /** Symmetric with left inset — avoid `GROUP_WRAP` slack on right/bottom for this outer card. */
+  const innerW = Math.max(120, bounds.width - 2 * INNER_PAD_X)
+  const innerH = Math.max(80, bounds.height - innerTop - INNER_PAD_Y)
+
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const c of children) {
+    const n = out.find((x) => x.id === c.id) as any
+    if (!n) continue
+    const w = readNodePixelDim(n.style?.width, n.width, MODULE_W)
+    const h = readNodePixelDim(n.style?.height, n.height, MODULE_H)
+    minX = Math.min(minX, n.position.x)
+    minY = Math.min(minY, n.position.y)
+    maxX = Math.max(maxX, n.position.x + w)
+    maxY = Math.max(maxY, n.position.y + h)
+  }
+  if (!Number.isFinite(minX) || maxX <= minX || maxY <= minY) return
+
+  const bw = maxX - minX
+  const bh = maxY - minY
+  const sx = innerW / bw
+  const sy = innerH / bh
+
+  for (const c of children) {
+    const idx = out.findIndex((x) => x.id === c.id)
+    if (idx === -1) continue
+    const n = out[idx] as any
+    const w = readNodePixelDim(n.style?.width, n.width, MODULE_W)
+    const h = readNodePixelDim(n.style?.height, n.height, MODULE_H)
+    const nx = Math.round(innerLeft + (n.position.x - minX) * sx)
+    const ny = Math.round(innerTop + (n.position.y - minY) * sy)
+    const nw = Math.max(120, Math.round(w * sx))
+    const nh = Math.max(72, Math.round(h * sy))
+    const prevStyle = n.style && typeof n.style === 'object' ? { ...n.style } : {}
+    out[idx] = {
+      ...n,
+      position: { x: nx, y: ny },
+      width: nw,
+      height: nh,
+      style: {
+        ...prevStyle,
+        width: `${nw}px`,
+        height: `${nh}px`,
+      },
+    }
+  }
+}
+
+/**
+ * Re-runs the depth layout for the subtree rooted at `rootGroupId` into the explicit
+ * `bounds` viewport. Used by layer-drill when a group is the drill focus: after the drill
+ * stretches the group to (approximately) the full diagram height, its children must be
+ * re-laid-out inside the new bounds so the artefacts grow with the container instead of
+ * sitting in the upper-left corner of an empty box.
+ *
+ * Only nodes whose parent chain leads back to `rootGroupId` (or `rootGroupId` itself) are
+ * touched — the drill geometry for the root group's siblings stays put. After the inner
+ * layout has finished, the root group's `style.{width,height}` is forcibly restored to
+ * `bounds.{width,height}` so the auto-grow inside `layoutOneParent` (which sizes the parent
+ * to its children's bounding box) doesn't shrink the focus column back.
+ */
+export function relayoutSubtreeIntoBounds(
+  rootGroupId: string,
+  nodes: readonly any[],
+  edges: readonly { source: string; target: string; label?: unknown }[],
+  bounds: ViewportSize,
+): any[] {
+  const out = nodes.map((n) => ({
+    ...n,
+    position: { x: n.position?.x ?? 0, y: n.position?.y ?? 0 },
+    style: n.style ? { ...n.style } : undefined,
+  }))
+  const byId = new Map(out.map((n) => [n.id, n]))
+
+  const inSubtree = new Set<string>([rootGroupId])
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const n of out) {
+      const pid = n.parentNode != null && n.parentNode !== '' ? String(n.parentNode) : undefined
+      if (pid && inSubtree.has(pid) && !inSubtree.has(n.id)) {
+        inSubtree.add(n.id)
+        changed = true
+      }
+    }
+  }
+
+  const innerParentIds = [...new Set(
+    out
+      .filter((n) => n.parentNode && inSubtree.has(String(n.parentNode)) && String(n.parentNode) !== rootGroupId)
+      .map((n) => String(n.parentNode)),
+  )]
+  innerParentIds.sort((a, b) => nestDepth(b, byId) - nestDepth(a, byId))
+
+  for (const pid of innerParentIds) {
+    const vp = estimateInnerViewport(pid, out, edges)
+    layoutOneParent(pid, out, edges, vp)
+  }
+
+  layoutOneParent(rootGroupId, out, edges, bounds)
+
+  stretchPackageScopeGroupChildrenToFillBounds(rootGroupId, out, bounds)
+
+  const ridx = out.findIndex((n) => n.id === rootGroupId)
+  if (ridx !== -1) {
+    const prevStyle =
+      out[ridx].style && typeof out[ridx].style === 'object' ? { ...out[ridx].style } : {}
+    out[ridx] = {
+      ...out[ridx],
+      width: bounds.width,
+      height: bounds.height,
+      style: {
+        ...prevStyle,
+        width: `${bounds.width}px`,
+        height: `${bounds.height}px`,
+      },
+    }
+  }
 
   return out
 }

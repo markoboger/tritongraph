@@ -26,7 +26,43 @@ const emit = defineEmits<{
   'cycle-color': []
   rename: [string]
   'description-change': [string]
+  /** Markdown link in subtitle was clicked. Argument is the raw href (e.g. `triton:packages`). */
+  'link-action': [string]
 }>()
+
+/**
+ * Subtitle markdown: only `[label](href)` is recognized — enough for our internal `triton:` action
+ * links. Anything else renders verbatim. Anchors are rendered as buttons (no real navigation; we
+ * emit `link-action` and let the host decide what to do).
+ */
+interface SubtitleSegment {
+  kind: 'text' | 'link'
+  value: string
+  href?: string
+}
+
+const SUBTITLE_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
+
+const subtitleSegments = computed<SubtitleSegment[]>(() => {
+  const text = String(props.subtitle ?? '')
+  if (!text) return []
+  const out: SubtitleSegment[] = []
+  let last = 0
+  SUBTITLE_LINK_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = SUBTITLE_LINK_RE.exec(text)) !== null) {
+    if (m.index > last) out.push({ kind: 'text', value: text.slice(last, m.index) })
+    out.push({ kind: 'link', value: m[1] ?? '', href: m[2] ?? '' })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) out.push({ kind: 'text', value: text.slice(last) })
+  return out
+})
+
+function onSubtitleLinkClick(href: string | undefined) {
+  if (!href) return
+  emit('link-action', href)
+}
 
 const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
 
@@ -204,7 +240,21 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       @dblclick.stop="startEditing"
     >
       <div ref="titleEl" class="title" :title="'Double-click to rename / edit description'">{{ label }}</div>
-      <div v-if="subtitle && !tightLayout" class="subtitle">{{ subtitle }}</div>
+      <div v-if="subtitle && !tightLayout" class="subtitle">
+        <template v-for="(seg, i) in subtitleSegments" :key="i">
+          <button
+            v-if="seg.kind === 'link'"
+            type="button"
+            class="subtitle-link nodrag nopan"
+            :title="seg.href"
+            @click.stop="onSubtitleLinkClick(seg.href)"
+            @pointerdown.stop
+            @mousedown.stop
+            @dblclick.stop
+          >{{ seg.value }}</button>
+          <span v-else>{{ seg.value }}</span>
+        </template>
+      </div>
       <div
         v-if="description && !tightLayout && !focused"
         class="description-preview"
@@ -464,6 +514,21 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   max-height: 0;
   transform: translateY(4px);
   pointer-events: none;
+}
+.subtitle-link {
+  display: inline;
+  font: inherit;
+  color: var(--box-accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.subtitle-link:hover {
+  filter: brightness(0.85);
 }
 .description-preview {
   margin-top: clamp(2px, 0.5vmin, 6px);
