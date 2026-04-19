@@ -47,6 +47,12 @@ function buildResourceTree(nodes: ExportFlowNode[]): IlographResource[] {
       if (Array.isArray(ia) && ia.length) {
         res['x-triton-inner-artefacts'] = ia as NonNullable<IlographResource['x-triton-inner-artefacts']>
       }
+      const iar = (n.data as Record<string, unknown> | undefined)?.innerArtefactRelations
+      if (Array.isArray(iar) && iar.length) {
+        res['x-triton-inner-artefact-relations'] = iar as NonNullable<
+          IlographResource['x-triton-inner-artefact-relations']
+        >
+      }
       const nested = subtree(n.id)
       if (nested.length) res.children = nested
       resources.push(res)

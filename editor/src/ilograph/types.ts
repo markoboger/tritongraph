@@ -39,6 +39,17 @@ export type TritonInnerArtefactSpec = {
   subtitle?: string
 }
 
+/**
+ * Inheritance-style link between two inner artefacts of the **same** package (same ids as
+ * `x-triton-inner-artefacts[].id`). `label` mirrors Scala surface syntax: first parent is
+ * `extends`, further mixin parents are `with`.
+ */
+export type TritonInnerArtefactRelationSpec = {
+  from: string
+  to: string
+  label: 'extends' | 'with'
+}
+
 export interface IlographResource {
   name: string
   id?: string
@@ -65,6 +76,11 @@ export interface IlographResource {
   'x-triton-inner-packages'?: ReadonlyArray<TritonInnerPackageSpec>
   /** Top-level Scala artefacts for this package, shown only when the package is layer-drill focused. */
   'x-triton-inner-artefacts'?: ReadonlyArray<TritonInnerArtefactSpec>
+  /**
+   * `extends` / `with` edges between those inner artefacts (parents → subtype), resolved only
+   * for types declared in this same package so the inner diagram stays self-contained.
+   */
+  'x-triton-inner-artefact-relations'?: ReadonlyArray<TritonInnerArtefactRelationSpec>
   /**
    * Non-standard: this resource is the **outer Scala package scope** rendered as a Vue Flow
    * `group` — {@link GroupNode} uses it to show package-style chrome (folder + title) while

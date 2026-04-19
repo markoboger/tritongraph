@@ -2,6 +2,7 @@ import type {
   IlographDocument,
   IlographRelation,
   IlographResource,
+  TritonInnerArtefactRelationSpec,
   TritonInnerArtefactSpec,
   TritonInnerPackageSpec,
 } from '../ilograph/types'
@@ -47,7 +48,8 @@ export interface ScalaPackageNode {
 }
 
 /**
- * Kinds we render as their own `ScalaArtefactBox`. Top-level `val` / `var` / `type` / `given`
+ * Kinds we render as their own flow leaf (`PackageBox` unfocused + `ScalaArtefactBox` when drilled).
+ * Top-level `val` / `var` / `type` / `given`
  * are intentionally omitted: they are rarely declared directly under a `package` clause and would
  * mostly add visual noise next to the type / object boxes that anchor the package's API.
  */
@@ -427,6 +429,28 @@ function innerArtefactSpecsForNode(n: PackageTreeNode): TritonInnerArtefactSpec[
     }))
 }
 
+/** `extends` / `with` between inner-list members only (both ends in this package’s artefact set). */
+function innerArtefactRelationSpecsForNode(
+  n: PackageTreeNode,
+  graph: ScalaPackageGraph,
+): TritonInnerArtefactRelationSpec[] {
+  const innerArts = innerArtefactSpecsForNode(n)
+  if (innerArts.length < 2) return []
+  const idSet = new Set(innerArts.map((a) => a.id))
+  const out: TritonInnerArtefactRelationSpec[] = []
+  const seen = new Set<string>()
+  for (const e of graph.inheritance) {
+    if (!idSet.has(e.fromArtefactId) || !idSet.has(e.toArtefactId)) continue
+    const label: 'extends' | 'with' = e.kind === 'with' ? 'with' : 'extends'
+    const key = `${e.fromArtefactId}\u0001${e.toArtefactId}\u0001${label}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ from: e.fromArtefactId, to: e.toArtefactId, label })
+  }
+  out.sort((a, b) => (a.to === b.to ? a.from.localeCompare(b.from) : a.to.localeCompare(b.to)))
+  return out
+}
+
 /** All `.scala` paths under this subtree (for the root-only package summary). */
 function collectSubtreeFiles(node: PackageTreeNode): string[] {
   const out = new Set<string>(node.files)
@@ -470,7 +494,7 @@ function rootInnerPackageSpecs(picked: PackageTreeNode): TritonInnerPackageSpec[
  * are not separate nodes; they are listed under `x-triton-inner-packages` and rendered when the
  * box is layer-drill focused (stacked inner package shells).
  */
-function rootOnlyPackageLeafResource(node: PackageTreeNode): IlographResource {
+function rootOnlyPackageLeafResource(node: PackageTreeNode, graph: ScalaPackageGraph): IlographResource {
   const files = collectSubtreeFiles(node)
   const name = node.segment || node.fqn || ROOT_PACKAGE
   const lines: string[] = []
@@ -482,6 +506,7 @@ function rootOnlyPackageLeafResource(node: PackageTreeNode): IlographResource {
   }
   const inner = rootInnerPackageSpecs(node)
   const innerArts = innerArtefactSpecsForNode(node)
+  const innerRels = innerArtefactRelationSpecsForNode(node, graph)
   return {
     id: node.fqn || ROOT_PACKAGE,
     name,
@@ -489,6 +514,7 @@ function rootOnlyPackageLeafResource(node: PackageTreeNode): IlographResource {
     description: lines.join('\n'),
     ...(inner.length ? { 'x-triton-inner-packages': inner } : {}),
     ...(innerArts.length ? { 'x-triton-inner-artefacts': innerArts } : {}),
+    ...(innerRels.length ? { 'x-triton-inner-artefact-relations': innerRels } : {}),
   }
 }
 
@@ -509,13 +535,16 @@ function collectSubtreePackageFqns(picked: PackageTreeNode): Set<string> {
  * `x-triton-inner-packages`): each FQN is a Vue Flow node under the outer group so all `imports`
  * edges in the subtree can attach to real endpoints and get LR layout.
  */
-function flattenDescendantPackageResources(picked: PackageTreeNode): IlographResource[] {
+function flattenDescendantPackageResources(
+  picked: PackageTreeNode,
+  graph: ScalaPackageGraph,
+): IlographResource[] {
   const out: IlographResource[] = []
   function visit(n: PackageTreeNode) {
     const c = collapseLinearChains(n)
     for (const ch of c.children) {
       const cc = collapseLinearChains(ch)
-      out.push(packageLeafResourceForGraph(cc))
+      out.push(packageLeafResourceForGraph(cc, graph))
       visit(ch)
     }
   }
@@ -524,7 +553,7 @@ function flattenDescendantPackageResources(picked: PackageTreeNode): IlographRes
   return out
 }
 
-function packageLeafResourceForGraph(n: PackageTreeNode): IlographResource {
+function packageLeafResourceForGraph(n: PackageTreeNode, graph: ScalaPackageGraph): IlographResource {
   const c = collapseLinearChains(n)
   const files = collectSubtreeFiles(c)
   const lines: string[] = []
@@ -535,6 +564,7 @@ function packageLeafResourceForGraph(n: PackageTreeNode): IlographResource {
     for (const f of files) lines.push(`  - ${f}`)
   }
   const innerArts = innerArtefactSpecsForNode(c)
+  const innerRels = innerArtefactRelationSpecsForNode(c, graph)
   return {
     id: c.fqn,
     name: c.segment || c.fqn,
@@ -542,6 +572,7 @@ function packageLeafResourceForGraph(n: PackageTreeNode): IlographResource {
     description: lines.join('\n'),
     'x-triton-node-type': 'package',
     ...(innerArts.length ? { 'x-triton-inner-artefacts': innerArts } : {}),
+    ...(innerRels.length ? { 'x-triton-inner-artefact-relations': innerRels } : {}),
   }
 }
 
@@ -549,11 +580,11 @@ function packageLeafResourceForGraph(n: PackageTreeNode): IlographResource {
  * Outer picked scope as a **group** (`x-triton-package-scope`): package-style chrome in
  * {@link GroupNode}. All descendant packages are **flat** child resources for dependency layout.
  */
-function pickedPackageGroupResource(picked: PackageTreeNode): IlographResource {
+function pickedPackageGroupResource(picked: PackageTreeNode, graph: ScalaPackageGraph): IlographResource {
   const top = collapseLinearChains(picked)
   const files = collectSubtreeFiles(top)
   const name = top.segment || top.fqn || ROOT_PACKAGE
-  const childResources = flattenDescendantPackageResources(top)
+  const childResources = flattenDescendantPackageResources(top, graph)
   const lines: string[] = []
   lines.push(`Package scope: \`${top.fqn}\``)
   if (files.length) {
@@ -620,20 +651,23 @@ export function scalaPackageGraphToIlographDocument(
   if (picked) {
     const collapsedPicked = collapseLinearChains(picked)
     if (collapsedPicked.children.length) {
-      topResources = [pickedPackageGroupResource(collapsedPicked)]
+      topResources = [pickedPackageGroupResource(collapsedPicked, graph)]
       relations = relationsInPickedSubtree(graph, collapsedPicked)
     } else {
-      topResources = [rootOnlyPackageLeafResource(collapsedPicked)]
+      topResources = [rootOnlyPackageLeafResource(collapsedPicked, graph)]
     }
   } else if (root.files.length > 0) {
     topResources = [
-      rootOnlyPackageLeafResource({
-        fqn: ROOT_PACKAGE,
-        segment: ROOT_PACKAGE,
-        files: root.files,
-        artefacts: root.artefacts,
-        children: [],
-      }),
+      rootOnlyPackageLeafResource(
+        {
+          fqn: ROOT_PACKAGE,
+          segment: ROOT_PACKAGE,
+          files: root.files,
+          artefacts: root.artefacts,
+          children: [],
+        },
+        graph,
+      ),
     ]
   } else {
     topResources = []
@@ -642,7 +676,8 @@ export function scalaPackageGraphToIlographDocument(
   const descParts = [
     meta.title ??
       'Scala package (tree-sitter): outer scope as a group; direct sub-packages as nodes laid out by `imports` edges from import statements.',
-    'Parent → descendant package imports are omitted (containment). Imports of packages not in this graph produce no edge. Artefacts are not separate nodes here.',
+    'Parent → descendant package imports are omitted (containment). Imports of packages not in this graph produce no edge.',
+    'Inner `x-triton-inner-artefact-relations` list `extends` / `with` edges between top-level types in the same package (from parsed inheritance).',
   ]
   if (meta.sourcePath) descParts.push(`Source: \`${meta.sourcePath}\``)
 

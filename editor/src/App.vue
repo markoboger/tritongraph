@@ -3,7 +3,6 @@ import { Position, type NodeTypesObject } from '@vue-flow/core'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import FlowProjectNode from './components/diagram/FlowProjectNode.vue'
 import FlowPackageNode from './components/diagram/FlowPackageNode.vue'
-import FlowScalaArtefactNode from './components/diagram/FlowScalaArtefactNode.vue'
 import GroupNode from './components/GroupNode.vue'
 import GraphWorkspace from './components/GraphWorkspace.vue'
 import YamlDiffEditor from './components/YamlDiffEditor.vue'
@@ -177,7 +176,7 @@ const activeExample = computed<{ root: string; dir: string } | null>(() => {
 const nodeTypes = {
   module: FlowProjectNode,
   package: FlowPackageNode,
-  artefact: FlowScalaArtefactNode,
+  artefact: FlowPackageNode,
   group: GroupNode,
 } as NodeTypesObject
 

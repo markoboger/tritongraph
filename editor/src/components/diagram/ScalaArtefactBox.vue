@@ -1,16 +1,10 @@
 <script setup lang="ts">
 /**
- * Scala-artefact node body for the package diagram. Sibling of {@link PackageBox}: nests *inside*
- * a package container as a leaf box and represents one top-level Scala declaration (class, object,
- * trait, enum, top-level def, …). Kept separate so artefact UI can grow independently — future
- * work: open source on click, show coverage/sonar metrics, link to specs, list members.
- *
- * Initial divergences from {@link PackageBox}:
- *   - Kind badge (one-letter circle) instead of a folder icon — there is no canonical artefact icon.
- *   - Subtitle is the kind keyword (`class` / `case class` / `object` / `trait` / `enum` / `def`).
- *   - No description editor (artefacts are derived from source — the YAML-side editor would not
- *     round-trip back to `.scala`). The pin / accent tools and tight-layout behaviour mirror
- *     {@link PackageBox} so the visual rhythm in a package container stays consistent.
+ * Layer-drill **focused** body for a Scala declaration (class / object / trait / …). Compact
+ * (unfocused) chrome on the canvas reuses {@link PackageBox} with `leaf-visual="artefact"` inside
+ * {@link FlowPackageNode} for flow `type: 'artefact'`. This component only covers the expanded drill-in shell (kind
+ * badge, metrics placeholders, foldable sections). Nested use: expanded inner artefact inside
+ * {@link PackageBox}.
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
@@ -24,7 +18,6 @@ const props = defineProps<{
   notes?: string
   boxColor?: NamedBoxColor | string
   pinned: boolean
-  focused: boolean
   showPinTool: boolean
   /** Layer-drill focused box only: show accent color picker. */
   showColorTool: boolean
@@ -60,7 +53,13 @@ const kindBadge = computed(() => {
 
 const rootEl = ref<HTMLElement | null>(null)
 const titleEl = ref<HTMLElement | null>(null)
+/** Header text column in layer-drill mode — width drives tight layout next to the kind badge. */
+const focusedHeadTextEl = ref<HTMLElement | null>(null)
 const tightLayout = ref(false)
+
+/** Match {@link PackageBox} hysteresis so tight mode does not flip on sub-pixel layout noise. */
+const TITLE_TIGHT_ENTER = 4
+const TITLE_TIGHT_EXIT = 14
 
 let measureCanvas: CanvasRenderingContext2D | null = null
 
@@ -76,22 +75,17 @@ function measureTitleWidth(label: string, title: HTMLElement): number {
 }
 
 function measure() {
-  if (props.focused) {
-    tightLayout.value = false
-    return
-  }
   const root = rootEl.value
   const title = titleEl.value
   if (!root || !title) return
   const label = String(props.label ?? '')
-  const hasSubtitle = !!(props.subtitle && String(props.subtitle).trim())
-  const padX =
-    parseFloat(getComputedStyle(root).paddingLeft) + parseFloat(getComputedStyle(root).paddingRight)
-  const availW = Math.max(0, root.clientWidth - padX - 14)
+  const head = focusedHeadTextEl.value
+  const availW = head
+    ? Math.max(0, head.clientWidth - 2)
+    : Math.max(0, root.clientWidth - 96)
   const tw = measureTitleWidth(label, title)
-  const titleTooWide = tw > availW + 2
-  const blockOverflow = hasSubtitle && root.scrollHeight > root.clientHeight + 2
-  tightLayout.value = titleTooWide || blockOverflow
+  const titleDemandsTight = tightLayout.value ? tw > availW - TITLE_TIGHT_EXIT : tw > availW + TITLE_TIGHT_ENTER
+  tightLayout.value = titleDemandsTight
 }
 
 let ro: ResizeObserver | null = null
@@ -101,7 +95,6 @@ onMounted(() => {
     measure()
     ro = new ResizeObserver(() => measure())
     if (rootEl.value) ro.observe(rootEl.value)
-    if (titleEl.value) ro.observe(titleEl.value)
   })
 })
 
@@ -114,7 +107,6 @@ watch(
   () => [
     props.label,
     props.subtitle,
-    props.focused,
     props.notes,
     props.pinned,
     props.boxColor,
@@ -126,68 +118,11 @@ watch(
 </script>
 
 <template>
-  <!-- Default: compact badge + title (click the node on the canvas to layer-drill focus). -->
   <div
-    v-if="!focused"
-    ref="rootEl"
-    class="artefact-box"
-    :class="{
-      'artefact-box--tight': tightLayout,
-      'artefact-box--pinned': pinned,
-      'artefact-box--tools-wide': showColorTool,
-      'artefact-box--pin-only': showPinTool && !showColorTool,
-    }"
-    :style="{ '--box-accent': accent }"
-  >
-    <div v-if="showPinTool || showColorTool" class="artefact-box__tools" @pointerdown.stop>
-      <button
-        v-if="showPinTool"
-        type="button"
-        class="tool-btn tool-btn--pin"
-        :class="{ 'tool-btn--active': pinned }"
-        title="Pin — keep this artefact highlighted when another box is zoomed"
-        :aria-pressed="pinned ? 'true' : 'false'"
-        aria-label="Pin artefact (stays focused when zooming elsewhere)"
-        @click.stop="emit('toggle-pin', $event)"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true" class="tool-btn__icon tool-btn__icon--pin">
-          <path
-            fill="currentColor"
-            d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z"
-          />
-        </svg>
-      </button>
-      <button
-        v-if="showColorTool"
-        type="button"
-        class="tool-btn tool-btn--color"
-        :title="`Accent: ${accent}. Click for next color.`"
-        aria-label="Change box accent color"
-        @click.stop="emit('cycle-color')"
-      >
-        <svg viewBox="0 0 16 16" aria-hidden="true" class="tool-btn__icon tool-btn__icon--color">
-          <circle cx="6" cy="8" r="4.25" />
-          <circle cx="11" cy="8" r="3" opacity="0.45" />
-        </svg>
-      </button>
-    </div>
-
-    <div class="kind-badge-slot">
-      <span class="kind-badge" :title="subtitle ?? ''">{{ kindBadge }}</span>
-    </div>
-
-    <div class="artefact-box__body">
-      <div ref="titleEl" class="title">{{ label }}</div>
-      <div v-if="subtitle && !tightLayout" class="subtitle">{{ subtitle }}</div>
-    </div>
-  </div>
-
-  <!-- Layer-drill focused: metrics in the top-right cluster, foldable detail sections (placeholders). -->
-  <div
-    v-else
     ref="rootEl"
     class="artefact-box artefact-box--focused artefact-box--focused-layout"
     :class="{
+      'artefact-box--tight': tightLayout,
       'artefact-box--pinned': pinned,
       'artefact-box--tools-wide': showColorTool,
       'artefact-box--pin-only': showPinTool && !showColorTool,
@@ -258,9 +193,9 @@ watch(
         <div class="kind-badge-slot kind-badge-slot--header">
           <span class="kind-badge kind-badge--header" :title="subtitle ?? ''">{{ kindBadge }}</span>
         </div>
-        <div class="artefact-box__focused-head-text">
+        <div ref="focusedHeadTextEl" class="artefact-box__focused-head-text">
           <div ref="titleEl" class="title title--header">{{ label }}</div>
-          <div v-if="subtitle" class="subtitle subtitle--header">{{ subtitle }}</div>
+          <div v-if="subtitle && !tightLayout" class="subtitle subtitle--header">{{ subtitle }}</div>
         </div>
       </div>
 
@@ -363,17 +298,6 @@ override def toString: String</pre>
 .artefact-box--focused-layout {
   justify-content: flex-start;
 }
-.kind-badge-slot {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  align-self: center;
-  flex-shrink: 0;
-  width: 100%;
-  height: clamp(32px, min(26cqw, 24cqh), 96px);
-  margin-bottom: clamp(4px, 1.2cqh, 12px);
-  pointer-events: none;
-}
 .kind-badge {
   display: inline-flex;
   justify-content: center;
@@ -388,14 +312,6 @@ override def toString: String</pre>
   letter-spacing: 0.02em;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   box-shadow: inset 0 0 0 2px rgb(255 255 255 / 0.18), 0 1px 2px rgb(15 23 42 / 0.18);
-}
-.artefact-box__body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: stretch;
 }
 .drill-note {
   margin-top: 8px;
@@ -465,7 +381,40 @@ override def toString: String</pre>
   margin-bottom: 8px;
   padding-right: clamp(118px, 26cqw, 172px);
 }
+/** Same idea as `.package-box--tight`: badge centered, title vertical-rl in narrow layer columns. */
+.artefact-box--focused.artefact-box--tight .artefact-box__focused-header {
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  justify-content: flex-start;
+}
+.artefact-box--focused.artefact-box--tight .kind-badge-slot--header {
+  align-self: center;
+}
+.artefact-box--focused.artefact-box--tight .artefact-box__focused-head-text {
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  flex: 0 0 auto;
+  min-width: 0;
+  margin-top: clamp(-6px, -1.5cqh, 0px);
+}
+.artefact-box--focused.artefact-box--tight .title--header {
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  max-width: none;
+  align-self: center;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-orientation: mixed;
+  line-height: 1.15;
+  text-align: center;
+}
 .kind-badge-slot--header {
+  display: flex;
+  justify-content: center;
+  align-items: center;
   width: 40px;
   height: 40px;
   margin: 0;
@@ -596,12 +545,6 @@ override def toString: String</pre>
 .drill-note--focused {
   flex: 0 0 auto;
   margin-top: 10px;
-}
-.artefact-box--pinned:not(.artefact-box--focused) {
-  box-shadow:
-    inset 5px 0 0 0 var(--box-accent),
-    0 1px 2px rgb(15 23 42 / 0.08),
-    0 0 0 1px rgb(30 41 59 / 0.1);
 }
 .tool-btn {
   width: 26px;

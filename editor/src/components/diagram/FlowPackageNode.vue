@@ -2,9 +2,10 @@
 /**
  * Vue Flow node for the Scala-package diagram. Sibling of {@link FlowProjectNode} so each diagram
  * can grow features independently (richer package metadata: members, imports drilldown, coverage,
- * sonarqube etc.). Today the wiring is identical except it hosts a {@link PackageBox} and does
- * not relay subtitle link-action clicks (package boxes have no markdown links yet — re-add the
- * `tritonEmitLinkAction` injection here when that changes).
+ * sonarqube etc.). Hosts {@link PackageBox} for packages and, for flow `type: 'artefact'`, the same
+ * node shell with {@link PackageBox} (`leaf-visual="artefact"`) when unfocused and {@link ScalaArtefactBox}
+ * when layer-drill focused. Does not relay subtitle link-action clicks (package boxes have no markdown
+ * links yet — re-add the `tritonEmitLinkAction` injection here when that changes).
  */
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { computed, inject, nextTick, watch } from 'vue'
@@ -18,7 +19,12 @@ import type { ModuleAnchorTops } from '../../graph/layoutDependencyLayers'
 import { edgeContributesToClasspathDepth, strokeColorForFlowEdge } from '../../graph/relationKinds'
 import { usedHandlesForNode } from '../../graph/usedFlowHandles'
 import DiagramSection from './DiagramSection.vue'
-import PackageBox, { type InnerArtefactSummary, type InnerPackageSummary } from './PackageBox.vue'
+import PackageBox, {
+  type InnerArtefactRelationSummary,
+  type InnerArtefactSummary,
+  type InnerPackageSummary,
+} from './PackageBox.vue'
+import ScalaArtefactBox from './ScalaArtefactBox.vue'
 
 type LayerFlipPayload = {
   tx: number
@@ -45,6 +51,7 @@ const props = defineProps<{
     innerPackages?: readonly InnerPackageSummary[]
     /** Scala members listed inside the focused box (no separate flow nodes). */
     innerArtefacts?: readonly InnerArtefactSummary[]
+    innerArtefactRelations?: readonly InnerArtefactRelationSummary[]
     /** Nested inner drill: ids from first-tier `innerPackages` downward (flow-only UI state). */
     innerDrillPath?: readonly string[]
     /** Which inner Scala artefact row is focused (flow-only; does not change layer drill). */
@@ -62,12 +69,20 @@ const innerArtefactsForBox = computed(() => {
   return Array.isArray(raw) ? raw : []
 })
 
+const innerArtefactRelationsForBox = computed(() => {
+  const raw = props.data.innerArtefactRelations
+  return Array.isArray(raw) ? raw : []
+})
+
 const innerDrillPathForBox = computed(() => {
   const raw = props.data.innerDrillPath
   return Array.isArray(raw) ? raw.map(String) : []
 })
 
 const { updateNodeData, getNodes, getEdges } = useVueFlow()
+
+/** Same Vue node shell as packages so layout + chrome stay aligned (`type` from flow graph). */
+const isScalaArtefactLeaf = computed(() => getNodes.value.find((n) => n.id === props.id)?.type === 'artefact')
 
 const used = computed(() => usedHandlesForNode(props.id, getEdges.value))
 
@@ -240,7 +255,37 @@ watch(
     <div class="flow-graph-node__flip-outer" :style="layerFlipStyle">
       <div class="flow-graph-node__flip-counter" :style="layerFlipCounterStyle">
         <DiagramSection>
+          <ScalaArtefactBox
+            v-if="isScalaArtefactLeaf && data.layerDrillFocus"
+            :box-id="id"
+            :label="data.label"
+            :subtitle="data.subtitle"
+            :notes="data.drillNote"
+            :box-color="data.boxColor"
+            :pinned="!!data.pinned"
+            :show-pin-tool="showPinTool"
+            :show-color-tool="true"
+            @toggle-pin="togglePin"
+            @cycle-color="cycleColor"
+          />
           <PackageBox
+            v-else-if="isScalaArtefactLeaf"
+            leaf-visual="artefact"
+            :box-id="id"
+            :label="data.label"
+            :subtitle="data.subtitle ?? ''"
+            description=""
+            :notes="data.drillNote"
+            :box-color="data.boxColor"
+            :pinned="!!data.pinned"
+            :focused="false"
+            :show-pin-tool="showPinTool"
+            :show-color-tool="false"
+            @toggle-pin="togglePin"
+            @cycle-color="cycleColor"
+          />
+          <PackageBox
+            v-else
             :box-id="id"
             :label="data.label"
             :subtitle="data.subtitle"
@@ -253,6 +298,7 @@ watch(
             :show-color-tool="!!data.layerDrillFocus"
             :inner-packages="innerPackagesForBox"
             :inner-artefacts="innerArtefactsForBox"
+            :inner-artefact-relations="innerArtefactRelationsForBox"
             :inner-drill-path="innerDrillPathForBox"
             :focused-inner-artefact-id="data.innerArtefactFocusId"
             @toggle-pin="togglePin"

@@ -2,6 +2,7 @@ import { Position } from '@vue-flow/core'
 import type {
   IlographDocument,
   IlographResource,
+  TritonInnerArtefactRelationSpec,
   TritonInnerArtefactSpec,
   TritonInnerPackageSpec,
 } from '../ilograph/types'
@@ -91,6 +92,15 @@ function normalizeInnerArtefactSpec(raw: unknown): TritonInnerArtefactSpec | nul
   }
 }
 
+function normalizeInnerArtefactRelationSpec(raw: unknown): TritonInnerArtefactRelationSpec | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  if (typeof o.from !== 'string' || !o.from) return null
+  if (typeof o.to !== 'string' || !o.to) return null
+  const label = o.label === 'with' ? 'with' : 'extends'
+  return { from: o.from, to: o.to, label }
+}
+
 export function ilographDocumentToFlow(
   doc: IlographDocument,
   options: FlowFromIlographOptions = {},
@@ -130,6 +140,13 @@ export function ilographDocumentToFlow(
       Array.isArray(innerArtsRaw) && innerArtsRaw.length
         ? innerArtsRaw.map(normalizeInnerArtefactSpec).filter((x): x is TritonInnerArtefactSpec => x !== null)
         : undefined
+    const innerRelsRaw = res['x-triton-inner-artefact-relations']
+    const innerArtefactRelations =
+      Array.isArray(innerRelsRaw) && innerRelsRaw.length
+        ? innerRelsRaw
+            .map(normalizeInnerArtefactRelationSpec)
+            .filter((x): x is TritonInnerArtefactRelationSpec => x !== null)
+        : undefined
     return {
       id,
       type: isGroup ? 'group' : leafType,
@@ -145,6 +162,7 @@ export function ilographDocumentToFlow(
         ...(!isGroup ? { language: languageIconForId(id), drillNote: drillNoteForModuleId(id) } : {}),
         ...(innerPackages?.length ? { innerPackages } : {}),
         ...(innerArtefacts?.length ? { innerArtefacts } : {}),
+        ...(innerArtefactRelations?.length ? { innerArtefactRelations } : {}),
         ...(isGroup && res['x-triton-package-scope'] === true ? { packageScope: true } : {}),
       },
       parentNode: parentId,

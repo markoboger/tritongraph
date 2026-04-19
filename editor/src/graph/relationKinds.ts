@@ -1,6 +1,12 @@
 /** sbt-style `dependsOn` / library dependency edges (classpath ordering for layout). */
 export const SBT_DEPENDS_ON_STROKE = '#2563eb'
 
+/** Inner-package inheritance edge: class / primary parent (`extends`). */
+export const SCALA_EXTENDS_STROKE = '#1d4ed8'
+
+/** Inner-package mixin parent (`with` in Scala → shown as “has trait” in the UI). */
+export const SCALA_HAS_TRAIT_STROKE = '#9333ea'
+
 /** sbt `aggregate(...)` — task scope / project grouping; also contributes to depth columns. */
 export const SBT_AGGREGATE_STROKE = '#16a34a'
 

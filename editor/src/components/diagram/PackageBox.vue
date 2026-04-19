@@ -15,14 +15,23 @@ defineOptions({ name: 'PackageBox' })
  *   - Plain-text subtitle (no markdown link parsing; package boxes don't have outbound diagram links yet).
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { TritonInnerArtefactSpec, TritonInnerPackageSpec } from '../../ilograph/types'
+import { getSmoothStepPath, Position } from '@vue-flow/core'
+import type {
+  TritonInnerArtefactRelationSpec,
+  TritonInnerArtefactSpec,
+  TritonInnerPackageSpec,
+} from '../../ilograph/types'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
+import { dependencyEdgeLabelStyle } from '../../graph/edgeTheme'
+import { SCALA_EXTENDS_STROKE, SCALA_HAS_TRAIT_STROKE } from '../../graph/relationKinds'
+import { assignInnerArtefactLayers } from '../../graph/innerArtefactLayerLayout'
 import folderIconUrl from '../../assets/language-icons/folder.svg'
 import scalaIconUrl from '../../assets/language-icons/scala.svg'
 import ScalaArtefactBox from './ScalaArtefactBox.vue'
 
 export type InnerPackageSummary = TritonInnerPackageSpec
 export type InnerArtefactSummary = TritonInnerArtefactSpec
+export type InnerArtefactRelationSummary = TritonInnerArtefactRelationSpec
 
 function findSpecAtPath(
   roots: readonly TritonInnerPackageSpec[],
@@ -61,6 +70,8 @@ const props = withDefaults(
      * drilling into an inner package row (same dashed inner panel as `innerPackages`).
      */
     innerArtefacts?: readonly InnerArtefactSummary[]
+    /** Same-package `extends` / `with` (parent → child), from YAML / graph generation. */
+    innerArtefactRelations?: readonly InnerArtefactRelationSummary[]
     /**
      * Path of inner package ids from the first tier under this node (`innerPackages`) downward.
      * Scoped UI state: outer `layerDrillFocus` stays unchanged while this drills inside the box.
@@ -70,12 +81,20 @@ const props = withDefaults(
     focusedInnerArtefactId?: string
     /** Compact card used only as a child inside another package box (no tools / no drill UI). */
     embedded?: boolean
+    /**
+     * `artefact`: top-level Scala declaration leaf — reuses this box’s chrome, tight layout, and
+     * accent strip as packages; Scala logo instead of folder; rename/description editor disabled
+     * ({@link FlowPackageNode} when flow `type` is `artefact` and the box is not layer-drill focused).
+     */
+    leafVisual?: 'package' | 'artefact'
   }>(),
   {
     innerPackages: () => [],
     innerArtefacts: () => [],
+    innerArtefactRelations: () => [],
     innerDrillPath: () => [],
     embedded: false,
+    leafVisual: 'package',
   },
 )
 
@@ -91,6 +110,8 @@ const emit = defineEmits<{
 
 const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
 
+const isScalaLeaf = computed(() => props.leafVisual === 'artefact')
+
 const innerDrillPathArr = computed(() => [...props.innerDrillPath])
 
 const activeInnerSpec = computed((): TritonInnerPackageSpec | null => {
@@ -105,12 +126,210 @@ const focusedInnerArtefact = computed((): InnerArtefactSummary | null => {
   return props.innerArtefacts.find((a) => a.id === id) ?? null
 })
 
+const innerArtefactRelationList = computed((): readonly TritonInnerArtefactRelationSpec[] =>
+  Array.isArray(props.innerArtefactRelations) ? props.innerArtefactRelations : [],
+)
+
+const innerArtefactById = computed(() => {
+  const m = new Map<string, InnerArtefactSummary>()
+  for (const a of props.innerArtefacts) m.set(a.id, a)
+  return m
+})
+
+/** LR columns: abstract parents left → concrete subtypes right (see {@link assignInnerArtefactLayers}). */
+const innerArtefactLayerColumns = computed((): string[][] => {
+  const ids = props.innerArtefacts.map((a) => a.id)
+  if (!ids.length) return []
+  if (!innerArtefactRelationList.value.length) return [ids]
+  return assignInnerArtefactLayers(ids, innerArtefactRelationList.value)
+})
+
+const innerEdgeMarkerId = computed(() =>
+  `tg-inner-inh-${String(props.boxId).replace(/[^a-zA-Z0-9_-]+/g, '-')}`,
+)
+
+type InnerEdgeDraw = {
+  id: string
+  path: string
+  labelX: number
+  labelY: number
+  /** YAML / graph value (`extends` | `with`). */
+  relationLabel: string
+  displayLabel: string
+  kind: 'extends' | 'with'
+  stroke: string
+  from: string
+  to: string
+}
+
+const innerArtefactDiagramRef = ref<HTMLElement | null>(null)
+const innerEdgeDraws = ref<InnerEdgeDraw[]>([])
+const innerArtefactSlotEls = new Map<string, HTMLElement>()
+const innerHoverEdgeId = ref<string | null>(null)
+const innerHoverArtId = ref<string | null>(null)
+
+function innerEdgeLabelSvgStyleFor(draw: InnerEdgeDraw): Record<string, string> {
+  const s = dependencyEdgeLabelStyle()
+  return {
+    fill: draw.stroke,
+    fontSize: String(s.fontSize ?? '11px'),
+    fontWeight: String(s.fontWeight ?? '500'),
+    opacity: String(s.opacity ?? '0.88'),
+  }
+}
+
+function innerArtefactRelationStroke(label: string): { kind: 'extends' | 'with'; stroke: string } {
+  const k = label === 'with' ? 'with' : 'extends'
+  return {
+    kind: k,
+    stroke: k === 'with' ? SCALA_HAS_TRAIT_STROKE : SCALA_EXTENDS_STROKE,
+  }
+}
+
+function innerArtefactEdgeDisplayLabel(kind: 'extends' | 'with'): string {
+  return kind === 'with' ? 'has trait' : 'extends'
+}
+
+const innerArtefactFocusActive = computed(
+  () => !!props.focusedInnerArtefactId && !innerDrillPathArr.value.length,
+)
+
+const focusedArtefactColumnIndex = computed((): number => {
+  const id = props.focusedInnerArtefactId
+  if (!id) return -1
+  const cols = innerArtefactLayerColumns.value
+  for (let i = 0; i < cols.length; i++) {
+    if (cols[i]!.includes(id)) return i
+  }
+  return -1
+})
+
+function innerEdgeEmphasized(draw: InnerEdgeDraw): boolean {
+  const hid = innerHoverEdgeId.value
+  const aid = innerHoverArtId.value
+  if (hid) return draw.id === hid
+  if (aid) return draw.from === aid || draw.to === aid
+  return false
+}
+
+function innerArtefactEmphasized(artId: string): boolean {
+  if (innerHoverArtId.value === artId) return true
+  const hid = innerHoverEdgeId.value
+  if (!hid) return false
+  const d = innerEdgeDraws.value.find((x) => x.id === hid)
+  return !!(d && (d.from === artId || d.to === artId))
+}
+
+function onInnerEdgeEnter(draw: InnerEdgeDraw) {
+  innerHoverEdgeId.value = draw.id
+}
+
+function onInnerEdgeLeave(draw: InnerEdgeDraw) {
+  if (innerHoverEdgeId.value === draw.id) innerHoverEdgeId.value = null
+}
+
+function onInnerArtefactSlotEnter(artId: string) {
+  innerHoverArtId.value = artId
+}
+
+function onInnerArtefactSlotLeave(artId: string) {
+  if (innerHoverArtId.value === artId) innerHoverArtId.value = null
+}
+
+function bindInnerArtefactSlotEl(artId: string, el: unknown) {
+  if (el instanceof HTMLElement) innerArtefactSlotEls.set(artId, el)
+  else innerArtefactSlotEls.delete(artId)
+}
+
+function refreshInnerArtefactEdges() {
+  const root = innerArtefactDiagramRef.value
+  const rels = innerArtefactRelationList.value
+  if (!root || !rels.length) {
+    innerEdgeDraws.value = []
+    return
+  }
+  const rr = root.getBoundingClientRect()
+  if (rr.width <= 0 || rr.height <= 0) {
+    innerEdgeDraws.value = []
+    return
+  }
+  const out: InnerEdgeDraw[] = []
+  let i = 0
+  for (const rel of rels) {
+    const fromEl = innerArtefactSlotEls.get(rel.from)
+    const toEl = innerArtefactSlotEls.get(rel.to)
+    if (!fromEl || !toEl) continue
+    const a = fromEl.getBoundingClientRect()
+    const b = toEl.getBoundingClientRect()
+    const sourceX = a.right - rr.left
+    const sourceY = a.top + a.height / 2 - rr.top
+    const targetX = b.left - rr.left
+    const targetY = b.top + b.height / 2 - rr.top
+    const [path, labelX, labelY] = getSmoothStepPath({
+      sourceX,
+      sourceY,
+      sourcePosition: Position.Right,
+      targetX,
+      targetY,
+      targetPosition: Position.Left,
+      borderRadius: 8,
+    })
+    const { kind, stroke } = innerArtefactRelationStroke(rel.label)
+    out.push({
+      id: `ie-${props.boxId}-${i++}`,
+      path,
+      labelX,
+      labelY,
+      relationLabel: rel.label,
+      displayLabel: innerArtefactEdgeDisplayLabel(kind),
+      kind,
+      stroke,
+      from: rel.from,
+      to: rel.to,
+    })
+  }
+  innerEdgeDraws.value = out
+}
+
+let innerArtefactRo: ResizeObserver | null = null
+let innerEdgeRaf = 0
+
+/** Matches flex / gap transitions on `.package-box__inner-artefact-*` so edges use final anchor rects. */
+const INNER_EDGE_LAYOUT_SETTLE_MS = 480
+
+let innerEdgeSettleTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleInnerEdgeRefresh() {
+  if (innerEdgeRaf) return
+  innerEdgeRaf = requestAnimationFrame(() => {
+    innerEdgeRaf = 0
+    refreshInnerArtefactEdges()
+  })
+}
+
+function scheduleInnerEdgeRefreshSettled() {
+  scheduleInnerEdgeRefresh()
+  if (innerEdgeSettleTimer != null) {
+    clearTimeout(innerEdgeSettleTimer)
+    innerEdgeSettleTimer = null
+  }
+  void nextTick(() => {
+    scheduleInnerEdgeRefresh()
+    requestAnimationFrame(() => {
+      scheduleInnerEdgeRefresh()
+      requestAnimationFrame(() => scheduleInnerEdgeRefresh())
+    })
+  })
+  innerEdgeSettleTimer = setTimeout(() => {
+    innerEdgeSettleTimer = null
+    refreshInnerArtefactEdges()
+  }, INNER_EDGE_LAYOUT_SETTLE_MS)
+}
+
 /** Inner-diagram panel: child packages and/or Scala artefacts (artefacts only at top-level inner view). */
 const hasInnerDiagram = computed(
   () =>
-    props.innerPackages.length > 0 ||
-    (props.innerArtefacts.length > 0 && !innerDrillPathArr.value.length) ||
-    (!!props.focusedInnerArtefactId && !innerDrillPathArr.value.length),
+    props.innerPackages.length > 0 || (props.innerArtefacts.length > 0 && !innerDrillPathArr.value.length),
 )
 
 function onInnerCardClick(id: string) {
@@ -129,6 +348,10 @@ function clearInnerDrill() {
 
 function onArtefactRowClick(id: string) {
   emit('update-inner-artefact-focus', id)
+}
+
+function innerArtefactCell(id: string): InnerArtefactSummary | undefined {
+  return innerArtefactById.value.get(id)
 }
 
 function innerDrillBackOne() {
@@ -156,6 +379,14 @@ function measureTitleWidth(label: string, title: HTMLElement): number {
   return ctx.measureText(label).width
 }
 
+/** Hysteresis so `tightLayout` / `wideShortRow` do not flip every ResizeObserver tick (layout ↔ measure feedback). */
+const TITLE_TIGHT_ENTER = 4
+const TITLE_TIGHT_EXIT = 14
+const WIDE_SHORT_MAX_H = 148
+const WIDE_SHORT_MIN_H_EXIT = 162
+const WIDE_SHORT_MIN_AR = 1.85
+const WIDE_SHORT_EXIT_AR = 1.72
+
 function measure() {
   if (props.embedded) {
     tightLayout.value = false
@@ -170,41 +401,80 @@ function measure() {
   const root = rootEl.value
   const title = titleEl.value
   if (!root || !title) return
+  /** Top-level Scala declaration leaves: match package vertical card — never use wide-shallow row mode. */
+  if (props.leafVisual === 'artefact') {
+    wideShortRow.value = false
+    const label = String(props.label ?? '')
+    const padX =
+      parseFloat(getComputedStyle(root).paddingLeft) + parseFloat(getComputedStyle(root).paddingRight)
+    const availW = Math.max(0, root.clientWidth - padX - 14)
+    const tw = measureTitleWidth(label, title)
+    const titleDemandsTight = tightLayout.value ? tw > availW - TITLE_TIGHT_EXIT : tw > availW + TITLE_TIGHT_ENTER
+    tightLayout.value = titleDemandsTight
+    return
+  }
   const w = root.clientWidth
   const h = root.clientHeight
   const aspect = w / Math.max(1, h)
   /** Low, wide chrome typical of LR-layout package nodes — prefer icon | text row over tall centered icon. */
-  if (h <= 148 && aspect >= 1.85) {
-    wideShortRow.value = true
+  if (wideShortRow.value) {
+    wideShortRow.value = h <= WIDE_SHORT_MIN_H_EXIT && aspect >= WIDE_SHORT_EXIT_AR
+  } else {
+    wideShortRow.value = h <= WIDE_SHORT_MAX_H && aspect >= WIDE_SHORT_MIN_AR
+  }
+  if (wideShortRow.value) {
     tightLayout.value = false
     return
   }
-  wideShortRow.value = false
   const label = String(props.label ?? '')
-  const hasSubtitle = !!(props.subtitle && String(props.subtitle).trim())
   const padX =
     parseFloat(getComputedStyle(root).paddingLeft) + parseFloat(getComputedStyle(root).paddingRight)
   const availW = Math.max(0, root.clientWidth - padX - 14)
   const tw = measureTitleWidth(label, title)
-  const titleTooWide = tw > availW + 2
-  const blockOverflow = hasSubtitle && root.scrollHeight > root.clientHeight + 2
-  tightLayout.value = titleTooWide || blockOverflow
+  /** Enter tight only on clear overflow; exit only when horizontal title clearly fits (avoids flip-flop at ±1px). */
+  const titleDemandsTight = tightLayout.value ? tw > availW - TITLE_TIGHT_EXIT : tw > availW + TITLE_TIGHT_ENTER
+  /** Only title width drives vertical writing mode — scroll-based overflow fought `v-if` on subtitle and flickered. */
+  tightLayout.value = titleDemandsTight
 }
 
 let ro: ResizeObserver | null = null
+let measureRaf = 0
+
+function scheduleMeasure() {
+  if (measureRaf) return
+  measureRaf = requestAnimationFrame(() => {
+    measureRaf = 0
+    measure()
+  })
+}
 
 onMounted(() => {
   void nextTick(() => {
     measure()
-    ro = new ResizeObserver(() => measure())
+    ro = new ResizeObserver(() => scheduleMeasure())
     if (rootEl.value) ro.observe(rootEl.value)
-    if (titleEl.value) ro.observe(titleEl.value)
   })
 })
 
 onUnmounted(() => {
+  if (measureRaf) {
+    cancelAnimationFrame(measureRaf)
+    measureRaf = 0
+  }
   ro?.disconnect()
   ro = null
+  innerArtefactRo?.disconnect()
+  innerArtefactRo = null
+  if (innerEdgeRaf) {
+    cancelAnimationFrame(innerEdgeRaf)
+    innerEdgeRaf = 0
+  }
+  if (innerEdgeSettleTimer != null) {
+    clearTimeout(innerEdgeSettleTimer)
+    innerEdgeSettleTimer = null
+  }
+  innerHoverEdgeId.value = null
+  innerHoverArtId.value = null
 })
 
 watch(
@@ -219,12 +489,54 @@ watch(
     props.showColorTool,
     props.innerPackages,
     props.innerArtefacts,
+    props.innerArtefactRelations,
     props.innerDrillPath,
     props.focusedInnerArtefactId,
     props.embedded,
+    props.leafVisual,
   ],
   () => void nextTick(measure),
 )
+
+watch(innerArtefactDiagramRef, (el) => {
+  innerArtefactRo?.disconnect()
+  innerArtefactRo = null
+  if (el) {
+    innerArtefactRo = new ResizeObserver(() => scheduleInnerEdgeRefresh())
+    innerArtefactRo.observe(el)
+  }
+})
+
+watch(
+  () => [
+    props.innerArtefacts,
+    props.innerArtefactRelations,
+    innerDrillPathArr.value,
+    props.focused,
+  ],
+  () => void nextTick(() => scheduleInnerEdgeRefresh()),
+  { deep: true },
+)
+
+watch(
+  () => props.focusedInnerArtefactId,
+  () => void scheduleInnerEdgeRefreshSettled(),
+)
+
+watch(
+  () => props.focused,
+  (focused) => {
+    if (focused && props.innerArtefacts.length > 0) void scheduleInnerEdgeRefreshSettled()
+  },
+)
+
+watch(innerArtefactLayerColumns, () => void nextTick(() => scheduleInnerEdgeRefresh()), { deep: true })
+
+watch(innerDrillPathArr, (p, prev) => {
+  if (prev && prev.length > 0 && p.length === 0 && props.innerArtefacts.length > 0) {
+    void scheduleInnerEdgeRefreshSettled()
+  }
+})
 
 const editing = ref(false)
 const draftLabel = ref('')
@@ -233,6 +545,7 @@ const labelInput = ref<HTMLInputElement | null>(null)
 
 function startEditing() {
   if (props.embedded) return
+  if (props.leafVisual === 'artefact') return
   if (editing.value) return
   draftLabel.value = String(props.label ?? '')
   draftDescription.value = String(props.description ?? '')
@@ -393,27 +706,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
           </button>
         </div>
 
-        <div
-          v-if="focusedInnerArtefact && !innerDrillPathArr.length"
-          class="package-box__inner-slot package-box__inner-slot--artefact-panel"
-          @pointerdown.stop
-          @click.stop
-        >
-          <ScalaArtefactBox
-            :box-id="focusedInnerArtefact.id"
-            :label="focusedInnerArtefact.name"
-            :subtitle="focusedInnerArtefact.subtitle ?? ''"
-            :notes="notes"
-            :box-color="boxColor"
-            :pinned="false"
-            :focused="true"
-            :show-pin-tool="false"
-            :show-color-tool="false"
-            class="package-box__embedded-artefact-box"
-          />
-        </div>
-
-        <template v-else-if="!innerDrillPathArr.length">
+        <template v-if="!innerDrillPathArr.length">
           <div
             v-for="child in innerPackages"
             :key="child.id"
@@ -432,21 +725,138 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
             />
           </div>
           <div
-            v-for="art in innerArtefacts"
-            :key="art.id"
-            class="package-box__inner-slot package-box__inner-slot--artefact package-box__inner-slot--clickable"
-            :class="{ 'package-box__inner-slot--artefact-focused': focusedInnerArtefactId === art.id }"
-            @click.stop="onArtefactRowClick(art.id)"
+            v-if="innerArtefacts.length"
+            ref="innerArtefactDiagramRef"
+            class="package-box__inner-artefact-diagram"
+            :class="{ 'package-box__inner-artefact-diagram--artefact-focus': innerArtefactFocusActive }"
           >
-            <div class="package-box__artefact-row">
-              <div class="lang-icon-slot lang-icon-slot--artefact">
-                <img class="lang-svg" :src="scalaIconUrl" alt="" aria-hidden="true" decoding="async" />
-              </div>
-              <div class="package-box__artefact-text">
-                <div class="package-box__artefact-title">{{ art.name }}</div>
-                <div v-if="art.subtitle" class="package-box__artefact-subtitle">{{ art.subtitle }}</div>
+            <div
+              class="package-box__inner-artefact-cols"
+              :class="{ 'package-box__inner-artefact-cols--artefact-focus': innerArtefactFocusActive }"
+            >
+              <div
+                v-for="(col, ci) in innerArtefactLayerColumns"
+                :key="'col-' + ci"
+                class="package-box__inner-artefact-col"
+                :class="{
+                  'package-box__inner-artefact-col--focus': innerArtefactFocusActive && focusedArtefactColumnIndex === ci,
+                  'package-box__inner-artefact-col--peer': innerArtefactFocusActive && focusedArtefactColumnIndex !== ci,
+                }"
+              >
+                <div
+                  v-for="artId in col"
+                  :key="artId"
+                  :ref="(el) => bindInnerArtefactSlotEl(artId, el)"
+                  class="package-box__inner-slot package-box__inner-slot--artefact package-box__inner-slot--clickable package-box__inner-slot--artefact-layer"
+                  :class="{
+                    'package-box__inner-slot--artefact-focused': focusedInnerArtefactId === artId,
+                    'package-box__inner-slot--inner-hovered': innerArtefactEmphasized(artId),
+                    'package-box__inner-slot--artefact-expanded':
+                      innerArtefactFocusActive && focusedInnerArtefactId === artId,
+                  }"
+                  @mouseenter="onInnerArtefactSlotEnter(artId)"
+                  @mouseleave="onInnerArtefactSlotLeave(artId)"
+                  @click.stop="onArtefactRowClick(artId)"
+                >
+                  <ScalaArtefactBox
+                    v-if="innerArtefactFocusActive && focusedInnerArtefactId === artId && innerArtefactCell(artId)"
+                    :box-id="innerArtefactCell(artId)!.id"
+                    :label="innerArtefactCell(artId)!.name"
+                    :subtitle="innerArtefactCell(artId)!.subtitle ?? ''"
+                    :notes="notes"
+                    :box-color="boxColor"
+                    :pinned="false"
+                    :show-pin-tool="false"
+                    :show-color-tool="false"
+                    class="package-box__embedded-artefact-box package-box__embedded-artefact-box--inner-focus"
+                    @pointerdown.stop
+                    @click.stop
+                  />
+                  <div v-else-if="innerArtefactCell(artId)" class="package-box__artefact-row">
+                    <span
+                      class="package-box__artefact-anchor package-box__artefact-anchor--in"
+                      :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
+                      aria-hidden="true"
+                    />
+                    <span
+                      class="package-box__artefact-anchor package-box__artefact-anchor--out"
+                      :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
+                      aria-hidden="true"
+                    />
+                    <div class="lang-icon-slot lang-icon-slot--artefact">
+                      <img class="lang-svg" :src="scalaIconUrl" alt="" aria-hidden="true" decoding="async" />
+                    </div>
+                    <div class="package-box__artefact-text">
+                      <div class="package-box__artefact-title">{{ innerArtefactCell(artId)!.name }}</div>
+                      <div v-if="innerArtefactCell(artId)!.subtitle" class="package-box__artefact-subtitle">
+                        {{ innerArtefactCell(artId)!.subtitle }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
+            <svg
+              v-if="innerEdgeDraws.length"
+              class="package-box__inner-artefact-edges"
+              aria-hidden="true"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <defs>
+                <marker
+                  :id="`${innerEdgeMarkerId}-extends`"
+                  class="package-box__inner-edge-marker"
+                  markerWidth="12"
+                  markerHeight="12"
+                  refX="10"
+                  refY="6"
+                  orient="auto"
+                  markerUnits="userSpaceOnUse"
+                >
+                  <path d="M 0 0 L 10 6 L 0 12 L 2.5 6 Z" class="package-box__inner-edge-marker-shape--extends" />
+                </marker>
+                <marker
+                  :id="`${innerEdgeMarkerId}-hastrait`"
+                  class="package-box__inner-edge-marker"
+                  markerWidth="12"
+                  markerHeight="12"
+                  refX="10"
+                  refY="6"
+                  orient="auto"
+                  markerUnits="userSpaceOnUse"
+                >
+                  <path d="M 0 0 L 10 6 L 0 12 L 2.5 6 Z" class="package-box__inner-edge-marker-shape--hastrait" />
+                </marker>
+              </defs>
+              <g v-for="e in innerEdgeDraws" :key="e.id" class="package-box__inner-edge-group">
+                <path
+                  :d="e.path"
+                  class="package-box__inner-edge-hit"
+                  fill="none"
+                  @mouseenter="onInnerEdgeEnter(e)"
+                  @mouseleave="onInnerEdgeLeave(e)"
+                />
+                <path
+                  :d="e.path"
+                  class="package-box__inner-edge-path"
+                  :class="{ 'package-box__inner-edge-path--emph': innerEdgeEmphasized(e) }"
+                  fill="none"
+                  :style="{ stroke: e.stroke }"
+                  :marker-end="`url(#${innerEdgeMarkerId}-${e.kind === 'with' ? 'hastrait' : 'extends'})`"
+                />
+                <text
+                  :x="e.labelX"
+                  :y="e.labelY - 15"
+                  class="package-box__inner-edge-label"
+                  :class="{ 'package-box__inner-edge-label--emph': innerEdgeEmphasized(e) }"
+                  :style="innerEdgeLabelSvgStyleFor(e)"
+                  text-anchor="middle"
+                  dominant-baseline="middle"
+                >
+                  {{ e.displayLabel }}
+                </text>
+              </g>
+            </svg>
           </div>
         </template>
 
@@ -545,6 +955,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     :class="{
       'package-box--wide-short-row': wideShortRow,
       'package-box--tight': tightLayout,
+      'package-box--scala-leaf': isScalaLeaf,
       'package-box--pinned': pinned,
       'package-box--tools-wide': showColorTool,
       'package-box--pin-only': showPinTool && !showColorTool,
@@ -558,9 +969,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
         type="button"
         class="tool-btn tool-btn--pin"
         :class="{ 'tool-btn--active': pinned }"
-        title="Pin — keep this package highlighted when another box is zoomed"
+        :title="isScalaLeaf ? 'Pin — keep this declaration highlighted when another box is zoomed' : 'Pin — keep this package highlighted when another box is zoomed'"
         :aria-pressed="pinned ? 'true' : 'false'"
-        aria-label="Pin package (stays focused when zooming elsewhere)"
+        :aria-label="
+          isScalaLeaf
+            ? 'Pin declaration (stays highlighted when zooming elsewhere)'
+            : 'Pin package (stays focused when zooming elsewhere)'
+        "
         @click.stop="emit('toggle-pin', $event)"
       >
         <svg viewBox="0 0 24 24" aria-hidden="true" class="tool-btn__icon tool-btn__icon--pin">
@@ -585,15 +1000,28 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       </button>
     </div>
 
-    <div class="lang-icon-slot">
-      <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
+    <div class="lang-icon-slot" :class="{ 'lang-icon-slot--scala-leaf': isScalaLeaf }">
+      <img
+        class="lang-svg"
+        :class="isScalaLeaf ? 'scala-leaf-icon' : 'folder-icon'"
+        :src="isScalaLeaf ? scalaIconUrl : folderIconUrl"
+        alt=""
+        aria-hidden="true"
+        decoding="async"
+      />
     </div>
 
     <div class="package-box__body" @dblclick.stop="startEditing">
-      <div ref="titleEl" class="title" :title="'Double-click to rename / edit description'">{{ label }}</div>
+      <div
+        ref="titleEl"
+        class="title"
+        :title="isScalaLeaf ? String(label ?? '') : 'Double-click to rename / edit description'"
+      >
+        {{ label }}
+      </div>
       <div v-if="subtitle && !tightLayout" class="subtitle">{{ subtitle }}</div>
       <div
-        v-if="description && !tightLayout && !wideShortRow"
+        v-if="!isScalaLeaf && description && !tightLayout && !wideShortRow"
         class="description-preview"
         :title="description"
       >
@@ -605,7 +1033,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       v-if="editing"
       class="package-box__editor nodrag nopan"
       role="dialog"
-      aria-label="Edit package"
+      :aria-label="isScalaLeaf ? 'Edit box' : 'Edit package'"
       @pointerdown.stop
       @mousedown.stop
       @click.stop
@@ -673,6 +1101,22 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     padding 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     box-shadow 0.45s ease,
     outline 0.45s ease;
+}
+
+/** Layer-drill root may still animate chrome; default cards skip padding animation to avoid ResizeObserver ↔ measure loops. */
+.package-box:not(.package-box--focused-layout) {
+  transition: box-shadow 0.45s ease, outline 0.45s ease;
+}
+
+/** Scala leaf: solid left accent reads like package boxes; inset shadow alone can wash out in some stacks. */
+.package-box--scala-leaf:not(.package-box--focused-layout) {
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.08);
+  border-left: 5px solid var(--box-accent, steelblue);
+}
+
+.package-box:not(.package-box--focused-layout) .title,
+.package-box:not(.package-box--focused-layout) .subtitle {
+  transition: none;
 }
 
 .package-box--pin-only {
@@ -892,6 +1336,134 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .package-box--focused-layout .package-box__inner-diagram {
   padding-bottom: 4px;
 }
+.package-box__inner-artefact-diagram {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: min-content;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  transition:
+    flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
+    min-height 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+}
+/** Focused artefact: grow with the focused package layer and let the expanded box fill column height. */
+.package-box__inner-artefact-diagram--artefact-focus {
+  flex: 1 1 0;
+  min-height: 0;
+}
+.package-box__inner-artefact-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+  overflow: visible;
+}
+.package-box__inner-edge-hit {
+  stroke: transparent;
+  stroke-width: 18;
+  pointer-events: stroke;
+  cursor: default;
+}
+.package-box__inner-edge-path {
+  stroke: var(--box-accent, #64748b);
+  stroke-width: 1.35;
+  opacity: 0.72;
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: butt;
+  stroke-linejoin: miter;
+  pointer-events: none;
+  transition:
+    stroke-width 0.15s ease,
+    opacity 0.15s ease;
+}
+.package-box__inner-edge-path--emph {
+  stroke-width: 2.75;
+  opacity: 1;
+}
+.package-box__inner-edge-marker-shape {
+  fill: var(--box-accent, #64748b);
+}
+.package-box__inner-edge-marker-shape--extends {
+  fill: #1d4ed8;
+}
+.package-box__inner-edge-marker-shape--hastrait {
+  fill: #9333ea;
+}
+.package-box__inner-edge-label {
+  paint-order: stroke fill;
+  stroke: rgb(248 250 252);
+  stroke-width: 3px;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+.package-box__inner-edge-label--emph {
+  opacity: 1 !important;
+  font-weight: 600 !important;
+}
+.package-box__inner-artefact-cols {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  justify-content: center;
+  gap: clamp(18px, 5.5cqw, 36px);
+  flex: 0 1 auto;
+  min-height: min-content;
+  min-width: 0;
+  width: 100%;
+  padding: 4px 0 10px;
+  transition:
+    flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
+    min-height 0.45s cubic-bezier(0.4, 0, 0.2, 1),
+    gap 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.package-box__inner-artefact-cols--artefact-focus {
+  flex: 1 1 0;
+  min-height: 0;
+  align-items: stretch;
+  gap: clamp(10px, 2.8cqw, 22px);
+}
+.package-box__inner-artefact-col {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: min-content;
+  max-width: min(100%, 220px);
+  transition:
+    flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
+    max-width 0.45s cubic-bezier(0.4, 0, 0.2, 1),
+    min-width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.package-box__inner-artefact-cols--artefact-focus > .package-box__inner-artefact-col {
+  min-height: 0;
+}
+.package-box__inner-artefact-col--focus {
+  flex: 2.35 1 0;
+  max-width: none;
+  min-width: 0;
+}
+.package-box__inner-artefact-col--peer {
+  flex: 0.55 1 0;
+  max-width: clamp(72px, 16cqw, 132px);
+  min-width: 64px;
+}
+.package-box__inner-artefact-col--peer .package-box__artefact-title,
+.package-box__inner-artefact-col--peer .package-box__artefact-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .package-box__inner-slot {
   flex: 1 1 0;
   min-height: 0;
@@ -933,8 +1505,34 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   min-width: 0;
   width: 100%;
 }
+.package-box__embedded-artefact-box--inner-focus {
+  flex: 1 1 0;
+  min-height: 0;
+  align-self: stretch;
+  width: 100%;
+  transition: box-shadow 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+}
 .package-box__inner-slot--artefact {
   cursor: pointer;
+}
+/**
+ * Stacked inner artefacts must not inherit `.package-box__inner-slot { flex: 1 1 0; min-height: 0 }`
+ * (that rule wins over a single modifier earlier in the file — same specificity, later source).
+ * Project-style “layers” here are LR columns of natural-height rows, not equal-height flex slices.
+ */
+.package-box__inner-slot.package-box__inner-slot--artefact-layer {
+  flex: 0 0 auto;
+  min-height: auto;
+  align-self: stretch;
+}
+.package-box__inner-slot.package-box__inner-slot--artefact-layer .package-box__artefact-row {
+  flex: 0 0 auto;
+  min-height: auto;
+}
+.package-box__inner-slot.package-box__inner-slot--artefact-layer.package-box__inner-slot--artefact-expanded {
+  flex: 1 1 0;
+  min-height: 0;
+  cursor: default;
 }
 .package-box__inner-slot--artefact-focused .package-box__artefact-row {
   border-color: var(--box-accent, #64748b);
@@ -944,37 +1542,95 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     0 2px 8px rgb(15 23 42 / 0.08);
   background: rgb(255 255 255 / 0.98);
 }
+/**
+ * Inner member strip: same rhythm as default `.package-box` — **icon centered on top**, title
+ * (and kind subtitle) **centered beneath** when width allows; `@container` below switches to
+ * vertical title only when the row is extremely narrow (peer columns during artefact focus).
+ */
 .package-box__artefact-row {
+  position: relative;
   flex: 1 1 0;
   min-height: 0;
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
-  padding: 8px 10px 6px;
+  padding: 8px 8px 6px;
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-start;
+  gap: 6px;
   border-radius: 8px;
   border: 1px solid rgb(148 163 184 / 0.55);
   background: rgb(255 255 255 / 0.88);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+  container-type: inline-size;
+  container-name: pkg-artefact-row;
+}
+/** Ridge handles (same idea as `.tg-handle-anchor` on Vue Flow modules). */
+.package-box__artefact-anchor {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  background: var(--box-accent, #64748b);
+  border: 1.5px solid color-mix(in srgb, var(--box-accent, #64748b) 72%, #0f172a);
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0.88;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease,
+    opacity 0.15s ease;
+}
+.package-box__artefact-anchor--in {
+  left: -5px;
+}
+.package-box__artefact-anchor--out {
+  right: -5px;
+}
+.package-box__artefact-anchor--emph {
+  opacity: 1;
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 0.95);
+}
+.package-box__inner-slot--inner-hovered .package-box__artefact-row {
+  border-color: var(--box-accent, #64748b);
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 0.85),
+    0 0 0 2px var(--box-accent, #64748b),
+    0 2px 8px rgb(15 23 42 / 0.08);
 }
 .lang-icon-slot--artefact {
-  width: 36px;
-  height: 36px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  align-self: stretch;
+  width: 100%;
+  min-height: clamp(26px, min(20cqh, 36px), 36px);
+  max-height: 40px;
   margin: 0;
   flex-shrink: 0;
+  pointer-events: none;
 }
 .lang-icon-slot--artefact :deep(.lang-svg) {
   max-height: 30px;
+  height: min(100%, 30px);
+  width: auto;
 }
 .package-box__artefact-text {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  align-items: flex-start;
+  align-items: center;
+  text-align: center;
 }
 .package-box__artefact-title {
   font-weight: 600;
@@ -985,6 +1641,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: center;
 }
 .package-box__artefact-subtitle {
   font-size: clamp(0.62rem, min(1.35vmin, 2cqh), 0.8rem);
@@ -994,6 +1651,36 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: center;
+}
+/** Very narrow inner columns: vertical title like `.package-box--tight` (default row is already stacked). */
+@container pkg-artefact-row (max-width: 118px) {
+  .package-box__artefact-row {
+    gap: 4px;
+    padding: 6px 4px 5px;
+  }
+  .package-box__artefact-row .package-box__artefact-text {
+    min-width: 0;
+  }
+  .package-box__artefact-row .package-box__artefact-title {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    text-orientation: mixed;
+    white-space: nowrap;
+    overflow: visible;
+    text-overflow: clip;
+    max-width: none;
+    line-height: 1.15;
+    text-align: center;
+    font-size: clamp(0.62rem, min(1.45vmin, 2.2cqh), 0.88rem);
+  }
+  .package-box__artefact-row .package-box__artefact-subtitle {
+    display: none;
+  }
+  .package-box__artefact-row .lang-icon-slot--artefact {
+    min-height: 28px;
+    max-height: 32px;
+  }
 }
 .package-box__inner-drill-toolbar {
   display: flex;
@@ -1107,11 +1794,17 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   gap: 5px;
   max-width: calc(100% - 10px);
 }
-.package-box--pinned:not(.package-box--focused) {
+.package-box--pinned:not(.package-box--focused):not(.package-box--scala-leaf) {
   box-shadow:
     inset 5px 0 0 0 var(--box-accent),
     0 1px 2px rgb(15 23 42 / 0.08),
     0 0 0 1px rgb(30 41 59 / 0.1);
+}
+.package-box--scala-leaf.package-box--pinned:not(.package-box--focused):not(.package-box--focused-layout) {
+  box-shadow:
+    0 1px 2px rgb(15 23 42 / 0.08),
+    0 0 0 1px rgb(30 41 59 / 0.1);
+  border-left: 5px solid var(--box-accent, steelblue);
 }
 .tool-btn {
   width: 26px;
@@ -1177,6 +1870,10 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     margin-top 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     max-height 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     transform 0.4s ease;
+}
+.package-box--scala-leaf:not(.package-box--tight) .subtitle {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #64748b;
 }
 .package-box--focused {
   box-shadow:
