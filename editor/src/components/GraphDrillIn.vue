@@ -855,12 +855,34 @@ function refreshDimming() {
   applyDimming(focusedId.value)
 }
 
+/**
+ * Re-run the active layer drill against the current viewport.
+ *
+ * Layer-drill geometry (focused module width, sibling column scale, vertical band) is computed
+ * once in {@link applyLayerDrill} from the viewport size at drill time. When the viewport
+ * width changes later (e.g. the user toggles the YAML side panel via the Hide / Show button),
+ * the previously computed widths are stale: the drilled module + its parent group can end up
+ * far wider than the new viewport, with the camera unable to fit them. We restore the pre-drill
+ * snapshot synchronously and then re-apply the drill so the new geometry uses the fresh
+ * viewport. Returns `true` when a re-apply happened so the caller can skip the usual
+ * post-relayout `fitView` (the drill animation handles the camera).
+ */
+async function reapplyLayerDrill(): Promise<boolean> {
+  const id = layerDrillId.value
+  if (!id) return false
+  clearLayerDrill()
+  await nextTick()
+  await applyLayerDrill(id)
+  return true
+}
+
 defineExpose({
   focusedId,
   layerDrillId,
   showFullGraph,
   zoomIntoContainer,
   clearLayerDrill,
+  reapplyLayerDrill,
   refreshDimming,
 })
 </script>

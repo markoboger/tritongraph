@@ -553,27 +553,6 @@ function downloadYaml() {
   status.value = 'Exported Ilograph-compatible YAML (includes optional x-triton-editor positions).'
 }
 
-async function autoLayout() {
-  await nextTick()
-  await waitFrameLayout()
-  /**
-   * Vue Flow syncs its viewport size from `window.resize` and a ResizeObserver on the pane.
-   * Toggling the right column changes `.flow-wrap` width without a window resize, so `fitView`
-   * can run against stale dimensions until the user resizes the window — nudge the same path.
-   */
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new Event('resize'))
-    await waitFrameLayout()
-  }
-  const vp = readFlowViewport()
-  nodes.value = layoutDepthInViewport(nodes.value, edges.value, vp)
-  edges.value = mergeEdgesWithVisibility(routeSmoothstepEdgesInViewport(nodes.value, edges.value, vp))
-  nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
-  status.value = 'Re-applied depth-layer layout (columns = dependency depth, vertical fill per column).'
-  await nextTick()
-  graphRef.value?.refreshEdgeEmphasis?.()
-  await graphRef.value?.fitToViewport()
-}
 
 async function addRootModule() {
   const id = `module-${uid()}`
@@ -901,8 +880,25 @@ watch(
 
 watch(showYamlEditor, () => {
   if (!nodes.value.length) return
-  void autoLayout()
+  void relayoutAfterPanelToggle()
 })
+
+/**
+ * Toggling the YAML side panel changes `.flow-wrap` width without a window resize event,
+ * so Vue Flow's pane / viewport metrics can be stale by the time we re-layout. Nudge the
+ * resize path Vue Flow already listens for, then run the standard relayout — which re-runs
+ * the depth layout AND re-applies any active layer drill against the new viewport so a
+ * focused container does not stay sized for the old (wider) viewport.
+ */
+async function relayoutAfterPanelToggle() {
+  await nextTick()
+  await waitFrameLayout()
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('resize'))
+    await waitFrameLayout()
+  }
+  await graphRef.value?.relayoutViewport?.()
+}
 
 onMounted(() => {
   window.addEventListener('resize', scheduleRelayoutFromResize)

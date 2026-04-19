@@ -175,6 +175,14 @@ async function relayoutViewport() {
   )
   nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
   void nextTick(() => syncEdgeVisualState())
+  /**
+   * Re-apply an active layer drill against the new viewport. Without this, the drill geometry
+   * stays sized for the previous viewport (e.g. wider when the YAML side panel was visible),
+   * so toggling the panel leaves the focused container overflowing the canvas. The drill itself
+   * runs its FLIP animation and fits the camera to the new bounds.
+   */
+  const reapplied = (await drillRef.value?.reapplyLayerDrill?.()) ?? false
+  if (reapplied) return
   /** Keep the full graph in view after geometry changes; skip while layer drill owns the camera. */
   const layerDrill = drillRef.value && 'layerDrillId' in drillRef.value ? (drillRef.value as any).layerDrillId : null
   if (!unref(layerDrill)) await fitToViewport({ duration: 0 })
@@ -502,6 +510,7 @@ async function fitToViewport(opts?: { duration?: number }) {
 defineExpose({
   resetView,
   fitToViewport,
+  relayoutViewport,
   refreshEdgeEmphasis: syncEdgeVisualState,
 })
 </script>

@@ -1,13 +1,24 @@
 <script setup lang="ts">
 /**
- * Layer-drill **focused** body for a Scala declaration (class / object / trait / …). Compact
- * (unfocused) chrome on the canvas reuses {@link PackageBox} with `leaf-visual="artefact"` inside
- * {@link FlowPackageNode} for flow `type: 'artefact'`. This component only covers the expanded drill-in shell (kind
- * badge, metrics placeholders, foldable sections). Nested use: expanded inner artefact inside
- * {@link PackageBox}.
+ * Layer-drill **focused** body for a Scala declaration (class / object / trait / enum / def …).
+ *
+ * Reuses the focused **box chrome** from {@link PackageBox} (accent strip, focus outline, padding,
+ * tools cluster, tight layout, transitions). This component is intentionally thin: it only supplies
+ * the artefact-specific bits via PackageBox slots:
+ *   - `focused-tools-prefix` — coverage / sonar metric icons next to the pin/color tools
+ *   - `focused-header-icon`  — kind badge (`C`, `T`, `O`, …) instead of the folder icon
+ *   - `focused-body`         — Scaladoc / coverage / signatures / sonar collapsible sections
+ *
+ * Two render contexts:
+ *   1. **Top-level focused leaf** (from {@link FlowPackageNode} when flow `type === 'artefact'`).
+ *   2. **Inner expanded artefact** inside another {@link PackageBox} when an artefact row is opened.
+ *
+ * The compact (unfocused) chrome on the canvas is rendered directly by `PackageBox` with
+ * `leaf-visual="artefact"` — no duplication needed.
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
+import PackageBox from './PackageBox.vue'
 
 const props = defineProps<{
   boxId: string
@@ -50,86 +61,24 @@ const kindBadge = computed(() => {
   if (k === 'given') return 'G'
   return k.charAt(0).toUpperCase()
 })
-
-const rootEl = ref<HTMLElement | null>(null)
-const titleEl = ref<HTMLElement | null>(null)
-/** Header text column in layer-drill mode — width drives tight layout next to the kind badge. */
-const focusedHeadTextEl = ref<HTMLElement | null>(null)
-const tightLayout = ref(false)
-
-/** Match {@link PackageBox} hysteresis so tight mode does not flip on sub-pixel layout noise. */
-const TITLE_TIGHT_ENTER = 4
-const TITLE_TIGHT_EXIT = 14
-
-let measureCanvas: CanvasRenderingContext2D | null = null
-
-function measureTitleWidth(label: string, title: HTMLElement): number {
-  if (!measureCanvas) {
-    measureCanvas = title.ownerDocument.createElement('canvas').getContext('2d')
-  }
-  const ctx = measureCanvas
-  if (!ctx) return 0
-  const cs = getComputedStyle(title)
-  ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
-  return ctx.measureText(label).width
-}
-
-function measure() {
-  const root = rootEl.value
-  const title = titleEl.value
-  if (!root || !title) return
-  const label = String(props.label ?? '')
-  const head = focusedHeadTextEl.value
-  const availW = head
-    ? Math.max(0, head.clientWidth - 2)
-    : Math.max(0, root.clientWidth - 96)
-  const tw = measureTitleWidth(label, title)
-  const titleDemandsTight = tightLayout.value ? tw > availW - TITLE_TIGHT_EXIT : tw > availW + TITLE_TIGHT_ENTER
-  tightLayout.value = titleDemandsTight
-}
-
-let ro: ResizeObserver | null = null
-
-onMounted(() => {
-  void nextTick(() => {
-    measure()
-    ro = new ResizeObserver(() => measure())
-    if (rootEl.value) ro.observe(rootEl.value)
-  })
-})
-
-onUnmounted(() => {
-  ro?.disconnect()
-  ro = null
-})
-
-watch(
-  () => [
-    props.label,
-    props.subtitle,
-    props.notes,
-    props.pinned,
-    props.boxColor,
-    props.showPinTool,
-    props.showColorTool,
-  ],
-  () => void nextTick(measure),
-)
 </script>
 
 <template>
-  <div
-    ref="rootEl"
-    class="artefact-box artefact-box--focused artefact-box--focused-layout"
-    :class="{
-      'artefact-box--tight': tightLayout,
-      'artefact-box--pinned': pinned,
-      'artefact-box--tools-wide': showColorTool,
-      'artefact-box--pin-only': showPinTool && !showColorTool,
-    }"
-    :style="{ '--box-accent': accent }"
+  <PackageBox
+    leaf-visual="artefact"
+    :box-id="boxId"
+    :label="label"
+    :subtitle="subtitle"
+    :notes="notes"
+    :box-color="boxColor"
+    :pinned="pinned"
+    :focused="true"
+    :show-pin-tool="showPinTool"
+    :show-color-tool="showColorTool"
+    @toggle-pin="(ev: MouseEvent) => emit('toggle-pin', ev)"
+    @cycle-color="emit('cycle-color')"
   >
-    <div class="artefact-box__tools artefact-box__tools--with-metrics" @pointerdown.stop>
+    <template #focused-tools-prefix>
       <span
         class="metric-icon metric-icon--coverage"
         title="Code coverage (placeholder — connect to reports later)"
@@ -156,190 +105,112 @@ watch(
           />
         </svg>
       </span>
-      <button
-        v-if="showPinTool"
-        type="button"
-        class="tool-btn tool-btn--pin"
-        :class="{ 'tool-btn--active': pinned }"
-        title="Pin — keep this artefact highlighted when another box is zoomed"
-        :aria-pressed="pinned ? 'true' : 'false'"
-        aria-label="Pin artefact (stays focused when zooming elsewhere)"
-        @click.stop="emit('toggle-pin', $event)"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true" class="tool-btn__icon tool-btn__icon--pin">
-          <path
-            fill="currentColor"
-            d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z"
-          />
-        </svg>
-      </button>
-      <button
-        v-if="showColorTool"
-        type="button"
-        class="tool-btn tool-btn--color"
-        :title="`Accent: ${accent}. Click for next color.`"
-        aria-label="Change box accent color"
-        @click.stop="emit('cycle-color')"
-      >
-        <svg viewBox="0 0 16 16" aria-hidden="true" class="tool-btn__icon tool-btn__icon--color">
-          <circle cx="6" cy="8" r="4.25" />
-          <circle cx="11" cy="8" r="3" opacity="0.45" />
-        </svg>
-      </button>
-    </div>
+    </template>
 
-    <div class="artefact-box__focused-shell">
-      <div class="artefact-box__focused-header">
-        <div class="kind-badge-slot kind-badge-slot--header">
-          <span class="kind-badge kind-badge--header" :title="subtitle ?? ''">{{ kindBadge }}</span>
-        </div>
-        <div ref="focusedHeadTextEl" class="artefact-box__focused-head-text">
-          <div ref="titleEl" class="title title--header">{{ label }}</div>
-          <div v-if="subtitle && !tightLayout" class="subtitle subtitle--header">{{ subtitle }}</div>
-        </div>
+    <template #focused-header-icon>
+      <div class="kind-badge-slot kind-badge-slot--header">
+        <span
+          class="kind-badge kind-badge--header"
+          :title="subtitle ?? ''"
+          :style="{ '--box-accent': accent }"
+        >{{ kindBadge }}</span>
       </div>
+    </template>
 
-      <div class="artefact-box__focused-sections nodrag nopan" @pointerdown.stop @wheel.stop @click.stop>
-        <details class="artefact-box__details">
-          <summary class="artefact-box__summary">Documentation</summary>
-          <div class="artefact-box__details-body">
-            <p class="artefact-box__placeholder">
+    <template #focused-body>
+      <div class="artefact-body nodrag nopan" @pointerdown.stop @wheel.stop @click.stop>
+        <details class="artefact-body__details">
+          <summary class="artefact-body__summary">Documentation</summary>
+          <div class="artefact-body__details-body">
+            <p class="artefact-body__placeholder">
               Placeholder: Scaladoc / KDoc-style comment text for this declaration would appear here once
               wired to the parser or language server.
             </p>
           </div>
         </details>
-        <details class="artefact-box__details">
-          <summary class="artefact-box__summary">Tests &amp; specs (coverage)</summary>
-          <div class="artefact-box__details-body">
-            <p class="artefact-box__placeholder">
+        <details class="artefact-body__details">
+          <summary class="artefact-body__summary">Tests &amp; specs (coverage)</summary>
+          <div class="artefact-body__details-body">
+            <p class="artefact-body__placeholder">
               Placeholder: e.g. <code>AnimalSpec</code>, <code>FoodWebIntegrationTest</code> — classes that
               exercise this artefact for coverage reporting.
             </p>
           </div>
         </details>
-        <details class="artefact-box__details">
-          <summary class="artefact-box__summary">Test run checklist</summary>
-          <div class="artefact-box__details-body">
-            <ul class="artefact-box__checklist">
-              <li class="artefact-box__checklist-item">Placeholder: compile OK</li>
-              <li class="artefact-box__checklist-item">Placeholder: unit tests — pending CI hook</li>
-              <li class="artefact-box__checklist-item">Placeholder: property tests — not run</li>
+        <details class="artefact-body__details">
+          <summary class="artefact-body__summary">Test run checklist</summary>
+          <div class="artefact-body__details-body">
+            <ul class="artefact-body__checklist">
+              <li class="artefact-body__checklist-item">Placeholder: compile OK</li>
+              <li class="artefact-body__checklist-item">Placeholder: unit tests — pending CI hook</li>
+              <li class="artefact-body__checklist-item">Placeholder: property tests — not run</li>
             </ul>
           </div>
         </details>
-        <details class="artefact-box__details">
-          <summary class="artefact-box__summary">Methods (signatures)</summary>
-          <div class="artefact-box__details-body artefact-box__details-body--mono">
-            <pre class="artefact-box__signatures">def apply(name: String): Animal
+        <details class="artefact-body__details">
+          <summary class="artefact-body__summary">Methods (signatures)</summary>
+          <div class="artefact-body__details-body artefact-body__details-body--mono">
+            <pre class="artefact-body__signatures">def apply(name: String): Animal
 def unapply(a: Animal): Option[(String)]
 override def toString: String</pre>
-            <p class="artefact-box__placeholder artefact-box__placeholder--small">
+            <p class="artefact-body__placeholder artefact-body__placeholder--small">
               Placeholder signatures — replace with tree-sitter member list.
             </p>
           </div>
         </details>
-        <details class="artefact-box__details">
-          <summary class="artefact-box__summary">SonarQube issues</summary>
-          <div class="artefact-box__details-body">
-            <p class="artefact-box__placeholder">
+        <details class="artefact-body__details">
+          <summary class="artefact-body__summary">SonarQube issues</summary>
+          <div class="artefact-body__details-body">
+            <p class="artefact-body__placeholder">
               Placeholder: issue keys, severities, and messages from SonarQube for this file / symbol would
               list here after integration.
             </p>
           </div>
         </details>
-        <div v-if="notes" class="drill-note drill-note--focused">{{ notes }}</div>
+        <div v-if="notes" class="artefact-body__drill-note">{{ notes }}</div>
       </div>
-    </div>
-  </div>
+    </template>
+  </PackageBox>
 </template>
 
 <style scoped>
 /*
- * Mirrors PackageBox dimensions / paddings so artefacts stack cleanly inside their package
- * container. Class names are namespaced (`artefact-box*`) so the components can drift freely.
+ * Slot content only — chrome (accent strip, padding, focus outline, tools cluster, tight layout)
+ * lives in PackageBox so packages and Scala leaves stay in lock-step. Vue scoped styles still apply
+ * to slotted content because they carry the parent-component scope attribute.
  */
-.artefact-box {
-  --box-accent: steelblue;
-  position: relative;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  box-sizing: border-box;
-  container-type: size;
+
+.kind-badge-slot {
   display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  align-items: stretch;
-  padding: clamp(6px, 1.2vmin, 14px) clamp(6px, 1.35vmin, 14px);
-  padding-right: clamp(6px, 1.35vmin, 14px);
-  border-radius: 8px;
-  border: 1px solid rgb(30 41 59 / 0.88);
-  background: rgb(255 255 255 / 0.9);
-  box-shadow: inset 5px 0 0 0 var(--box-accent), 0 1px 2px rgb(15 23 42 / 0.08);
-  font-family: ui-sans-serif, system-ui, sans-serif;
-  overflow: hidden;
-  transition:
-    padding 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    box-shadow 0.45s ease,
-    outline 0.45s ease;
+  justify-content: center;
+  align-items: center;
+  flex-shrink: 0;
+  pointer-events: none;
 }
-.artefact-box--pin-only {
-  padding-right: clamp(34px, 6.5cqw, 44px);
-}
-.artefact-box--tools-wide {
-  padding-right: clamp(72px, 12cqw, 108px);
-}
-/** Focused shell: symmetric padding; tool cluster is absolutely positioned (see PackageBox). */
-.artefact-box--focused-layout.artefact-box--tools-wide,
-.artefact-box--focused-layout.artefact-box--pin-only {
-  padding-right: clamp(6px, 1.35vmin, 14px);
-}
-.artefact-box--focused-layout {
-  justify-content: flex-start;
+.kind-badge-slot--header {
+  width: 40px;
+  height: 40px;
+  margin: 0;
+  align-self: flex-start;
 }
 .kind-badge {
   display: inline-flex;
   justify-content: center;
   align-items: center;
-  width: clamp(28px, 22cqw, 64px);
-  height: clamp(28px, 22cqw, 64px);
   border-radius: 50%;
-  background: var(--box-accent);
+  background: var(--box-accent, steelblue);
   color: #fff;
   font-weight: 700;
-  font-size: clamp(0.85rem, 14cqw, 1.6rem);
-  letter-spacing: 0.02em;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0.02em;
   box-shadow: inset 0 0 0 2px rgb(255 255 255 / 0.18), 0 1px 2px rgb(15 23 42 / 0.18);
 }
-.drill-note {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgb(15 23 42 / 0.12);
-  font-size: 10px;
-  line-height: 1.45;
-  color: #334155;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  white-space: pre-wrap;
-  overflow: auto;
-  flex: 1;
-  min-height: 0;
-  text-align: left;
+.kind-badge--header {
+  width: 36px;
+  height: 36px;
+  font-size: clamp(0.72rem, 11cqw, 1rem);
 }
-.artefact-box__tools {
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  z-index: 4;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 5px;
-  max-width: calc(100% - 10px);
-}
+
 .metric-icon {
   width: 26px;
   height: 26px;
@@ -365,114 +236,26 @@ override def toString: String</pre>
   height: 14px;
   display: block;
 }
-.artefact-box__focused-shell {
-  flex: 1 1 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding-top: 2px;
-}
-.artefact-box__focused-header {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-  margin-bottom: 8px;
-  padding-right: clamp(118px, 26cqw, 172px);
-}
-/** Same idea as `.package-box--tight`: badge centered, title vertical-rl in narrow layer columns. */
-.artefact-box--focused.artefact-box--tight .artefact-box__focused-header {
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  justify-content: flex-start;
-}
-.artefact-box--focused.artefact-box--tight .kind-badge-slot--header {
-  align-self: center;
-}
-.artefact-box--focused.artefact-box--tight .artefact-box__focused-head-text {
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  flex: 0 0 auto;
-  min-width: 0;
-  margin-top: clamp(-6px, -1.5cqh, 0px);
-}
-.artefact-box--focused.artefact-box--tight .title--header {
-  white-space: nowrap;
-  overflow: visible;
-  text-overflow: clip;
-  max-width: none;
-  align-self: center;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  text-orientation: mixed;
-  line-height: 1.15;
-  text-align: center;
-}
-.kind-badge-slot--header {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  width: 40px;
-  height: 40px;
-  margin: 0;
-  flex-shrink: 0;
-  align-self: flex-start;
-  pointer-events: none;
-}
-.kind-badge--header {
-  width: 36px;
-  height: 36px;
-  font-size: clamp(0.72rem, 11cqw, 1rem);
-}
-.artefact-box__focused-head-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  align-items: flex-start;
-}
-.title--header {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
-  text-align: left;
-  writing-mode: horizontal-tb;
-  transform: none;
-  align-self: stretch;
-  font-size: clamp(0.82rem, min(2.4vmin, 3.8cqh), 1.45rem);
-}
-.subtitle--header {
-  margin-top: 0;
-  font-size: clamp(0.65rem, min(1.45vmin, 2.2cqh), 0.85rem);
-  text-align: left;
-  opacity: 1;
-  max-height: none;
-  line-height: 1.25;
-  color: #475569;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-.artefact-box__focused-sections {
+
+.artefact-body {
   flex: 1 1 0;
   min-height: 0;
   min-width: 0;
   overflow: auto;
   padding: 2px 0 6px;
+  display: flex;
+  flex-direction: column;
 }
-.artefact-box__details {
+.artefact-body__details {
   border: 1px solid rgb(148 163 184 / 0.85);
   border-radius: 8px;
   background: rgb(248 250 252 / 0.95);
   margin-bottom: 8px;
 }
-.artefact-box__details:last-of-type {
+.artefact-body__details:last-of-type {
   margin-bottom: 0;
 }
-.artefact-box__summary {
+.artefact-body__summary {
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -484,10 +267,10 @@ override def toString: String</pre>
   list-style: none;
   color: #0f172a;
 }
-.artefact-box__summary::-webkit-details-marker {
+.artefact-body__summary::-webkit-details-marker {
   display: none;
 }
-.artefact-box__summary::after {
+.artefact-body__summary::after {
   content: '';
   width: 0.45em;
   height: 0.45em;
@@ -498,40 +281,40 @@ override def toString: String</pre>
   flex-shrink: 0;
   transition: transform 0.2s ease;
 }
-.artefact-box__details[open] > .artefact-box__summary::after {
+.artefact-body__details[open] > .artefact-body__summary::after {
   transform: rotate(225deg);
 }
-.artefact-box__details-body {
+.artefact-body__details-body {
   padding: 0 10px 10px;
   font-size: clamp(0.62rem, min(1.35vmin, 2cqh), 0.8rem);
   line-height: 1.45;
   color: #475569;
 }
-.artefact-box__details-body--mono {
+.artefact-body__details-body--mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
-.artefact-box__placeholder {
+.artefact-body__placeholder {
   margin: 0;
 }
-.artefact-box__placeholder--small {
+.artefact-body__placeholder--small {
   margin-top: 8px;
   font-style: italic;
   font-size: 0.92em;
 }
-.artefact-box__placeholder code {
+.artefact-body__placeholder code {
   font-size: 0.95em;
   padding: 0 0.2em;
   border-radius: 4px;
   background: rgb(241 245 249 / 0.95);
 }
-.artefact-box__checklist {
+.artefact-body__checklist {
   margin: 0;
   padding-left: 1.1rem;
 }
-.artefact-box__checklist-item {
+.artefact-body__checklist-item {
   margin-bottom: 4px;
 }
-.artefact-box__signatures {
+.artefact-body__signatures {
   margin: 0;
   padding: 8px 10px;
   border-radius: 6px;
@@ -542,103 +325,17 @@ override def toString: String</pre>
   white-space: pre-wrap;
   overflow-x: auto;
 }
-.drill-note--focused {
-  flex: 0 0 auto;
+.artefact-body__drill-note {
   margin-top: 10px;
-}
-.tool-btn {
-  width: 26px;
-  height: 26px;
-  border-radius: 999px;
-  border: 1px solid rgb(15 23 42 / 0.22);
-  background: rgb(255 255 255 / 0.92);
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  padding: 0;
-  color: rgb(51 65 85);
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06);
-  transition: border-color 0.2s ease, background 0.2s ease, transform 0.15s ease, color 0.2s ease;
-}
-.tool-btn:hover {
-  border-color: var(--box-accent);
-  background: rgb(255 255 255 / 1);
-  transform: scale(1.06);
-}
-.tool-btn:active {
-  transform: scale(0.96);
-}
-.tool-btn--active {
-  border-color: var(--box-accent);
-  color: var(--box-accent);
-  background: rgb(255 255 255 / 1);
-}
-.tool-btn__icon {
-  width: 14px;
-  height: 14px;
-  display: block;
-}
-.tool-btn__icon--color {
-  fill: var(--box-accent);
-}
-.tool-btn__icon--pin {
-  fill: currentColor;
-}
-.title {
-  font-weight: 600;
-  font-size: clamp(0.78rem, min(2.2vmin, 3.5cqh), 1.35rem);
-  color: #0f172a;
-  line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
-  transition:
-    font-size 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    transform 0.45s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.subtitle {
-  margin-top: clamp(2px, 0.6vmin, 8px);
-  font-size: clamp(0.65rem, min(1.6vmin, 2.5cqh), 0.95rem);
-  color: #475569;
-  line-height: 1.25;
+  padding-top: 8px;
+  border-top: 1px solid rgb(15 23 42 / 0.12);
+  font-size: 10px;
+  line-height: 1.45;
+  color: #334155;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  opacity: 1;
-  max-height: 80px;
-  overflow: hidden;
-  transition:
-    opacity 0.4s ease,
-    margin-top 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    max-height 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    transform 0.4s ease;
-}
-.artefact-box--focused {
-  box-shadow:
-    inset 8px 0 0 0 var(--box-accent),
-    0 4px 22px rgb(15 23 42 / 0.14);
-  outline: 2px solid var(--box-accent);
-  outline-offset: 0;
-}
-.artefact-box--focused .title {
-  font-size: clamp(0.82rem, min(2.4vmin, 3.8cqh), 1.45rem);
-}
-.artefact-box--tight .title {
-  white-space: nowrap;
-  overflow: visible;
-  text-overflow: clip;
-  max-width: none;
-  max-height: 100%;
-  align-self: center;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  text-orientation: mixed;
-  line-height: 1.15;
-}
-.artefact-box--tight .subtitle {
-  opacity: 0;
-  margin-top: 0;
-  max-height: 0;
-  transform: translateY(4px);
-  pointer-events: none;
+  white-space: pre-wrap;
+  overflow: auto;
+  text-align: left;
+  flex: 0 0 auto;
 }
 </style>

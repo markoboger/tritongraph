@@ -21,7 +21,7 @@ import type {
   TritonInnerArtefactSpec,
   TritonInnerPackageSpec,
 } from '../../ilograph/types'
-import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
+import { boxColorForId, nextNamedBoxColor, type NamedBoxColor } from '../../graph/boxColors'
 import { dependencyEdgeLabelStyle } from '../../graph/edgeTheme'
 import { SCALA_EXTENDS_STROKE, SCALA_HAS_TRAIT_STROKE } from '../../graph/relationKinds'
 import { assignInnerArtefactLayers } from '../../graph/innerArtefactLayerLayout'
@@ -120,12 +120,6 @@ const activeInnerSpec = computed((): TritonInnerPackageSpec | null => {
   return findSpecAtPath(props.innerPackages, path)
 })
 
-const focusedInnerArtefact = computed((): InnerArtefactSummary | null => {
-  const id = props.focusedInnerArtefactId
-  if (!id) return null
-  return props.innerArtefacts.find((a) => a.id === id) ?? null
-})
-
 const innerArtefactRelationList = computed((): readonly TritonInnerArtefactRelationSpec[] =>
   Array.isArray(props.innerArtefactRelations) ? props.innerArtefactRelations : [],
 )
@@ -194,15 +188,6 @@ const innerArtefactFocusActive = computed(
   () => !!props.focusedInnerArtefactId && !innerDrillPathArr.value.length,
 )
 
-const focusedArtefactColumnIndex = computed((): number => {
-  const id = props.focusedInnerArtefactId
-  if (!id) return -1
-  const cols = innerArtefactLayerColumns.value
-  for (let i = 0; i < cols.length; i++) {
-    if (cols[i]!.includes(id)) return i
-  }
-  return -1
-})
 
 function innerEdgeEmphasized(draw: InnerEdgeDraw): boolean {
   const hid = innerHoverEdgeId.value
@@ -348,6 +333,55 @@ function clearInnerDrill() {
 
 function onArtefactRowClick(id: string) {
   emit('update-inner-artefact-focus', id)
+}
+
+/**
+ * Per-inner-artefact pin / accent state, scoped to this PackageBox instance.
+ *
+ * Top-level Scala leaves persist pin / color through `FlowPackageNode` → flow node `data`. Inner
+ * artefacts live inside the package's `data.innerArtefacts` and don't have their own flow node, so
+ * we keep these toggles local for now — they survive as long as this PackageBox stays mounted
+ * (i.e. the user keeps the parent package focused). Persistence into the YAML / saved positions
+ * can come later by lifting these maps into the parent flow node's `data`, mirroring how
+ * `innerArtefactFocusId` already round-trips through `FlowPackageNode`.
+ */
+const innerArtefactPinned = ref<Record<string, boolean>>({})
+const innerArtefactColors = ref<Record<string, string>>({})
+
+function isInnerArtefactPinned(id: string): boolean {
+  return !!innerArtefactPinned.value[id]
+}
+
+function innerArtefactAccent(id: string): string {
+  return innerArtefactColors.value[id] ?? boxColorForId(id)
+}
+
+function onInnerArtefactTogglePin(id: string, ev: MouseEvent) {
+  ev.stopPropagation()
+  const cur = innerArtefactPinned.value[id]
+  const next = { ...innerArtefactPinned.value }
+  if (cur) delete next[id]
+  else next[id] = true
+  innerArtefactPinned.value = next
+}
+
+function onInnerArtefactCycleColor(id: string) {
+  const cur = innerArtefactColors.value[id] ?? boxColorForId(id)
+  innerArtefactColors.value = { ...innerArtefactColors.value, [id]: nextNamedBoxColor(cur) }
+}
+
+/**
+ * Click on focused-artefact chrome (header / padding) → unfocus the artefact only.
+ *
+ * `stopPropagation` is critical: Vue Flow's `onNodeClick` listens on the entire node DOM
+ * subtree, so without stopping here the click would bubble out of `PackageBox` and trigger
+ * `applyLayerDrill(packageId)` in `GraphDrillIn.vue`, which would toggle the *outer*
+ * package's layer-drill off as well. Tools and the artefact body have their own
+ * `@click.stop` for the same reason.
+ */
+function onFocusedArtefactBackgroundClick(ev: MouseEvent) {
+  ev.stopPropagation()
+  emit('update-inner-artefact-focus', null)
 }
 
 function innerArtefactCell(id: string): InnerArtefactSummary | undefined {
@@ -543,6 +577,12 @@ const draftLabel = ref('')
 const draftDescription = ref('')
 const labelInput = ref<HTMLInputElement | null>(null)
 
+/** Header dblclick on a Scala-leaf renders read-only chrome — no rename/description modal. */
+function onHeaderDblClick() {
+  if (props.leafVisual === 'artefact') return
+  startEditing()
+}
+
 function startEditing() {
   if (props.embedded) return
   if (props.leafVisual === 'artefact') return
@@ -612,12 +652,18 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     </div>
   </div>
 
-  <!-- Layer-drill focused root: icon + name in a top row; inner “diagram” stacks child packages. -->
+  <!--
+    Layer-drill focused root: shared box chrome (accent strip, focus outline, padding,
+    tools cluster, tight layout, transitions) for both Scala packages and Scala artefact leaves.
+    Artefact-specific content is injected via slots so {@link ScalaArtefactBox} can reuse this shell
+    without duplicating chrome — see `focused-tools-prefix`, `focused-header-icon`, `focused-body`.
+  -->
   <div
     v-else-if="focused"
     ref="rootEl"
     class="package-box package-box--focused package-box--focused-layout"
     :class="{
+      'package-box--scala-leaf': isScalaLeaf,
       'package-box--pinned': pinned,
       'package-box--tools-wide': showColorTool,
       'package-box--pin-only': showPinTool && !showColorTool,
@@ -625,15 +671,20 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     }"
     :style="{ '--box-accent': accent }"
   >
-    <div v-if="showPinTool || showColorTool" class="package-box__tools" @pointerdown.stop>
+    <div
+      v-if="showPinTool || showColorTool || $slots['focused-tools-prefix']"
+      class="package-box__tools"
+      @pointerdown.stop
+    >
+      <slot name="focused-tools-prefix" />
       <button
         v-if="showPinTool"
         type="button"
         class="tool-btn tool-btn--pin"
         :class="{ 'tool-btn--active': pinned }"
-        title="Pin — keep this package highlighted when another box is zoomed"
+        :title="isScalaLeaf ? 'Pin — keep this declaration highlighted when another box is zoomed' : 'Pin — keep this package highlighted when another box is zoomed'"
         :aria-pressed="pinned ? 'true' : 'false'"
-        aria-label="Pin package (stays focused when zooming elsewhere)"
+        :aria-label="isScalaLeaf ? 'Pin declaration (stays focused when zooming elsewhere)' : 'Pin package (stays focused when zooming elsewhere)'"
         @click.stop="emit('toggle-pin', $event)"
       >
         <svg viewBox="0 0 24 24" aria-hidden="true" class="tool-btn__icon tool-btn__icon--pin">
@@ -659,18 +710,28 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     </div>
 
     <div class="package-box__focused-shell">
-      <div class="package-box__focused-header" @dblclick.stop="startEditing">
-        <div class="lang-icon-slot lang-icon-slot--header">
-          <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
-        </div>
+      <div
+        class="package-box__focused-header"
+        @dblclick.stop="onHeaderDblClick"
+      >
+        <slot name="focused-header-icon">
+          <div class="lang-icon-slot lang-icon-slot--header">
+            <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
+          </div>
+        </slot>
         <div class="package-box__focused-head-text">
-          <div ref="titleEl" class="title title--header" :title="'Double-click to rename / edit description'">
+          <div
+            ref="titleEl"
+            class="title title--header"
+            :title="isScalaLeaf ? String(label ?? '') : 'Double-click to rename / edit description'"
+          >
             {{ label }}
           </div>
           <div v-if="subtitle" class="subtitle subtitle--header">{{ subtitle }}</div>
         </div>
       </div>
 
+      <slot name="focused-body">
       <div
         v-if="hasInnerDiagram"
         class="package-box__inner-diagram nodrag nopan"
@@ -692,17 +753,6 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
             @click.stop="innerDrillBackOne"
           >
             Back
-          </button>
-        </div>
-
-        <div
-          v-else-if="focusedInnerArtefact"
-          class="package-box__inner-drill-toolbar"
-          @pointerdown.stop
-          @click.stop
-        >
-          <button type="button" class="inner-drill-btn" @click.stop="emit('update-inner-artefact-focus', null)">
-            All members
           </button>
         </div>
 
@@ -730,6 +780,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
             class="package-box__inner-artefact-diagram"
             :class="{ 'package-box__inner-artefact-diagram--artefact-focus': innerArtefactFocusActive }"
           >
+            <!--
+              Focus inside an inheritance column: the focused column stretches to the full
+              sub-diagram height and replaces its rows with a single ScalaArtefactBox card.
+              Sibling artefacts in the same column are hidden (`v-if` skip) so the focus card
+              gets all the column space, but artefacts in **other** inheritance layers stay
+              fully visible — the user still sees the parent traits / classes (left columns)
+              and subclasses (right columns). Inheritance edges keep drawing throughout.
+            -->
             <div
               class="package-box__inner-artefact-cols"
               :class="{ 'package-box__inner-artefact-cols--artefact-focus': innerArtefactFocusActive }"
@@ -739,61 +797,82 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                 :key="'col-' + ci"
                 class="package-box__inner-artefact-col"
                 :class="{
-                  'package-box__inner-artefact-col--focus': innerArtefactFocusActive && focusedArtefactColumnIndex === ci,
-                  'package-box__inner-artefact-col--peer': innerArtefactFocusActive && focusedArtefactColumnIndex !== ci,
+                  'package-box__inner-artefact-col--focus':
+                    innerArtefactFocusActive && col.includes(props.focusedInnerArtefactId ?? ''),
+                  'package-box__inner-artefact-col--peer':
+                    innerArtefactFocusActive && !col.includes(props.focusedInnerArtefactId ?? ''),
                 }"
               >
-                <div
-                  v-for="artId in col"
-                  :key="artId"
-                  :ref="(el) => bindInnerArtefactSlotEl(artId, el)"
-                  class="package-box__inner-slot package-box__inner-slot--artefact package-box__inner-slot--clickable package-box__inner-slot--artefact-layer"
-                  :class="{
-                    'package-box__inner-slot--artefact-focused': focusedInnerArtefactId === artId,
-                    'package-box__inner-slot--inner-hovered': innerArtefactEmphasized(artId),
-                    'package-box__inner-slot--artefact-expanded':
-                      innerArtefactFocusActive && focusedInnerArtefactId === artId,
-                  }"
-                  @mouseenter="onInnerArtefactSlotEnter(artId)"
-                  @mouseleave="onInnerArtefactSlotLeave(artId)"
-                  @click.stop="onArtefactRowClick(artId)"
-                >
-                  <ScalaArtefactBox
+                <template v-for="artId in col" :key="artId">
+                  <!-- Focused row → swap for full-height ScalaArtefactBox card. -->
+                  <div
                     v-if="innerArtefactFocusActive && focusedInnerArtefactId === artId && innerArtefactCell(artId)"
-                    :box-id="innerArtefactCell(artId)!.id"
-                    :label="innerArtefactCell(artId)!.name"
-                    :subtitle="innerArtefactCell(artId)!.subtitle ?? ''"
-                    :notes="notes"
-                    :box-color="boxColor"
-                    :pinned="false"
-                    :show-pin-tool="false"
-                    :show-color-tool="false"
-                    class="package-box__embedded-artefact-box package-box__embedded-artefact-box--inner-focus"
-                    @pointerdown.stop
-                    @click.stop
+                    :ref="(el) => bindInnerArtefactSlotEl(artId, el)"
+                    class="package-box__inner-slot package-box__inner-slot--artefact-layer package-box__inner-slot--artefact-focused-cell"
+                    @click="onFocusedArtefactBackgroundClick"
+                  >
+                    <ScalaArtefactBox
+                      :box-id="artId"
+                      :label="innerArtefactCell(artId)!.name"
+                      :subtitle="innerArtefactCell(artId)!.subtitle ?? ''"
+                      :notes="notes"
+                      :box-color="innerArtefactAccent(artId)"
+                      :pinned="isInnerArtefactPinned(artId)"
+                      :show-pin-tool="true"
+                      :show-color-tool="true"
+                      class="package-box__inner-artefact-focus-card"
+                      @toggle-pin="(ev: MouseEvent) => onInnerArtefactTogglePin(artId, ev)"
+                      @cycle-color="onInnerArtefactCycleColor(artId)"
+                    />
+                  </div>
+                  <!--
+                    Sibling artefact in the focused column → hidden so the focus card claims
+                    the column. We render an empty placeholder (no element) so layout stays
+                    clean and the slot ref map drops the entry naturally.
+                  -->
+                  <template
+                    v-else-if="
+                      innerArtefactFocusActive
+                        && col.includes(props.focusedInnerArtefactId ?? '')
+                        && focusedInnerArtefactId !== artId
+                    "
                   />
-                  <div v-else-if="innerArtefactCell(artId)" class="package-box__artefact-row">
-                    <span
-                      class="package-box__artefact-anchor package-box__artefact-anchor--in"
-                      :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
-                      aria-hidden="true"
-                    />
-                    <span
-                      class="package-box__artefact-anchor package-box__artefact-anchor--out"
-                      :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
-                      aria-hidden="true"
-                    />
-                    <div class="lang-icon-slot lang-icon-slot--artefact">
-                      <img class="lang-svg" :src="scalaIconUrl" alt="" aria-hidden="true" decoding="async" />
-                    </div>
-                    <div class="package-box__artefact-text">
-                      <div class="package-box__artefact-title">{{ innerArtefactCell(artId)!.name }}</div>
-                      <div v-if="innerArtefactCell(artId)!.subtitle" class="package-box__artefact-subtitle">
-                        {{ innerArtefactCell(artId)!.subtitle }}
+                  <!-- All other artefacts (including other inheritance layers) → normal row. -->
+                  <div
+                    v-else-if="innerArtefactCell(artId)"
+                    :ref="(el) => bindInnerArtefactSlotEl(artId, el)"
+                    class="package-box__inner-slot package-box__inner-slot--artefact package-box__inner-slot--clickable package-box__inner-slot--artefact-layer"
+                    :class="{
+                      'package-box__inner-slot--inner-hovered': innerArtefactEmphasized(artId),
+                    }"
+                    :style="{ '--box-accent': innerArtefactAccent(artId) }"
+                    @mouseenter="onInnerArtefactSlotEnter(artId)"
+                    @mouseleave="onInnerArtefactSlotLeave(artId)"
+                    @click.stop="onArtefactRowClick(artId)"
+                  >
+                    <div class="package-box__artefact-row">
+                      <span
+                        class="package-box__artefact-anchor package-box__artefact-anchor--in"
+                        :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
+                        aria-hidden="true"
+                      />
+                      <span
+                        class="package-box__artefact-anchor package-box__artefact-anchor--out"
+                        :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
+                        aria-hidden="true"
+                      />
+                      <div class="lang-icon-slot lang-icon-slot--artefact">
+                        <img class="lang-svg" :src="scalaIconUrl" alt="" aria-hidden="true" decoding="async" />
+                      </div>
+                      <div class="package-box__artefact-text">
+                        <div class="package-box__artefact-title">{{ innerArtefactCell(artId)!.name }}</div>
+                        <div v-if="innerArtefactCell(artId)!.subtitle" class="package-box__artefact-subtitle">
+                          {{ innerArtefactCell(artId)!.subtitle }}
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
+                </template>
               </div>
             </div>
             <svg
@@ -905,6 +984,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
         <div v-if="notes" class="drill-note">{{ notes }}</div>
         <div v-if="description" class="description-full" :title="description">{{ description }}</div>
       </div>
+      </slot>
     </div>
 
     <div
@@ -1108,11 +1188,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   transition: box-shadow 0.45s ease, outline 0.45s ease;
 }
 
-/** Scala leaf: solid left accent reads like package boxes; inset shadow alone can wash out in some stacks. */
-.package-box--scala-leaf:not(.package-box--focused-layout) {
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.08);
-  border-left: 5px solid var(--box-accent, steelblue);
-}
+/**
+ * Scala leaf chrome is intentionally identical to a package card here — same left accent
+ * strip (inset shadow), same border, same drop shadow. The two diverge only in the icon
+ * (scala glyph vs folder) and the editing affordance (no rename/desc dialog for a Scala
+ * leaf). Keeping the box-shadow definition aligned makes it impossible for the strip to
+ * silently disappear after package-side tweaks.
+ */
 
 .package-box:not(.package-box--focused-layout) .title,
 .package-box:not(.package-box--focused-layout) .subtitle {
@@ -1317,6 +1399,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   line-height: 1.25;
   color: #475569;
 }
+/**
+ * Inner-diagram band hosts the focused package's child packages, artefact rows / cards, and
+ * inheritance edges. The container is intentionally **invisible** — no background, no border —
+ * so children space themselves against the surrounding `.package-box__focused-shell` (i.e. the
+ * package box chrome). The earlier dashed frame + grey fill duplicated the package's own
+ * border and made the spacing read as "padding around a sub-canvas" rather than "content
+ * inside the package".
+ */
 .package-box__inner-diagram {
   flex: 1 1 0;
   min-height: 0;
@@ -1327,14 +1417,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   flex-direction: column;
   align-items: stretch;
   gap: 10px;
-  padding: 10px;
-  border-radius: 10px;
-  border: 1px dashed rgb(148 163 184 / 0.95);
-  background: rgb(248 250 252 / 0.92);
+  padding: 0;
+  border: 0;
+  background: transparent;
   overflow: auto;
 }
 .package-box--focused-layout .package-box__inner-diagram {
-  padding-bottom: 4px;
+  padding-bottom: 0;
 }
 .package-box__inner-artefact-diagram {
   position: relative;
@@ -1349,11 +1438,29 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     min-height 0.45s cubic-bezier(0.4, 0, 0.2, 1);
 }
-/** Focused artefact: grow with the focused package layer and let the expanded box fill column height. */
+/** When an inner artefact is focused, the diagram band claims the full vertical sub-diagram space. */
 .package-box__inner-artefact-diagram--artefact-focus {
   flex: 1 1 0;
   min-height: 0;
 }
+/**
+ * Focused inner artefact card — fills the focused column's full height and width, with the same
+ * focus chrome (accent strip, outline, tools cluster) as a focused PackageBox. Cursor stays
+ * `default` because clicks on the card chrome unfocus (handled by the wrapper cell below); only
+ * the explicit tool buttons / details body are interactive.
+ */
+.package-box__inner-artefact-focus-card {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  align-self: stretch;
+}
+/**
+ * NOTE: the matching `.package-box__inner-slot--artefact-focused-cell` rule lives lower
+ * in the file (after `.package-box__inner-slot--artefact-layer`) so it wins source-order
+ * cascade over the `flex: 0 0 auto` collapse rule on equal specificity.
+ */
 .package-box__inner-artefact-edges {
   position: absolute;
   inset: 0;
@@ -1424,11 +1531,22 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     min-height 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     gap 0.45s cubic-bezier(0.4, 0, 0.2, 1);
 }
+/**
+ * In artefact-focus mode the cols container stretches its children vertically so the focused
+ * column can fill the sub-diagram band. Default mode keeps `align-items: flex-start` (rows are
+ * natural-height and pack to the top, mirroring how packages stack their card list).
+ *
+ * The wide `gap` is intentional — inheritance edges use {@link getSmoothStepPath} (the same
+ * routing strategy as Vue Flow `imports` / dependency edges between modules), and the middle
+ * vertical segment of an L-shaped step path is drawn at the midpoint between source and target
+ * X. Generous gap + slim peer columns mean that vertical segment runs through clear inter-column
+ * space rather than through neighbour artefact rows.
+ */
 .package-box__inner-artefact-cols--artefact-focus {
   flex: 1 1 0;
   min-height: 0;
   align-items: stretch;
-  gap: clamp(10px, 2.8cqw, 22px);
+  gap: clamp(32px, 7cqw, 64px);
 }
 .package-box__inner-artefact-col {
   display: flex;
@@ -1448,21 +1566,24 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .package-box__inner-artefact-cols--artefact-focus > .package-box__inner-artefact-col {
   min-height: 0;
 }
+/** Column containing the focused artefact: grows to take more horizontal space. */
 .package-box__inner-artefact-col--focus {
-  flex: 2.35 1 0;
+  flex: 2.6 1 0;
   max-width: none;
   min-width: 0;
 }
+/**
+ * Other inheritance layers stay visible at a slim width so the focused column dominates the
+ * sub-diagram while parent traits / classes (left) and subclasses (right) remain readable.
+ * Width is tuned so the `@container pkg-artefact-row (max-width: 118px)` rule below always
+ * fires for peers — vertical title + icon-on-top, like a tight package-leaf card. The slim
+ * silhouette also frees horizontal space for the inheritance edge step paths to route between
+ * columns without crossing artefact rows.
+ */
 .package-box__inner-artefact-col--peer {
-  flex: 0.55 1 0;
-  max-width: clamp(72px, 16cqw, 132px);
-  min-width: 64px;
-}
-.package-box__inner-artefact-col--peer .package-box__artefact-title,
-.package-box__inner-artefact-col--peer .package-box__artefact-subtitle {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 0 1 auto;
+  max-width: clamp(56px, 9cqw, 84px);
+  min-width: 48px;
 }
 .package-box__inner-slot {
   flex: 1 1 0;
@@ -1499,19 +1620,6 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   flex-direction: column;
   cursor: default;
 }
-.package-box__embedded-artefact-box {
-  flex: 1 1 0;
-  min-height: 0;
-  min-width: 0;
-  width: 100%;
-}
-.package-box__embedded-artefact-box--inner-focus {
-  flex: 1 1 0;
-  min-height: 0;
-  align-self: stretch;
-  width: 100%;
-  transition: box-shadow 0.45s cubic-bezier(0.4, 0, 0.2, 1);
-}
 .package-box__inner-slot--artefact {
   cursor: pointer;
 }
@@ -1529,23 +1637,25 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   flex: 0 0 auto;
   min-height: auto;
 }
-.package-box__inner-slot.package-box__inner-slot--artefact-layer.package-box__inner-slot--artefact-expanded {
+/**
+ * Focused-artefact cell — must override the `flex: 0 0 auto` collapse from
+ * `.package-box__inner-slot--artefact-layer` directly above. Same specificity (two classes),
+ * so we rely on source-order cascade — keep this block here, not earlier in the file.
+ */
+.package-box__inner-slot--artefact-layer.package-box__inner-slot--artefact-focused-cell {
   flex: 1 1 0;
   min-height: 0;
-  cursor: default;
-}
-.package-box__inner-slot--artefact-focused .package-box__artefact-row {
-  border-color: var(--box-accent, #64748b);
-  box-shadow:
-    0 0 0 1px rgb(255 255 255 / 0.85),
-    0 0 0 2px var(--box-accent, #64748b),
-    0 2px 8px rgb(15 23 42 / 0.08);
-  background: rgb(255 255 255 / 0.98);
+  align-self: stretch;
+  cursor: pointer;
 }
 /**
- * Inner member strip: same rhythm as default `.package-box` — **icon centered on top**, title
- * (and kind subtitle) **centered beneath** when width allows; `@container` below switches to
- * vertical title only when the row is extremely narrow (peer columns during artefact focus).
+ * Inner member strip — visual rhythm matches a {@link PackageBox} leaf card so a Scala member
+ * row reads as the same kind of object as a package on the canvas:
+ *   - same 1px `rgb(30 41 59 / 0.88)` border, same 8px radius, same drop shadow;
+ *   - same **left accent strip** via `inset 5px 0 0 0 var(--box-accent)` (the slot wrapper sets
+ *     `--box-accent` per artefact id, falling back to `boxColorForId(id)`);
+ *   - icon-on-top + centered title when there's width, vertical title via `@container` below
+ *     once the row gets narrow (peer columns during artefact focus).
  */
 .package-box__artefact-row {
   position: relative;
@@ -1554,15 +1664,18 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
-  padding: 8px 8px 6px;
+  padding: 8px 8px 6px 12px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
   gap: 6px;
   border-radius: 8px;
-  border: 1px solid rgb(148 163 184 / 0.55);
-  background: rgb(255 255 255 / 0.88);
+  border: 1px solid rgb(30 41 59 / 0.88);
+  background: rgb(255 255 255 / 0.9);
+  box-shadow:
+    inset 5px 0 0 0 var(--box-accent, steelblue),
+    0 1px 2px rgb(15 23 42 / 0.08);
   transition:
     border-color 0.15s ease,
     box-shadow 0.15s ease;
@@ -1601,6 +1714,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .package-box__inner-slot--inner-hovered .package-box__artefact-row {
   border-color: var(--box-accent, #64748b);
   box-shadow:
+    inset 5px 0 0 0 var(--box-accent, steelblue),
     0 0 0 1px rgb(255 255 255 / 0.85),
     0 0 0 2px var(--box-accent, #64748b),
     0 2px 8px rgb(15 23 42 / 0.08);
@@ -1657,7 +1771,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 @container pkg-artefact-row (max-width: 118px) {
   .package-box__artefact-row {
     gap: 4px;
-    padding: 6px 4px 5px;
+    padding: 6px 4px 5px 10px;
   }
   .package-box__artefact-row .package-box__artefact-text {
     min-width: 0;
@@ -1794,17 +1908,11 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   gap: 5px;
   max-width: calc(100% - 10px);
 }
-.package-box--pinned:not(.package-box--focused):not(.package-box--scala-leaf) {
+.package-box--pinned:not(.package-box--focused) {
   box-shadow:
     inset 5px 0 0 0 var(--box-accent),
     0 1px 2px rgb(15 23 42 / 0.08),
     0 0 0 1px rgb(30 41 59 / 0.1);
-}
-.package-box--scala-leaf.package-box--pinned:not(.package-box--focused):not(.package-box--focused-layout) {
-  box-shadow:
-    0 1px 2px rgb(15 23 42 / 0.08),
-    0 0 0 1px rgb(30 41 59 / 0.1);
-  border-left: 5px solid var(--box-accent, steelblue);
 }
 .tool-btn {
   width: 26px;
