@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
-import { isLanguageIconId, languageIconForId, type LanguageIconId } from '../../graph/languages'
-import LanguageIcon from '../LanguageIcon.vue'
+import cubeIconUrl from '../../assets/language-icons/cube.svg'
 
 const props = defineProps<{
   boxId: string
@@ -12,6 +11,7 @@ const props = defineProps<{
   notes?: string
   /** Free-text "what does this module do" — surfaced in the AI prompt. */
   description?: string
+  /** Kept for YAML round-trip; not used for the icon (all project boxes show the cube). */
   language?: string
   boxColor?: NamedBoxColor | string
   pinned: boolean
@@ -29,12 +29,6 @@ const emit = defineEmits<{
 }>()
 
 const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
-
-const iconLang = computed((): LanguageIconId => {
-  const d = props.language
-  if (isLanguageIconId(d)) return d
-  return languageIconForId(props.boxId)
-})
 
 const rootEl = ref<HTMLElement | null>(null)
 const titleEl = ref<HTMLElement | null>(null)
@@ -202,7 +196,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     </div>
 
     <div class="lang-icon-slot">
-      <LanguageIcon :name="iconLang" />
+      <img class="lang-svg cube-icon" :src="cubeIconUrl" alt="" aria-hidden="true" decoding="async" />
     </div>
 
     <div

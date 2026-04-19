@@ -7,6 +7,7 @@ import GraphWorkspace from './components/GraphWorkspace.vue'
 import YamlDiffEditor from './components/YamlDiffEditor.vue'
 import { parseIlographYaml, stringifyIlographYaml } from './ilograph/parse'
 import type { IlographDocument } from './ilograph/types'
+import sbtLogoUrl from './assets/language-icons/sbt.svg'
 import { ilographDocumentToFlow } from './graph/ilographToFlow'
 import { flowToIlographDocument } from './graph/flowToIlograph'
 import { slimEdgesForExport, slimNodesForExport } from './graph/slimFlow'
@@ -686,7 +687,8 @@ onUnmounted(() => {
     <div class="main" :class="{ 'main--no-side': !showYamlEditor }">
       <div class="flow-wrap">
         <div v-if="sourcePath" class="source-path-overlay" :title="sourcePath">
-          {{ sourcePath }}
+          <img class="source-path-overlay__logo" :src="sbtLogoUrl" alt="sbt" aria-hidden="true" />
+          <span class="source-path-overlay__text">{{ sourcePath }}</span>
         </div>
         <GraphWorkspace
           ref="graphRef"
@@ -913,18 +915,31 @@ onUnmounted(() => {
   left: 12px;
   z-index: 10;
   pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
   color: #475569;
   background: rgba(255, 255, 255, 0.85);
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 4px;
-  padding: 3px 8px;
+  padding: 3px 8px 3px 6px;
   max-width: calc(100% - 24px);
+  user-select: text;
+}
+.source-path-overlay__logo {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: block;
+  object-fit: contain;
+}
+.source-path-overlay__text {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  user-select: text;
+  min-width: 0;
 }
 .side {
   border-left: 1px solid #e2e8f0;

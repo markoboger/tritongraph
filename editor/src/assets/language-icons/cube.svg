@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Isometric cube. Three visible faces (top, left, right) are equal-size rhombi.
+  Geometry: edge L = 80, isometric projection (axes at 30 deg from horizontal),
+  cube center at (100, 100). Hexagon vertices, plus the shared center vertex.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="320" height="320">
+  <g
+    fill="#ffffff"
+    stroke="#0f172a"
+    stroke-width="6"
+    stroke-linejoin="round"
+    stroke-linecap="round"
+  >
+    <polygon points="100,20 169.28,60 100,100 30.72,60" fill="#f8fafc" />
+    <polygon points="169.28,60 169.28,140 100,180 100,100" fill="#cbd5e1" />
+    <polygon points="30.72,60 100,100 100,180 30.72,140" fill="#94a3b8" />
+  </g>
+</svg>
