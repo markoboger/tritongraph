@@ -19,6 +19,7 @@ import type { TritonInnerArtefactSpec, TritonInnerPackageSpec } from '../../ilog
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
 import folderIconUrl from '../../assets/language-icons/folder.svg'
 import scalaIconUrl from '../../assets/language-icons/scala.svg'
+import ScalaArtefactBox from './ScalaArtefactBox.vue'
 
 export type InnerPackageSummary = TritonInnerPackageSpec
 export type InnerArtefactSummary = TritonInnerArtefactSpec
@@ -98,9 +99,18 @@ const activeInnerSpec = computed((): TritonInnerPackageSpec | null => {
   return findSpecAtPath(props.innerPackages, path)
 })
 
+const focusedInnerArtefact = computed((): InnerArtefactSummary | null => {
+  const id = props.focusedInnerArtefactId
+  if (!id) return null
+  return props.innerArtefacts.find((a) => a.id === id) ?? null
+})
+
 /** Inner-diagram panel: child packages and/or Scala artefacts (artefacts only at top-level inner view). */
 const hasInnerDiagram = computed(
-  () => props.innerPackages.length > 0 || (props.innerArtefacts.length > 0 && !innerDrillPathArr.value.length),
+  () =>
+    props.innerPackages.length > 0 ||
+    (props.innerArtefacts.length > 0 && !innerDrillPathArr.value.length) ||
+    (!!props.focusedInnerArtefactId && !innerDrillPathArr.value.length),
 )
 
 function onInnerCardClick(id: string) {
@@ -372,7 +382,38 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
           </button>
         </div>
 
-        <template v-if="!innerDrillPathArr.length">
+        <div
+          v-else-if="focusedInnerArtefact"
+          class="package-box__inner-drill-toolbar"
+          @pointerdown.stop
+          @click.stop
+        >
+          <button type="button" class="inner-drill-btn" @click.stop="emit('update-inner-artefact-focus', null)">
+            All members
+          </button>
+        </div>
+
+        <div
+          v-if="focusedInnerArtefact && !innerDrillPathArr.length"
+          class="package-box__inner-slot package-box__inner-slot--artefact-panel"
+          @pointerdown.stop
+          @click.stop
+        >
+          <ScalaArtefactBox
+            :box-id="focusedInnerArtefact.id"
+            :label="focusedInnerArtefact.name"
+            :subtitle="focusedInnerArtefact.subtitle ?? ''"
+            :notes="notes"
+            :box-color="boxColor"
+            :pinned="false"
+            :focused="true"
+            :show-pin-tool="false"
+            :show-color-tool="false"
+            class="package-box__embedded-artefact-box"
+          />
+        </div>
+
+        <template v-else-if="!innerDrillPathArr.length">
           <div
             v-for="child in innerPackages"
             :key="child.id"
@@ -674,8 +715,48 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   max-height: 100%;
   max-width: min(92cqw, 240px);
 }
+/**
+ * Tight = narrow column: keep folder readable via `cqh` (not `cqw`), stack **icon on top centered**
+ * and **vertical title below**; title may draw upward over the icon for a compact footprint.
+ */
+.package-box--tight {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0;
+  padding-top: clamp(4px, 1vmin, 10px);
+  padding-bottom: clamp(4px, 1vmin, 10px);
+}
 .package-box--tight .lang-icon-slot {
   transform: none;
+  align-self: center;
+  width: 100%;
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  height: auto;
+  min-height: clamp(28px, 26cqh, 44px);
+  max-height: min(44cqh, 52px);
+  margin-bottom: 0;
+  margin-right: 0;
+  justify-content: center;
+  z-index: 0;
+}
+.package-box--tight .lang-icon-slot :deep(.lang-svg) {
+  height: clamp(26px, min(34px, 34cqh), 42px);
+  width: auto;
+  max-height: min(100%, 40cqh);
+  max-width: min(100%, 56px);
+}
+.package-box--tight .package-box__body {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  justify-content: center;
+  align-items: center;
+  margin-top: clamp(-16px, -4cqh, -6px);
+  position: relative;
+  z-index: 1;
 }
 
 /** Unfocused: wide + shallow node — icon column left, title/subtitle stack right (LR layout). */
@@ -835,6 +916,22 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .package-box__inner-slot--solo {
   flex: 3 1 0;
+}
+.package-box__inner-slot--artefact-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  cursor: default;
+}
+.package-box__embedded-artefact-box {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
 }
 .package-box__inner-slot--artefact {
   cursor: pointer;
@@ -1096,12 +1193,15 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   overflow: visible;
   text-overflow: clip;
   max-width: none;
-  max-height: 100%;
+  max-height: none;
   align-self: center;
   writing-mode: vertical-rl;
   transform: rotate(180deg);
   text-orientation: mixed;
   line-height: 1.15;
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
 }
 .package-box--tight .subtitle {
   opacity: 0;

@@ -9,6 +9,10 @@
  * Artefacts have no editable label / description (they are derived from the parsed `.scala`
  * source — round-tripping a renamed artefact back to disk is out of scope today). If we add
  * source-aware editing later, mirror the patchNodeData / rename hooks from FlowPackageNode.
+ *
+ * Layer drill: {@link isLeafBoxNode} includes `type: 'artefact'`, so a single click on the node
+ * (after the debounce in {@link GraphDrillIn}) runs the same `applyLayerDrill` path as packages
+ * and modules — inner UI uses `nodrag` / `click.stop` so expanding sections does not drill out.
  */
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { computed, inject, nextTick } from 'vue'

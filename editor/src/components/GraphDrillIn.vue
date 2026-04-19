@@ -522,6 +522,7 @@ async function applyLayerDrill(moduleId: string) {
   layerDrillId.value = moduleId
 
   const targetIsGroup = target.type === 'group'
+  const targetIsArtefact = target.type === 'artefact'
   const regionParent = target.parentNode ? String(target.parentNode) : undefined
   const depths = dependencyDepthsInRegion(nodes, edges, regionParent)
 
@@ -530,13 +531,22 @@ async function applyLayerDrill(moduleId: string) {
   const vp = readFlowViewport()
   /**
    * Group focus claims the full band of its parent (which, for the outermost package, is the
-   * diagram viewport — the layout pins the singleton root group to the canvas). Leaf focus keeps
-   * the historical "tight to the modules' own Y span" behavior so pinned-row drills don't end up
-   * with a stretched-tall leaf box.
+   * diagram viewport — the layout pins the singleton root group to the canvas).
+   *
+   * Scala **artefact** focus uses the same vertical band: same-depth artefact peers are hidden,
+   * dependency columns stay visible in other layers, and the focused box should grow tall + wide
+   * for text-heavy detail (like a drilled package / project), not stay clipped to the pre-stack Y span.
+   *
+   * Other leaves (sbt `module`, `package`) keep `diagramModuleVerticalSpan` so pinned-row drills
+   * do not stretch every sibling to the full parent height.
    */
   let diagramTop: number
   let diagramH: number
   if (targetIsGroup) {
+    const band = verticalBandForLayerDrill(nodes, regionParent, vp.height)
+    diagramTop = band.padTop
+    diagramH = band.usable
+  } else if (targetIsArtefact) {
     const band = verticalBandForLayerDrill(nodes, regionParent, vp.height)
     diagramTop = band.padTop
     diagramH = band.usable
