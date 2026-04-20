@@ -1,5 +1,8 @@
 *.class
 *.log
+*.tasty
+
+*/target/*
 
 editor/node_modules/
 tools/sbt-to-ilograph/node_modules/
