@@ -2,7 +2,9 @@
 *.log
 *.tasty
 
-*/target/*
+**/target/
+**/target/**
+
 
 editor/node_modules/
 tools/sbt-to-ilograph/node_modules/
