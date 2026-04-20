@@ -18,6 +18,15 @@ import {
 import type { ModuleAnchorTops } from '../../graph/layoutDependencyLayers'
 import { edgeContributesToClasspathDepth, strokeColorForFlowEdge } from '../../graph/relationKinds'
 import { usedHandlesForNode } from '../../graph/usedFlowHandles'
+import {
+  setInnerArtefactColorsMap,
+  setInnerArtefactPinnedMap,
+  setNodeColor,
+  setNodeNotes,
+  setNodePinned,
+} from '../../store/overlayStore'
+import { openInEditor } from '../../openInEditor'
+import type { Ref } from 'vue'
 import DiagramSection from './DiagramSection.vue'
 import PackageBox, {
   type InnerArtefactRelationSummary,
@@ -39,7 +48,47 @@ const props = defineProps<{
   data: {
     label: string
     subtitle?: string
+    /**
+     * Full one-line declaration shown in the focused header subtitle (Scala artefact leaves,
+     * e.g. `"object Demo extends App"`). Falls back to `subtitle` (kind keyword) when unset.
+     */
+    declaration?: string
+    /**
+     * Primary constructor parameter source text for a Scala artefact leaf (e.g.
+     * `"(a: A, b: B)"` — multiple clauses concatenated, whitespace collapsed). Rendered as a
+     * Shiki code block in the focused "Arguments" panel. Empty / absent for traits, objects,
+     * and classes without a parameter clause; the panel then shows a short placeholder.
+     */
+    constructorParams?: string
+    /**
+     * Scala `def` member signatures for a Scala artefact leaf. Each entry carries the
+     * signature text plus the 0-indexed source row of its declaration — the box uses the row
+     * to dispatch a per-method "open at line" click. Rendered as a Shiki code block in the
+     * focused Methods panel; `ScalaArtefactBox` falls back to a placeholder when the array
+     * is empty or missing (packages never set this).
+     */
+    methodSignatures?: ReadonlyArray<{ signature: string; startRow: number }>
+    /**
+     * Source file relative to its owning `(root, exampleDir)` for a Scala artefact leaf —
+     * used by the "open in editor" tool. Populated by `ilographToFlow` from the ilograph
+     * document's `x-triton-source-file`; absent for packages and for resources without
+     * a resolvable source location.
+     */
+    sourceFile?: string
+    /** 0-indexed start row of the declaration — see {@link TritonInnerArtefactSpec.sourceRow}. */
+    sourceRow?: number
+    /**
+     * Source-derived description (file lists, fqn, …) emitted by the scanner. Round-trips
+     * through YAML unchanged so structural diffs only reflect code changes; user-typed
+     * notes go to {@link notes} (overlay-backed) and are NOT written back to YAML.
+     */
     description?: string
+    /**
+     * Free-form user note (overlay-backed). When non-empty it replaces `description` in
+     * the box body. Persisted in the runtime overlay store (TinyBase + localStorage)
+     * keyed by `(workspaceKey, nodeId)` — see `applyOverlayToFlowNodes` in `App.vue`.
+     */
+    notes?: string
     layerDrillFocus?: boolean
     drillNote?: string
     layerFlip?: LayerFlipPayload
@@ -56,6 +105,16 @@ const props = defineProps<{
     innerDrillPath?: readonly string[]
     /** Which inner Scala artefact row is focused (flow-only; does not change layer drill). */
     innerArtefactFocusId?: string
+    /**
+     * id → pinned map for inner Scala artefacts. Lifted out of {@link PackageBox} local
+     * state into flow data so {@link GraphDrillIn} can detect a pinned inner artefact and
+     * refuse to switch the layer drill away from this package — otherwise the click on
+     * another package would unmount the focus and silently lose the pin. Round-trip pattern
+     * mirrors `innerArtefactFocusId`.
+     */
+    innerArtefactPinned?: Record<string, boolean>
+    /** id → accent color map for inner Scala artefacts (lifted from local state, same reasons). */
+    innerArtefactColors?: Record<string, string>
   }
 }>()
 
@@ -80,6 +139,54 @@ const innerDrillPathForBox = computed(() => {
 })
 
 const { updateNodeData, getNodes, getEdges } = useVueFlow()
+
+/** Active workspace key (see `App.vue`) — empty string = no overlay-store writes. */
+const workspaceKey = inject<{ value: string } | undefined>('tritonWorkspaceKey', undefined)
+function ws(): string {
+  return workspaceKey?.value ?? ''
+}
+
+/**
+ * `(root, dir)` of the tab's backing example on disk — provided by `App.vue` as a
+ * reactive computed. Needed by {@link triggerOpenInEditor} to translate `data.sourceFile`
+ * (which is relative to `<root>/<dir>`) into an absolute path for the editor URL scheme.
+ * Missing / null means this diagram isn't backed by a `(root, dir)` pair (file uploads,
+ * the builtin example, …) — we disable the open-in-editor button in that case.
+ */
+const activeExampleRef = inject<Ref<{ root: string; dir: string } | null> | undefined>(
+  'tritonActiveExample',
+  undefined,
+)
+
+function canOpenInEditor(): boolean {
+  if (!activeExampleRef?.value) return false
+  if (!props.data.sourceFile) return false
+  return true
+}
+
+/**
+ * Dispatch an "open in editor" handoff.
+ *
+ * Accepts an optional 0-indexed source row: callers that want to land on a specific
+ * declaration (e.g. the Methods panel clicking an individual `def`) pass the method's
+ * row; callers that just want to jump to the artefact itself (the tool button, the
+ * Arguments panel, clicking the header declaration) omit the argument and we fall back
+ * to the leaf's own `data.sourceRow`. All rows are 0-indexed at this layer and bumped
+ * to 1 when composing the editor URL.
+ */
+function triggerOpenInEditor(line?: number): void {
+  const ex = activeExampleRef?.value
+  const relPath = props.data.sourceFile
+  if (!ex || !relPath) return
+  const effectiveRow = line !== undefined ? line : (props.data.sourceRow ?? 0)
+  openInEditor({
+    root: ex.root,
+    exampleDir: ex.dir,
+    relPath,
+    // Tree-sitter `startRow` is 0-indexed; editor URL schemes are 1-indexed.
+    line: effectiveRow + 1,
+  })
+}
 
 /** Same Vue node shell as packages so layout + chrome stay aligned (`type` from flow graph). */
 const isScalaArtefactLeaf = computed(() => getNodes.value.find((n) => n.id === props.id)?.type === 'artefact')
@@ -197,7 +304,10 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
 
 function cycleColor() {
   const accent = (props.data.boxColor as string) || boxColorForId(props.id)
-  updateNodeData(props.id, { boxColor: nextNamedBoxColor(accent) })
+  const next = nextNamedBoxColor(accent)
+  updateNodeData(props.id, { boxColor: next })
+  patchNodeData?.(props.id, { boxColor: next })
+  setNodeColor(ws(), props.id, next)
 }
 
 function onRename(newLabel: string) {
@@ -206,16 +316,25 @@ function onRename(newLabel: string) {
   updateNodeData(props.id, { label: newLabel })
 }
 
+/**
+ * The "description editor" is repurposed as a user-note editor here too — value goes
+ * to the overlay store and `data.notes`, never to YAML. See `FlowProjectNode.vue` and
+ * `applyOverlayToFlowNodes` in `App.vue` for the merge-on-load side.
+ */
 function onDescriptionChange(newDescription: string) {
-  if (newDescription === (props.data.description ?? '')) return
-  patchNodeData?.(props.id, { description: newDescription })
-  updateNodeData(props.id, { description: newDescription })
+  const cur = (props.data.notes as string | undefined) ?? ''
+  if (newDescription === cur) return
+  patchNodeData?.(props.id, { notes: newDescription })
+  updateNodeData(props.id, { notes: newDescription })
+  setNodeNotes(ws(), props.id, newDescription)
 }
 
 function togglePin(ev: MouseEvent) {
   ev.stopPropagation()
   const next = !props.data.pinned
   updateNodeData(props.id, { pinned: next })
+  patchNodeData?.(props.id, { pinned: next })
+  setNodePinned(ws(), props.id, next)
   void nextTick(async () => {
     refreshDimming?.()
     await relayoutViewport?.()
@@ -241,6 +360,20 @@ function onInnerArtefactFocus(id: string | null) {
   updateNodeData(props.id, { innerArtefactFocusId: next })
 }
 
+/** Replace the per-inner-artefact pin map (PackageBox owns the toggle logic; we just persist). */
+function onInnerArtefactPinned(map: Record<string, boolean>) {
+  patchNodeData?.(props.id, { innerArtefactPinned: map })
+  updateNodeData(props.id, { innerArtefactPinned: map })
+  setInnerArtefactPinnedMap(ws(), props.id, map)
+}
+
+/** Replace the per-inner-artefact accent-color map (same persistence model as pin). */
+function onInnerArtefactColors(map: Record<string, string>) {
+  patchNodeData?.(props.id, { innerArtefactColors: map })
+  updateNodeData(props.id, { innerArtefactColors: map })
+  setInnerArtefactColorsMap(ws(), props.id, map)
+}
+
 watch(
   () => props.data.layerDrillFocus,
   () => {
@@ -260,13 +393,18 @@ watch(
             :box-id="id"
             :label="data.label"
             :subtitle="data.subtitle"
+            :declaration="data.declaration"
+            :constructor-params="data.constructorParams"
+            :method-signatures="data.methodSignatures"
             :notes="data.drillNote"
             :box-color="data.boxColor"
             :pinned="!!data.pinned"
             :show-pin-tool="showPinTool"
             :show-color-tool="true"
+            :can-open-in-editor="canOpenInEditor()"
             @toggle-pin="togglePin"
             @cycle-color="cycleColor"
+            @open-in-editor="(line?: number) => triggerOpenInEditor(line)"
           />
           <PackageBox
             v-else-if="isScalaArtefactLeaf"
@@ -289,7 +427,7 @@ watch(
             :box-id="id"
             :label="data.label"
             :subtitle="data.subtitle"
-            :description="data.description"
+            :description="(data.notes as string | undefined) || data.description"
             :notes="data.drillNote"
             :box-color="data.boxColor"
             :pinned="!!data.pinned"
@@ -301,12 +439,16 @@ watch(
             :inner-artefact-relations="innerArtefactRelationsForBox"
             :inner-drill-path="innerDrillPathForBox"
             :focused-inner-artefact-id="data.innerArtefactFocusId"
+            :inner-artefact-pinned="data.innerArtefactPinned"
+            :inner-artefact-colors="data.innerArtefactColors"
             @toggle-pin="togglePin"
             @cycle-color="cycleColor"
             @rename="onRename"
             @description-change="onDescriptionChange"
             @update-inner-drill-path="onUpdateInnerDrillPath"
             @update-inner-artefact-focus="onInnerArtefactFocus"
+            @update-inner-artefact-pinned="onInnerArtefactPinned"
+            @update-inner-artefact-colors="onInnerArtefactColors"
           />
         </DiagramSection>
       </div>

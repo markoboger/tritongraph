@@ -1,0 +1,98 @@
+/**
+ * Opens a source file in the user's configured external editor via a URL-scheme handoff.
+ *
+ * Flow:
+ *   1. `.triton.yaml` is read by `vite-plugin-triton-config.ts` at dev/build start.
+ *   2. Its `editor` block is surfaced to the browser as `virtual:triton-config`.
+ *   3. {@link openInEditor} resolves the click site's `(root, exampleDir, relPath, line)` into
+ *      an absolute path, interpolates the preset/template, and triggers `window.location.href`.
+ *   4. The browser dispatches the URL scheme (`cursor://…`, `vscode://…`, …); the OS routes it
+ *      to the registered app, which jumps the file+line into view. No native bridge required.
+ *
+ * Why `window.location.href` and not `window.open`?
+ *   Protocol-scheme links generally don't produce a real page navigation — browsers hand them
+ *   off and stay on the current tab. Assigning `location.href` is the most broadly-supported
+ *   way to trigger this handoff from a user-gesture-initiated click without getting blocked as
+ *   a popup (which `window.open` sometimes is for non-http(s) schemes).
+ */
+import { config, repoRoot } from 'virtual:triton-config'
+
+/** Maps the `editor.name` preset to a URL template. Kept in sync with `.triton.yaml` comment. */
+const PRESET_TEMPLATES: Record<string, string> = {
+  cursor: 'cursor://file/{absPath}:{line}:{col}',
+  vscode: 'vscode://file/{absPath}:{line}:{col}',
+  'vscode-insiders': 'vscode-insiders://file/{absPath}:{line}:{col}',
+  // IntelliJ family uses a query-string scheme (JetBrains Toolbox / IDE built-in handler).
+  idea: 'idea://open?file={absPath}&line={line}&column={col}',
+  zed: 'zed://file/{absPath}:{line}:{col}',
+}
+
+/** Fallback when neither `urlTemplate` nor a recognised `name` is present in the YAML. */
+const FALLBACK_TEMPLATE = PRESET_TEMPLATES.cursor
+
+/** Return the effective URL template after resolving preset + override precedence. */
+function resolveTemplate(): string {
+  const tpl = config.editor.urlTemplate?.trim()
+  if (tpl) return tpl
+  const name = (config.editor.name ?? '').trim().toLowerCase()
+  return PRESET_TEMPLATES[name] ?? FALLBACK_TEMPLATE
+}
+
+export interface OpenInEditorTarget {
+  /** Examples-root name from `LoadedScalaFile.root` (`scala-examples`, `sbt-examples`, …). */
+  root: string
+  /** Example folder name under `root` (`animal-fruit`, `01-single-module`, …). */
+  exampleDir: string
+  /** POSIX-style path relative to `<root>/<exampleDir>` — matches `LoadedScalaFile.relPath`. */
+  relPath: string
+  /** 1-indexed line; defaults to 1 when omitted. Tree-sitter `startRow` is 0-indexed so add 1 upstream. */
+  line?: number
+  /** 1-indexed column; defaults to 1. */
+  col?: number
+}
+
+function buildAbsPath(t: OpenInEditorTarget): string {
+  // Everything the editor bundles already uses POSIX separators (the vite plugins normalise
+  // Windows paths on the way in); we keep that here so the template sees consistent slashes
+  // even on Windows hosts, which Cursor / VS Code tolerate for `file://` and their custom schemes.
+  const parts = [repoRoot, t.root, t.exampleDir, t.relPath].filter(Boolean)
+  return parts.join('/').replace(/\/+/g, '/')
+}
+
+function interpolate(template: string, absPath: string, line: number, col: number): string {
+  return template
+    .replaceAll('{absPath}', absPath)
+    .replaceAll('{line}', String(line))
+    .replaceAll('{col}', String(col))
+}
+
+/**
+ * Open {@link OpenInEditorTarget} in the configured external editor.
+ * Returns the URL that was dispatched, for logging / test assertions.
+ */
+export function openInEditor(target: OpenInEditorTarget): string {
+  const line = Math.max(1, target.line ?? 1)
+  const col = Math.max(1, target.col ?? 1)
+  const absPath = buildAbsPath(target)
+  const url = interpolate(resolveTemplate(), absPath, line, col)
+  if (typeof window !== 'undefined') {
+    // Using `location.href` (not `window.open`) so the protocol handler fires without
+    // triggering popup-blocker heuristics that some browsers apply to non-http schemes.
+    window.location.href = url
+  }
+  return url
+}
+
+/** Human-readable name for tooltips (`Open in Cursor`). Falls back to 'external editor'. */
+export function editorDisplayName(): string {
+  const name = (config.editor.name ?? '').trim()
+  if (!name) return 'external editor'
+  const pretty: Record<string, string> = {
+    cursor: 'Cursor',
+    vscode: 'VS Code',
+    'vscode-insiders': 'VS Code Insiders',
+    idea: 'IntelliJ IDEA',
+    zed: 'Zed',
+  }
+  return pretty[name.toLowerCase()] ?? name
+}

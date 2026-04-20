@@ -1,10 +1,67 @@
-import type { IlographDocument, IlographPerspective, IlographResource } from '../ilograph/types'
+import type {
+  IlographDocument,
+  IlographPerspective,
+  IlographResource,
+  TritonInnerArtefactSpec,
+} from '../ilograph/types'
 import type { ExportFlowEdge, ExportFlowNode } from './flowExportModel'
-import { isNamedBoxColor } from './boxColors'
 import { isLeafBoxNode } from './nodeKinds'
 
 function exportResourceName(n: ExportFlowNode): string {
   return String(n.data?.label ?? n.id)
+}
+
+/**
+ * Strip scanner-only fields (`declaration`, `constructorParams`, `methodSignatures`,
+ * `sourceFile`, `sourceRow`) from an inner-artefact entry before emitting it to YAML.
+ *
+ * These fields are derived freshly from Scala source on every scan:
+ *   - `declaration` / `constructorParams` / `methodSignatures` change every time a signature
+ *     is edited and bloat the YAML with prose that's already in the source file.
+ *   - `sourceFile` / `sourceRow` are location hints for the open-in-editor handoff; they
+ *     drift on every refactor (add an import → every row below moves) and produce massive
+ *     noisy diffs that have nothing to do with the graph structure.
+ *
+ * Keeping only `id` / `name` / `subtitle` (the Scala kind keyword: `class`, `trait`, …)
+ * means a YAML diff between two scans highlights real graph changes — artefacts added,
+ * removed, renamed, or changing kind — instead of every line-number shift. Runtime UI
+ * features (focused method list, Arguments panel, open-in-editor) still work on the live
+ * scanner data held in flow nodes; only the serialized form is slim.
+ */
+function slimInnerArtefactForExport(raw: unknown): TritonInnerArtefactSpec | null {
+  if (!raw || typeof raw !== 'object') return null
+  const a = raw as Record<string, unknown>
+  const id = typeof a.id === 'string' ? a.id : ''
+  const name = typeof a.name === 'string' ? a.name : ''
+  if (!id || !name) return null
+  const subtitle = typeof a.subtitle === 'string' && a.subtitle ? a.subtitle : undefined
+  return {
+    id,
+    name,
+    ...(subtitle ? { subtitle } : {}),
+  }
+}
+
+/**
+ * Pick the description value to round-trip through YAML.
+ *
+ * When `applyDoc` builds a flow node from scanner YAML, it snapshots the scanner-emitted
+ * description into `data.scannerDescription` and never modifies it again. The plain
+ * `data.description` field is still allowed to be live-edited by the user (legacy
+ * description editor in `PackageBox`), so reading it would mix scanner truth with user
+ * notes. We always prefer the snapshot when present so the YAML output stays purely
+ * derived from the most recent scan — that's what makes "diff two YAMLs to see what
+ * changed in the source" actually work.
+ */
+function descriptionForExport(n: ExportFlowNode): string | undefined {
+  const data = n.data as { description?: unknown; scannerDescription?: unknown } | undefined
+  if (typeof data?.scannerDescription === 'string' && data.scannerDescription) {
+    return data.scannerDescription
+  }
+  if (typeof data?.description === 'string' && data.description) {
+    return data.description
+  }
+  return undefined
 }
 
 function buildResourceTree(nodes: ExportFlowNode[]): IlographResource[] {
@@ -26,7 +83,8 @@ function buildResourceTree(nodes: ExportFlowNode[]): IlographResource[] {
           name: exportResourceName(n),
           subtitle: String(n.data?.subtitle ?? ''),
         }
-        if (n.data?.description) res.description = String(n.data.description)
+        const desc = descriptionForExport(n)
+        if (desc) res.description = desc
         const nested = subtree(n.id)
         if (nested.length) res.children = nested
         resources.push(res)
@@ -38,14 +96,20 @@ function buildResourceTree(nodes: ExportFlowNode[]): IlographResource[] {
         name: exportResourceName(n),
         subtitle: String(n.data?.subtitle ?? ''),
       }
-      if (n.data?.description) res.description = String(n.data.description)
+      const desc = descriptionForExport(n)
+      if (desc) res.description = desc
       const ip = (n.data as Record<string, unknown> | undefined)?.innerPackages
       if (Array.isArray(ip) && ip.length) {
         res['x-triton-inner-packages'] = ip as NonNullable<IlographResource['x-triton-inner-packages']>
       }
       const ia = (n.data as Record<string, unknown> | undefined)?.innerArtefacts
       if (Array.isArray(ia) && ia.length) {
-        res['x-triton-inner-artefacts'] = ia as NonNullable<IlographResource['x-triton-inner-artefacts']>
+        const slim = ia
+          .map(slimInnerArtefactForExport)
+          .filter((x): x is TritonInnerArtefactSpec => x !== null)
+        if (slim.length) {
+          res['x-triton-inner-artefacts'] = slim
+        }
       }
       const iar = (n.data as Record<string, unknown> | undefined)?.innerArtefactRelations
       if (Array.isArray(iar) && iar.length) {
@@ -69,10 +133,11 @@ function buildResourceTree(nodes: ExportFlowNode[]): IlographResource[] {
   const patched: IlographResource[] = [...roots]
   for (const n of nodes) {
     if (!orphanIds.has(n.id)) continue
+    const desc = descriptionForExport(n)
     patched.push({
       name: exportResourceName(n),
       subtitle: String(n.data?.subtitle ?? ''),
-      ...(n.data?.description ? { description: String(n.data.description) } : {}),
+      ...(desc ? { description: desc } : {}),
     })
   }
   return patched
@@ -112,28 +177,23 @@ export function flowToIlographDocument(
     perspectives![0]!.name = meta.perspectiveName
   }
 
-  const positions: Record<string, { x: number; y: number }> = {}
-  const moduleColors: Record<string, string> = {}
-  const pinnedModuleIds: string[] = []
-  for (const n of nodes) {
-    positions[n.id] = { ...n.position }
-    if (isLeafBoxNode(n)) {
-      const c = n.data?.boxColor
-      if (isNamedBoxColor(c)) moduleColors[n.id] = c
-      if (n.data?.pinned === true) pinnedModuleIds.push(n.id)
-    }
-  }
-
+  /**
+   * The legacy `x-triton-editor` block (positions / moduleColors / pinnedModuleIds) is no
+   * longer emitted: those user-overlay values now live in the runtime overlay store
+   * (TinyBase, persisted to localStorage). Keeping them out of the YAML lets us treat the
+   * YAML as pure scanner output, so diffs between two YAMLs only highlight code changes
+   * (resources, declarations, relations) instead of being drowned in per-node x/y noise.
+   * `parseIlographYaml` still tolerates the block on input — `App.applyDoc` migrates any
+   * found legacy values into the overlay store on first load.
+   */
+  // Only emit a doc-level description when the caller actually supplied one. The previous
+  // boilerplate fallback ("Sbt-style modules …") added a string to every exported YAML that
+  // duplicated info already encoded structurally (resources + perspective relations). The
+  // overlay store holds all user-specific UI state separately, so the YAML's job is strictly
+  // "latest scanner output" — keep it minimal so diffs highlight real code changes only.
   return {
-    description:
-      meta.description ??
-      'Sbt-style modules (resources) and compile dependencies (perspective relations). Compatible with Ilograph: https://ilograph.com/docs/spec',
+    ...(meta.description ? { description: meta.description } : {}),
     resources,
     perspectives,
-    'x-triton-editor': {
-      positions,
-      ...(Object.keys(moduleColors).length ? { moduleColors } : {}),
-      ...(pinnedModuleIds.length ? { pinnedModuleIds } : {}),
-    },
   }
 }

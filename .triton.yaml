@@ -1,0 +1,28 @@
+# TritonGraph workspace config.
+#
+# Consumed at Vite start-time by `editor/vite-plugin-triton-config.ts` and surfaced to the
+# browser bundle via the `virtual:triton-config` module. Changes reload on save.
+#
+# The `editor` section controls which external code editor opens when you click an artefact
+# in the diagram (header / declaration line, once per-method line numbers land). We use the
+# URL-scheme handoff that VS Code, Cursor and IntelliJ all register on install — the browser
+# opens `scheme://…`, the OS routes to the registered app, the app brings the file forward
+# at the requested line. No native bridge or local HTTP hop required.
+
+editor:
+  # Preset name. Built-in shortcuts:
+  #   cursor           → cursor://file/{absPath}:{line}:{col}
+  #   vscode           → vscode://file/{absPath}:{line}:{col}
+  #   vscode-insiders  → vscode-insiders://file/{absPath}:{line}:{col}
+  #   idea             → idea://open?file={absPath}&line={line}&column={col}
+  #   zed              → zed://file/{absPath}:{line}:{col}
+  # Add/override any of them with `urlTemplate` below.
+  name: cursor
+
+  # Optional explicit URL template. When set, `name` is informational only and this
+  # template is used verbatim. Placeholders (all optional):
+  #   {absPath}  absolute file path on disk, POSIX-style separators
+  #   {line}     1-indexed line number (defaults to 1 when the call site has none)
+  #   {col}      1-indexed column number (defaults to 1 when the call site has none)
+  # Example — open in a hypothetical custom editor on line only:
+  # urlTemplate: "myeditor://open?path={absPath}&line={line}"

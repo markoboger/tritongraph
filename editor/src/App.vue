@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Position, type NodeTypesObject } from '@vue-flow/core'
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import FlowProjectNode from './components/diagram/FlowProjectNode.vue'
 import FlowPackageNode from './components/diagram/FlowPackageNode.vue'
 import GroupNode from './components/GroupNode.vue'
@@ -31,11 +31,30 @@ import {
 import { drillNoteForModuleId } from './graph/sbtStyleDrillNotes'
 import { listSbtExamples, sbtExampleSourceToYaml } from './sbt/sbtExampleBuilds'
 import { parseBuildSbt } from './sbt/parseBuildSbt'
+import { getSbtTestLogFor } from './sbt/sbtTestLogLoader'
+import { parseSbtTestLog } from './sbt/parseSbtTestLog'
+import { getScoverageReportFor } from './sbt/scoverageReportLoader'
+import { parseScoverageXml } from './sbt/parseScoverageXml'
 import { listScalaSourcesIn } from './scala/scalaSourceLoader'
 import {
   buildScalaPackageGraph,
+  collectScalaArtefactDocs,
   scalaPackageGraphToIlographDocument,
 } from './scala/scalaPackagesToIlograph'
+import {
+  clearScalaDocsForWorkspace,
+  clearScalaCoverageForWorkspace,
+  clearScalaTestBlocksForWorkspace,
+  clearScalaSpecsForWorkspace,
+  getInnerArtefactOverlays,
+  getNodeOverlay,
+  importLegacyEditorOverlay,
+  setScalaCoverage,
+  setScalaDoc,
+  setScalaSpecs,
+  setScalaTestBlock,
+  whenOverlayStoreReady,
+} from './store/overlayStore'
 const nodes = ref<any[]>([])
 const edges = ref<any[]>([])
 const perspectiveName = ref<string | undefined>('dependencies')
@@ -86,7 +105,7 @@ function setRelationTypeVisible(relationKey: string, visible: boolean) {
   void nextTick(() => graphRef.value?.refreshEdgeEmphasis?.())
 }
 
-const showYamlEditor = ref(true)
+const showYamlEditor = ref(false)
 
 /** Which sub-panel is visible in the right column (YAML diff, AI prompt, or canvas templates). */
 const sidePanelTab = ref<'yaml' | 'prompt' | 'templates'>('yaml')
@@ -150,6 +169,18 @@ const activeTab = computed<DiagramTab | undefined>(() =>
 )
 
 /**
+ * Workspace key drives every overlay-store row id. Mirrors the active tab's `key` (so
+ * `"sbt:scala-examples/animal-fruit"` and `"packages:scala-examples/animal-fruit"` keep
+ * their own user state even though they're the same example). Empty string when no tab
+ * is active — overlay reads/writes are no-ops in that case.
+ *
+ * Provided downward so leaf node components (`FlowProjectNode`, `FlowPackageNode`, …) can
+ * persist user edits without prop-drilling the key through every layer.
+ */
+const activeWorkspaceKey = computed<string>(() => activeTab.value?.key ?? '')
+provide('tritonWorkspaceKey', activeWorkspaceKey)
+
+/**
  * Which dropdown row should look "active". The packages view of an example highlights the same
  * sbt menu entry — a packages tab is conceptually a sub-view of that example, not its own pick.
  */
@@ -173,6 +204,14 @@ const activeExample = computed<{ root: string; dir: string } | null>(() => {
   return { root: body.slice(0, slash), dir: body.slice(slash + 1) }
 })
 
+/**
+ * Downstream consumers (e.g. the open-in-editor click handler on Scala artefact boxes) need
+ * the active tab's `(root, exampleDir)` pair so they can combine it with a node's stored
+ * `sourceFile` relPath to build an absolute disk path. Provided reactively so tab switches
+ * (packages tab → sbt tab → packages tab) are picked up without component re-creation.
+ */
+provide('tritonActiveExample', activeExample)
+
 const nodeTypes = {
   module: FlowProjectNode,
   package: FlowPackageNode,
@@ -192,6 +231,38 @@ function readFlowViewport(): { width: number; height: number } {
   return {
     width: Math.max(200, w),
     height: Math.max(200, h),
+  }
+}
+
+/**
+ * Merge the active workspace's overlay rows onto a freshly built node list. Mutates the
+ * supplied nodes in place: each node gets a `data.scannerDescription` (snapshot of the
+ * scanner-emitted `description` so YAML round-trip never confuses scanner text with a
+ * user note), and any of `boxColor` / `pinned` / `notes` / position / inner-artefact
+ * pinned-and-color maps that the overlay store carries are stamped on top of the
+ * scanner defaults.
+ *
+ * Skipped when no workspace is active (boot path: tab not yet selected).
+ */
+function applyOverlayToFlowNodes(nodeList: any[]): void {
+  const ws = activeWorkspaceKey.value
+  for (const node of nodeList) {
+    const data = (node.data ??= {})
+    if (typeof data.description === 'string' && data.scannerDescription === undefined) {
+      data.scannerDescription = data.description
+    }
+    if (!ws) continue
+    const ov = getNodeOverlay(ws, String(node.id))
+    if (ov.color) data.boxColor = ov.color
+    if (ov.pinned === true) data.pinned = true
+    if (typeof ov.notes === 'string' && ov.notes) data.notes = ov.notes
+    if (typeof ov.posX === 'number' && typeof ov.posY === 'number') {
+      node.position = { x: ov.posX, y: ov.posY }
+    }
+    /** Inner-artefact maps are merged whole because `PackageBox.vue` consumes the full map. */
+    const inner = getInnerArtefactOverlays(ws, String(node.id))
+    if (Object.keys(inner.pinned).length) data.innerArtefactPinned = inner.pinned
+    if (Object.keys(inner.colors).length) data.innerArtefactColors = inner.colors
   }
 }
 
@@ -231,11 +302,24 @@ async function applyDoc(
   preferSaved: boolean,
   options: { moduleNodeType?: 'module' | 'package' } = {},
 ) {
+  await whenOverlayStoreReady()
   const doc = parseIlographYaml(text)
+  /**
+   * One-time migration of any legacy `x-triton-editor` block (positions, moduleColors,
+   * pinnedModuleIds) into the overlay store. We keep parsing the block so existing YAML
+   * files don't lose user state; we just stop emitting it on save (see
+   * `flowToIlograph.ts`). `import` is a no-op for ids that already have stronger overlay
+   * state, so re-loading the same YAML many times never clobbers fresh edits.
+   */
+  const legacy = doc['x-triton-editor']
+  if (legacy && activeWorkspaceKey.value) {
+    importLegacyEditorOverlay(activeWorkspaceKey.value, legacy)
+  }
   const { nodes: n, edges: e, perspectiveName: p } = ilographDocumentToFlow(doc, {
     preferSavedPositions: preferSaved,
     moduleNodeType: options.moduleNodeType ?? 'module',
   })
+  applyOverlayToFlowNodes(n)
   await nextTick()
   await waitFrameLayout()
   const vp = readFlowViewport()
@@ -466,6 +550,155 @@ async function loadScalaPackagesForExample(root: string, dir: string) {
     const graph = await buildScalaPackageGraph(files)
     const sourceLabel = `${root}/${dir}/`
     sourcePath.value = sourceLabel
+    /**
+     * Seed the TinyBase `scalaDocs` table with the freshly scanned Scaladoc text, keyed by
+     * the same resource id the flow node uses. We do this before `applyDoc` so the focused
+     * box's `useScalaDoc` composable sees a populated ref on the very first render — there
+     * is no "flashing placeholder" window between flow-node mount and doc arrival.
+     *
+     * The clear-before-write pattern matches the workspace invariant: a single scan is the
+     * full source of truth for that workspace. Rows for artefacts that have been renamed or
+     * deleted vanish in the same pass. `await whenOverlayStoreReady()` happens inside
+     * `applyDoc`; we call it here as well so a very first load can't race the LocalPersister's
+     * auto-load (which would otherwise overwrite our fresh docs with stale persisted ones).
+     */
+    await whenOverlayStoreReady()
+    const ws = activeWorkspaceKey.value
+    if (ws) {
+      clearScalaDocsForWorkspace(ws)
+      clearScalaTestBlocksForWorkspace(ws)
+      clearScalaCoverageForWorkspace(ws)
+      clearScalaSpecsForWorkspace(ws)
+      for (const { id, doc } of collectScalaArtefactDocs(graph)) {
+        setScalaDoc(ws, id, doc)
+      }
+      /**
+       * If the example folder contains a captured `sbt-test.log`, parse it and store one
+       * console-like checklist block per resolved artefact id.
+       */
+      const log = getSbtTestLogFor(root, dir)
+      if (log?.text) {
+        const blocks = parseSbtTestLog(log.text)
+        // Build a simple-name index of known artefact ids so `Fruit.Banana` → `Banana` resolves.
+        const byName = new Map<string, string[]>()
+        for (const p of graph.packages) {
+          for (const a of p.artefacts) {
+            const id = `${a.packageName || '<root>'}::${a.kind.replace(/\s+/g, '-')}:${a.name}`
+            const bucket = byName.get(a.name) ?? []
+            bucket.push(id)
+            byName.set(a.name, bucket)
+          }
+        }
+        for (const b of blocks) {
+          const raw = String(b.subject ?? '').trim()
+          if (!raw) continue
+          const simple = raw.includes('.') ? raw.slice(raw.lastIndexOf('.') + 1) : raw
+          const ids = byName.get(simple) ?? []
+          if (ids.length !== 1) continue
+          setScalaTestBlock(ws, ids[0]!, { suite: b.suite, subject: b.subject, blockText: b.blockText })
+        }
+
+        // Spec source locations live under `src/test/scala`, which we omit from the diagram/YAML.
+        // We still scan them so we can link "Tests and Specs" lines back to their source.
+        const specNameCounts = new Map<string, number>()
+        const specByName = new Map<string, { name: string; declaration: string; file: string; startRow: number }>()
+        for (const a of graph.testArtefacts ?? []) {
+          if (!a?.name || !a?.file) continue
+          specNameCounts.set(a.name, (specNameCounts.get(a.name) ?? 0) + 1)
+          specByName.set(a.name, {
+            name: a.name,
+            declaration: a.declaration || `${a.kind} ${a.name}`,
+            file: a.file,
+            startRow: Number.isFinite(a.startRow) ? a.startRow : 0,
+          })
+        }
+        // Only keep unambiguous spec names (simple-name lookup only).
+        for (const [name, count] of specNameCounts.entries()) {
+          if (count !== 1) specByName.delete(name)
+        }
+
+        const specsByArtefactId = new Map<string, Array<{ name: string; declaration: string; file: string; startRow: number }>>()
+        for (const b of blocks) {
+          const rawSubject = String(b.subject ?? '').trim()
+          if (!rawSubject) continue
+          const simple = rawSubject.includes('.') ? rawSubject.slice(rawSubject.lastIndexOf('.') + 1) : rawSubject
+          const ids = byName.get(simple) ?? []
+          if (ids.length !== 1) continue
+          const artId = ids[0]!
+          const suiteLine = String(b.suite ?? '').trim()
+          if (!suiteLine) continue
+          const suiteName = suiteLine.endsWith(':') ? suiteLine.slice(0, -1) : suiteLine
+          const spec = specByName.get(suiteName)
+          if (!spec) continue
+          const bucket = specsByArtefactId.get(artId) ?? []
+          if (!bucket.some((x) => x.name === spec.name)) bucket.push(spec)
+          specsByArtefactId.set(artId, bucket)
+        }
+        for (const [artId, specs] of specsByArtefactId.entries()) {
+          setScalaSpecs(ws, artId, specs)
+        }
+      }
+
+      // Parse scoverage XML if present and store statement coverage per artefact.
+      const rep = getScoverageReportFor(root, dir)
+      if (rep?.xml) {
+        const rates = parseScoverageXml(rep.xml)
+        // Index graph artefacts by (packageFqn, name) → ids by kind.
+        const idx = new Map<string, { classIds: string[]; objectIds: string[]; traitIds: string[] }>()
+        for (const p of graph.packages) {
+          for (const a of p.artefacts) {
+            const id = `${a.packageName || '<root>'}::${a.kind.replace(/\s+/g, '-')}:${a.name}`
+            const key = `${a.packageName || '<root>'}\u0001${a.name}`
+            const bucket = idx.get(key) ?? { classIds: [], objectIds: [], traitIds: [] }
+            const k = a.kind.toLowerCase()
+            if (k.includes('trait')) bucket.traitIds.push(id)
+            else if (k.includes('object')) bucket.objectIds.push(id)
+            else if (k.includes('class')) bucket.classIds.push(id)
+            idx.set(key, bucket)
+          }
+        }
+        for (const r of rates) {
+          const dot = r.fullName.lastIndexOf('.')
+          if (dot <= 0) continue
+          const pkg = r.fullName.slice(0, dot)
+          const rawSimple = r.fullName.slice(dot + 1)
+          /**
+           * Scala/JVM artifacts often show up in scoverage with `$` suffixes:
+           * - objects / companions: `Foo$`
+           * - inner / synthetic: `Foo$Bar`, `Foo$package$`, etc.
+           *
+           * Our scanner artefacts are source-level names (`Foo`, `Bar`), so attempt matching:
+           *   1) exact simple name
+           *   2) strip a single trailing `$`
+           *   3) take the prefix before the first `$`
+           */
+          const simpleCandidates = Array.from(
+            new Set([
+              rawSimple,
+              rawSimple.endsWith('$') ? rawSimple.slice(0, -1) : rawSimple,
+              rawSimple.includes('$') ? rawSimple.slice(0, rawSimple.indexOf('$')) : rawSimple,
+            ].filter(Boolean)),
+          )
+
+          let hit: { classIds: string[]; objectIds: string[]; traitIds: string[] } | undefined
+          for (const s of simpleCandidates) {
+            hit = idx.get(`${pkg}\u0001${s}`)
+            if (hit) break
+          }
+          if (!hit) continue
+
+          const t = (r.classType || '').toLowerCase()
+          const candidates =
+            t === 'object' ? hit.objectIds : t === 'trait' ? hit.traitIds : hit.classIds
+          // Be permissive: if several artefacts share the same (pkg, name) bucket, apply the
+          // same class-level statement rate to each candidate. This avoids dropping coverage
+          // entirely due to ambiguity (e.g. case class vs class, or compiler-emitted companions).
+          for (const id of candidates) {
+            setScalaCoverage(ws, id, r.statementRate)
+          }
+        }
+      }
+    }
     const doc = scalaPackageGraphToIlographDocument(graph, {
       title: `Scala packages: ${dir}`,
       sourcePath: sourceLabel,

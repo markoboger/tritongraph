@@ -24,3 +24,39 @@ declare module 'virtual:scala-sources' {
   }
   export const scalaSourceEncodedEntries: ScalaSourceEncoded[]
 }
+
+declare module 'virtual:sbt-test-logs' {
+  export interface SbtTestLogEncoded {
+    root: string
+    exampleDir: string
+    relPath: string
+    b64: string
+  }
+  export const sbtTestLogEncodedEntries: SbtTestLogEncoded[]
+}
+
+declare module 'virtual:scoverage-reports' {
+  export interface ScoverageReportEncoded {
+    root: string
+    exampleDir: string
+    relPath: string
+    b64: string
+  }
+  export const scoverageReportEncodedEntries: ScoverageReportEncoded[]
+}
+
+declare module 'virtual:triton-config' {
+  export interface TritonEditorConfig {
+    /** Built-in preset shortcut (`cursor`, `vscode`, `vscode-insiders`, `idea`, `zed`). */
+    name?: string
+    /** Optional URL template overriding `name`. Placeholders: `{absPath}`, `{line}`, `{col}`. */
+    urlTemplate?: string
+  }
+  export interface TritonConfig {
+    editor: TritonEditorConfig
+  }
+  /** Absolute git-repo root (POSIX separators), used to resolve `relPath → absPath`. */
+  export const repoRoot: string
+  /** Merged `.triton.yaml` contents with defaults applied. */
+  export const config: TritonConfig
+}

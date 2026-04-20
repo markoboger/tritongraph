@@ -4,7 +4,10 @@ import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { sbtExamplesVirtualModule } from './vite-plugin-sbt-examples'
+import { sbtTestLogsVirtualModule } from './vite-plugin-sbt-test-logs'
 import { scalaSourcesVirtualModule } from './vite-plugin-scala-sources'
+import { scoverageReportsVirtualModule } from './vite-plugin-scoverage-reports'
+import { tritonConfigVirtualModule } from './vite-plugin-triton-config'
 
 const require = createRequire(import.meta.url)
 const monacoEditorMod = require('vite-plugin-monaco-editor') as
@@ -22,16 +25,20 @@ const dirname = path.dirname(fileURLToPath(import.meta.url))
  * Both folders contain `<dir>/build.sbt`, so both surface as sbt project tabs as well as package
  * tabs (when their subprojects have `.scala` sources).
  */
+const repoRoot = path.resolve(dirname, '..')
 const exampleRoots = [
-  { name: 'sbt-examples', dir: path.resolve(dirname, '../sbt-examples') },
-  { name: 'scala-examples', dir: path.resolve(dirname, '../scala-examples') },
+  { name: 'sbt-examples', dir: path.resolve(repoRoot, 'sbt-examples') },
+  { name: 'scala-examples', dir: path.resolve(repoRoot, 'scala-examples') },
 ]
 
 export default defineConfig({
   plugins: [
     vue(),
     sbtExamplesVirtualModule(exampleRoots),
+    sbtTestLogsVirtualModule(exampleRoots),
     scalaSourcesVirtualModule(exampleRoots),
+    scoverageReportsVirtualModule(exampleRoots),
+    tritonConfigVirtualModule(repoRoot),
     monacoEditorPlugin({
       languageWorkers: ['editorWorkerService', 'json'],
     }),

@@ -9,8 +9,11 @@
  * skip the animation, making "expand to fill the layer" feel like a discontinuous jump.
  */
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
-import { computed } from 'vue'
+import { computed, inject, ref, type Ref } from 'vue'
 import folderIconUrl from '../assets/language-icons/folder.svg'
+import LanguageIcon from './LanguageIcon.vue'
+import { isLanguageIconId } from '../graph/languages'
+import { useScalaCoverageKeyed } from '../store/useOverlay'
 import {
   AGG_TARGET_HANDLE,
   aggregateFanTopPctForUsedSlots,
@@ -36,8 +39,23 @@ const props = defineProps<{
     layerDrillFocus?: boolean
     /** Scala outer package scope: show folder + titles like {@link PackageBox}. */
     packageScope?: boolean
+    /**
+     * Detected source language for the **topmost** package scope (e.g. `scala`, `java`, `ts`).
+     * Inferred upstream from `src/main/<lang>/…` path convention — see `detectLanguageFromFilePaths`
+     * in `scalaPackagesToIlograph.ts`. When set, we render a language logo in the top-right corner
+     * with the coverage bar placed immediately to its left. Nested sub-packages don't carry this
+     * field so the logo appears only on the outermost package, matching the user's request.
+     */
+    language?: string
   }
 }>()
+
+/**
+ * True when the language detected upstream matches one of the keys supported by {@link LanguageIcon}.
+ * Guarded via {@link isLanguageIconId} so an unknown value (e.g. `"groovy"`) degrades to "no logo"
+ * instead of rendering a broken icon.
+ */
+const hasLanguageLogo = computed(() => !!(props.data.packageScope && props.data.language && isLanguageIconId(props.data.language)))
 
 const { getEdges } = useVueFlow()
 const used = computed(() => usedHandlesForNode(props.id, getEdges.value))
@@ -92,6 +110,21 @@ const layerFlipStyle = computed((): Record<string, string> => {
  * Counter-scale the inner shell so banner text and child boxes don't squash/stretch with the
  * outer FLIP scale. Without this the banner/glyphs would wobble during the drill animation.
  */
+/**
+ * Real coverage percentage from Scoverage (when available).
+ *
+ * No placeholders: if we don't have coverage for this node, we render no bar.
+ */
+const workspaceKeyRef = inject<Ref<string>>('tritonWorkspaceKey', ref(''))
+const scalaCoverageRef = useScalaCoverageKeyed(workspaceKeyRef, String(props.id ?? ''))
+const coveragePercent = computed((): number | null => {
+  const v = scalaCoverageRef.value?.stmtPct
+  if (typeof v === 'number' && Number.isFinite(v)) return Math.round(v)
+  return null
+})
+const hasCoverage = computed(() => typeof coveragePercent.value === 'number')
+const coveragePercentValue = computed(() => coveragePercent.value ?? 0)
+
 const layerFlipCounterStyle = computed((): Record<string, string> => {
   const f = props.data.layerFlip
   if (!f) return {}
@@ -113,8 +146,44 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
       <div class="group-node__flip-counter" :style="layerFlipCounterStyle">
         <div
           class="group-node__frame"
-          :class="{ 'group-node__frame--package-scope': data.packageScope }"
+          :class="{
+            'group-node__frame--package-scope': data.packageScope,
+            'group-node__frame--has-language': hasLanguageLogo,
+            'group-node__frame--has-coverage': hasCoverage,
+          }"
         >
+          <span
+            v-if="hasLanguageLogo"
+            class="group-node__language"
+            :title="`Language: ${data.language}`"
+            role="img"
+            :aria-label="`Language ${data.language}`"
+          >
+            <LanguageIcon :name="(data.language as any)" />
+          </span>
+          <span
+            v-if="hasCoverage"
+            class="group-node__coverage"
+            :title="`Code coverage: ${coveragePercentValue}%`"
+            role="img"
+            :aria-label="`Code coverage ${coveragePercentValue} percent`"
+          >
+            <svg
+              viewBox="0 0 100 20"
+              preserveAspectRatio="none"
+              aria-hidden="true"
+              class="group-node__coverage-svg"
+            >
+              <rect x="0" y="0" :width="coveragePercentValue" height="20" class="group-node__coverage-fill--covered" />
+              <rect
+                :x="coveragePercentValue"
+                y="0"
+                :width="100 - coveragePercentValue"
+                height="20"
+                class="group-node__coverage-fill--uncovered"
+              />
+            </svg>
+          </span>
           <template v-if="data.packageScope">
             <div class="group-node__pkg-header">
               <img
@@ -195,16 +264,83 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     0 1px 3px rgb(15 23 42 / 0.08);
   background: rgb(255 255 255 / 0.94);
 }
+/**
+ * Coverage indicator: slim split bar (green = covered, red = uncovered) anchored to the
+ * frame's top-right corner. Mirrors `.package-box__coverage` so packages at every level —
+ * outer scope group, nested group, and inner package box — share one visual language.
+ * Right-padding on the package-scope header (below) reserves horizontal room for it.
+ */
+.group-node__coverage {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 36px;
+  height: 10px;
+  border-radius: 3px;
+  border: 1px solid rgb(15 23 42 / 0.22);
+  background: rgb(255 255 255 / 0.85);
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.08);
+  pointer-events: auto;
+  z-index: 5;
+}
+/**
+ * When the topmost package carries a detected language, the logo sits in the top-right corner
+ * (`right: 8px`) and the coverage bar slides to its left (`right: 52px`: 36px logo + 8px gap +
+ * 8px outer padding). The `.group-node__pkg-header` right padding grows accordingly so the
+ * package title never overlaps either affordance.
+ */
+.group-node__frame--has-language .group-node__coverage {
+  right: 52px;
+}
+.group-node__language {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  z-index: 5;
+}
+.group-node__language :deep(.lang-svg) {
+  width: 32px;
+  height: 32px;
+  max-width: 32px;
+}
+.group-node__coverage-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.group-node__coverage-fill--covered {
+  fill: #22c55e;
+}
+.group-node__coverage-fill--uncovered {
+  fill: #ef4444;
+}
+
 .group-node__pkg-header {
   position: absolute;
   top: 8px;
   left: 12px;
+  /** Default: no coverage/language affordances → titles can use full width. */
   right: 12px;
   display: flex;
   flex-direction: row;
   align-items: flex-start;
   gap: 10px;
   pointer-events: none;
+}
+/** Coverage bar only (36px + 8px right + 8px gap). */
+.group-node__frame--has-coverage .group-node__pkg-header {
+  right: 56px;
+}
+/** Coverage bar + language logo (36 + 8 + 36 + 8 + 8 ≈ 96px). */
+.group-node__frame--has-language.group-node__frame--has-coverage .group-node__pkg-header {
+  right: 100px;
 }
 .group-node__folder-icon {
   width: 34px;

@@ -85,11 +85,55 @@ function normalizeInnerArtefactSpec(raw: unknown): TritonInnerArtefactSpec | nul
   const name = typeof o.name === 'string' && o.name ? o.name : o.id
   const subtitle =
     typeof o.subtitle === 'string' && o.subtitle.trim() ? String(o.subtitle) : undefined
+  const declaration =
+    typeof o.declaration === 'string' && o.declaration.trim() ? String(o.declaration) : undefined
+  const constructorParams =
+    typeof o.constructorParams === 'string' && o.constructorParams.trim()
+      ? String(o.constructorParams)
+      : undefined
+  const methodSignatures = normalizeMethodSignatureArray(o.methodSignatures)
+  const sourceFile =
+    typeof o.sourceFile === 'string' && o.sourceFile.trim() ? String(o.sourceFile) : undefined
+  const sourceRow =
+    typeof o.sourceRow === 'number' && Number.isFinite(o.sourceRow) ? (o.sourceRow as number) : undefined
   return {
     id: o.id,
     name,
     ...(subtitle ? { subtitle } : {}),
+    ...(declaration ? { declaration } : {}),
+    ...(constructorParams ? { constructorParams } : {}),
+    ...(methodSignatures.length ? { methodSignatures } : {}),
+    ...(sourceFile ? { sourceFile } : {}),
+    ...(sourceRow !== undefined ? { sourceRow } : {}),
   }
+}
+
+/**
+ * Normalise `methodSignatures` entries to the rich shape `{ signature, startRow }`. The
+ * canonical scanner output already emits objects; strings are accepted as a backwards-compat
+ * fallback for hand-edited YAML (no row information → row `0`, which degrades the click-to-open
+ * action to "open the file at the top" rather than failing silently). Anything else is dropped.
+ */
+function normalizeMethodSignatureArray(
+  raw: unknown,
+): Array<{ signature: string; startRow: number }> {
+  if (!Array.isArray(raw)) return []
+  const out: Array<{ signature: string; startRow: number }> = []
+  for (const v of raw) {
+    if (typeof v === 'string' && v.trim().length > 0) {
+      out.push({ signature: v, startRow: 0 })
+      continue
+    }
+    if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>
+      const sig = typeof o.signature === 'string' ? o.signature : ''
+      if (!sig.trim()) continue
+      const row =
+        typeof o.startRow === 'number' && Number.isFinite(o.startRow) ? (o.startRow as number) : 0
+      out.push({ signature: sig, startRow: row })
+    }
+  }
+  return out
 }
 
 function normalizeInnerArtefactRelationSpec(raw: unknown): TritonInnerArtefactRelationSpec | null {
@@ -97,7 +141,9 @@ function normalizeInnerArtefactRelationSpec(raw: unknown): TritonInnerArtefactRe
   const o = raw as Record<string, unknown>
   if (typeof o.from !== 'string' || !o.from) return null
   if (typeof o.to !== 'string' || !o.to) return null
-  const label = o.label === 'with' ? 'with' : 'extends'
+  /** Unknown labels fall back to `extends` so a hand-edited YAML with a typo still renders. */
+  const label: TritonInnerArtefactRelationSpec['label'] =
+    o.label === 'with' ? 'with' : o.label === 'uses' ? 'uses' : 'extends'
   return { from: o.from, to: o.to, label }
 }
 
@@ -157,6 +203,23 @@ export function ilographDocumentToFlow(
         label: res.name,
         subtitle: res.subtitle ?? '',
         description: typeof res.description === 'string' ? res.description : '',
+        ...(typeof res['x-triton-declaration'] === 'string' && res['x-triton-declaration'].trim()
+          ? { declaration: String(res['x-triton-declaration']) }
+          : {}),
+        ...(typeof res['x-triton-constructor-params'] === 'string' &&
+        res['x-triton-constructor-params'].trim()
+          ? { constructorParams: String(res['x-triton-constructor-params']) }
+          : {}),
+        ...(() => {
+          const sigs = normalizeMethodSignatureArray(res['x-triton-method-signatures'])
+          return sigs.length ? { methodSignatures: sigs } : {}
+        })(),
+        ...(typeof res['x-triton-source-file'] === 'string' && res['x-triton-source-file'].trim()
+          ? { sourceFile: String(res['x-triton-source-file']) }
+          : {}),
+        ...(typeof res['x-triton-source-row'] === 'number' && Number.isFinite(res['x-triton-source-row'])
+          ? { sourceRow: res['x-triton-source-row'] as number }
+          : {}),
         ...(boxColor ? { boxColor } : {}),
         ...(!isGroup && pinnedIds.has(id) ? { pinned: true } : {}),
         ...(!isGroup ? { language: languageIconForId(id), drillNote: drillNoteForModuleId(id) } : {}),
@@ -164,6 +227,9 @@ export function ilographDocumentToFlow(
         ...(innerArtefacts?.length ? { innerArtefacts } : {}),
         ...(innerArtefactRelations?.length ? { innerArtefactRelations } : {}),
         ...(isGroup && res['x-triton-package-scope'] === true ? { packageScope: true } : {}),
+        ...(isGroup && res['x-triton-package-scope'] === true && typeof res['x-triton-package-language'] === 'string'
+          ? { language: res['x-triton-package-language'] }
+          : {}),
       },
       parentNode: parentId,
       style: isGroup

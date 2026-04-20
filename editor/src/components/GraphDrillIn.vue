@@ -360,7 +360,20 @@ function captureLayerSnapshot() {
  * Layer snapshot is taken when drill *starts*; user may pin / recolor after that.
  * Restore geometry from the snap but keep these fields from the live node.
  */
-const DATA_KEYS_PERSISTED_ACROSS_LAYER_SNAPSHOT: (keyof Record<string, unknown>)[] = ['pinned', 'boxColor']
+const DATA_KEYS_PERSISTED_ACROSS_LAYER_SNAPSHOT: (keyof Record<string, unknown>)[] = [
+  'pinned',
+  'boxColor',
+  /**
+   * Inner artefact pin / accent maps live on the parent flow node's `data`. The drill
+   * machinery uses the pin map to decide whether to refuse a layer-drill switch
+   * (see {@link isPinLockActive}), so it MUST survive snapshot/restore — otherwise the
+   * pin would be silently wiped the moment the user drills out and back in.
+   */
+  'innerArtefactPinned',
+  'innerArtefactColors',
+  /** Inner artefact focus is also a user navigation choice; preserve it across restores. */
+  'innerArtefactFocusId',
+]
 
 function mergeDataForLayerRestore(
   snapData: Record<string, unknown> | undefined,
@@ -463,6 +476,33 @@ function isModulePinnedIn(nodes: GraphNode[], id: string): boolean {
 }
 
 /**
+ * True when the layer-drill focus on `id` should refuse to switch to a different box on
+ * a normal node click. This guards two related cases the user expects from "pin":
+ *
+ *   1. Top-level pinned box (Scala leaf or package): the box itself is `data.pinned`.
+ *   2. Pinned inner artefact: a focused Scala class inside this package is pinned via
+ *      `data.innerArtefactPinned[*] === true`. Switching the drill would unmount the
+ *      package, clear `innerArtefactFocusId`, and silently lose the pin — surprising.
+ *
+ * Explicit "leave focus" paths (re-click same box, parent-group drill-out, Esc, pane
+ * click) bypass this guard because they all follow code paths other than a sibling
+ * click into `applyLayerDrill`.
+ */
+function isPinLockActive(id: string): boolean {
+  const nodes = getNodes.value
+  if (isModulePinnedIn(nodes, id)) return true
+  const n = nodes.find((x) => x.id === id)
+  const d = n?.data && typeof n.data === 'object' ? (n.data as Record<string, unknown>) : null
+  const pinnedMap = d?.innerArtefactPinned
+  if (pinnedMap && typeof pinnedMap === 'object') {
+    for (const v of Object.values(pinnedMap as Record<string, unknown>)) {
+      if (v === true) return true
+    }
+  }
+  return false
+}
+
+/**
  * Region-participant input shape for the drill column layout. A "participant" is any node
  * directly under the region parent — leaf boxes (modules / packages / artefacts) AND group
  * containers — so that, for example, three sibling package groups can each claim a column
@@ -497,6 +537,15 @@ async function applyLayerDrill(moduleId: string) {
   let target = nodes.find((n) => n.id === moduleId)
   if (!target || !isLayerDrillBoxNode(target)) return
 
+  /**
+   * Pin lock: refuse to switch the layer drill away from a pinned focused box, OR a focused
+   * package whose inner artefact is pinned. Same-id (drill-out) and explicit clear paths
+   * (Esc, pane click, parent-group drill-out) do not call this branch, so the user can
+   * always exit a pinned focus deliberately — only sibling-clicks become no-ops.
+   */
+  if (layerDrillId.value && layerDrillId.value !== moduleId && isPinLockActive(layerDrillId.value)) {
+    return
+  }
   if (layerDrillId.value && layerDrillId.value !== moduleId) {
     clearLayerDrill()
     nodes = getNodes.value

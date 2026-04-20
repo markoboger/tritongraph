@@ -1111,7 +1111,14 @@ export function verticalBandForLayerDrill(
     return { padTop: MARGIN_Y, usable: Math.max(80, viewportHeight - MARGIN_Y - padBottom) }
   }
   const p = allNodes.find((n) => n.id === parentId)
-  const ph = Number(p?.style?.height) || GROUP_MIN_H
+  /**
+   * `layoutDepthInViewport` stores group `style.height` as a pixel string (`"800px"`) so Vue Flow
+   * renders the correct CSS; `Number("800px") === NaN`. Using `readNodePixelDim` — the helper
+   * already used elsewhere for the same "number or `<n>px`" polymorphism — so a focused artefact
+   * actually claims the group's real height (previously it stayed at the `GROUP_MIN_H` fallback,
+   * capped around 180px regardless of how tall the outer frame was).
+   */
+  const ph = readNodePixelDim(p?.style?.height, p?.height, GROUP_MIN_H)
   return { padTop: INNER_PAD_Y, usable: Math.max(80, ph - INNER_PAD_Y - INNER_PAD_Y) }
 }
 

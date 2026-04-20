@@ -14,7 +14,8 @@ defineOptions({ name: 'PackageBox' })
  *   - Folder icon (hardcoded — packages are always folder-shaped).
  *   - Plain-text subtitle (no markdown link parsing; package boxes don't have outbound diagram links yet).
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
+import { openInEditor } from '../../openInEditor'
 import { getSmoothStepPath, Position } from '@vue-flow/core'
 import type {
   TritonInnerArtefactRelationSpec,
@@ -23,10 +24,38 @@ import type {
 } from '../../ilograph/types'
 import { boxColorForId, nextNamedBoxColor, type NamedBoxColor } from '../../graph/boxColors'
 import { dependencyEdgeLabelStyle } from '../../graph/edgeTheme'
-import { SCALA_EXTENDS_STROKE, SCALA_HAS_TRAIT_STROKE } from '../../graph/relationKinds'
+import {
+  SCALA_EXTENDS_STROKE,
+  SCALA_HAS_TRAIT_STROKE,
+  SCALA_USES_STROKE,
+} from '../../graph/relationKinds'
 import { assignInnerArtefactLayers } from '../../graph/innerArtefactLayerLayout'
 import folderIconUrl from '../../assets/language-icons/folder.svg'
 import scalaIconUrl from '../../assets/language-icons/scala.svg'
+import scalaClassIconUrl from '../../assets/language-icons/scala-class.svg'
+import scalaTraitIconUrl from '../../assets/language-icons/scala-trait.svg'
+import scalaObjectIconUrl from '../../assets/language-icons/scala-object.svg'
+import scalaEnumIconUrl from '../../assets/language-icons/scala-enum.svg'
+import ShikiInlineCode from '../ShikiInlineCode.vue'
+import { useScalaCoverageKeyed } from '../../store/useOverlay'
+
+/**
+ * Pick the kind-specific Scala badge (class / trait / object / enum) for a Scala leaf
+ * artefact based on its `subtitle`, which carries the Scala kind keyword as parsed by
+ * tree-sitter (`'class' | 'case class' | 'object' | 'case object' | 'trait' | 'enum'`).
+ * Anything outside that set (e.g. `def`, `val`, `type`, `given`) falls back to the
+ * generic Scala lambda mark — matches the existing `kindBadge` letter scheme in
+ * {@link ScalaArtefactBox}, but as image assets so the unfocused chrome stays purely
+ * declarative without a per-kind text badge.
+ */
+function scalaIconForKind(subtitle: string | undefined): string {
+  const k = (subtitle ?? '').trim().toLowerCase()
+  if (k === 'class' || k === 'case class') return scalaClassIconUrl
+  if (k === 'object' || k === 'case object') return scalaObjectIconUrl
+  if (k === 'trait') return scalaTraitIconUrl
+  if (k === 'enum') return scalaEnumIconUrl
+  return scalaIconUrl
+}
 import ScalaArtefactBox from './ScalaArtefactBox.vue'
 
 export type InnerPackageSummary = TritonInnerPackageSpec
@@ -53,6 +82,12 @@ const props = withDefaults(
     boxId: string
     label: string
     subtitle?: string
+    /**
+     * Full one-line declaration (`"object Demo extends App"`). When the box is focused we show
+     * this in the header subtitle instead of the bare kind keyword from `subtitle` — packages
+     * don't set it and gracefully fall back to their existing subtitle text.
+     */
+    declaration?: string
     /** Shown when the box is focused (layer drill). */
     notes?: string
     /** Free-text "what does this package contains" — surfaced in the AI prompt. */
@@ -79,6 +114,16 @@ const props = withDefaults(
     innerDrillPath?: readonly string[]
     /** Flow-only: which inner artefact row is selected (same scope as `innerDrillPath` — does not affect layer drill). */
     focusedInnerArtefactId?: string
+    /**
+     * Flow-only: id → pinned map for inner artefacts. Lifted from local component state into
+     * the parent flow node's `data` so the drill machinery in {@link GraphDrillIn} can detect
+     * that an inner artefact is pinned and refuse to switch the layer drill away from this
+     * package — otherwise clicking another package would unmount the focus and lose the pin.
+     * Mirrors the round-trip pattern already used by `focusedInnerArtefactId`.
+     */
+    innerArtefactPinned?: Record<string, boolean>
+    /** Flow-only: id → accent color map for inner artefacts (lifted from local state, same reasons). */
+    innerArtefactColors?: Record<string, string>
     /** Compact card used only as a child inside another package box (no tools / no drill UI). */
     embedded?: boolean
     /**
@@ -106,11 +151,77 @@ const emit = defineEmits<{
   'update-inner-drill-path': [string[]]
   /** Toggle or clear inner artefact focus (`null` = clear only). */
   'update-inner-artefact-focus': [id: string | null]
+  /** Replace the full inner-artefact pinned map (id → boolean). Caller stores into flow data. */
+  'update-inner-artefact-pinned': [Record<string, boolean>]
+  /** Replace the full inner-artefact accent-color map (id → color). Caller stores into flow data. */
+  'update-inner-artefact-colors': [Record<string, string>]
+  /**
+   * Fired when the user clicks the Scala declaration line in the focused header. Parent
+   * resolves it as an "open at the class declaration row" handoff — see
+   * `ScalaArtefactBox` for the wiring; plain (non-Scala) callers can simply ignore this
+   * event, the template only renders a clickable wrapper when `isScalaLeaf` is true.
+   */
+  'declaration-click': []
 }>()
 
 const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
 
 const isScalaLeaf = computed(() => props.leafVisual === 'artefact')
+
+/**
+ * `(root, dir)` of the tab's backing example — provided by `App.vue` so inner artefact cards
+ * rendered inside a focused package can still translate their `sourceFile` + `sourceRow` into
+ * an editor handoff. Absent for file-upload / builtin-example tabs (no disk anchor), in which
+ * case the inner clicks are no-ops.
+ */
+const activeExampleRef = inject<Ref<{ root: string; dir: string } | null> | undefined>(
+  'tritonActiveExample',
+  undefined,
+)
+
+/**
+ * Dispatch an "open in editor" handoff for an inner artefact card. The `artId` lets us pick
+ * the matching `TritonInnerArtefactSpec` out of `innerArtefactCell(artId)` to recover the
+ * `sourceFile` anchor; `line` is an optional 0-indexed override emitted by a per-method
+ * click in the Methods panel (undefined → the artefact's own `sourceRow`).
+ */
+function openInnerArtefactInEditor(artId: string, line?: number): void {
+  const ex = activeExampleRef?.value
+  const cell = innerArtefactCell(artId)
+  if (!ex || !cell || !cell.sourceFile) return
+  const effectiveRow = line !== undefined ? line : (cell.sourceRow ?? 0)
+  openInEditor({
+    root: ex.root,
+    exampleDir: ex.dir,
+    relPath: cell.sourceFile,
+    line: effectiveRow + 1,
+  })
+}
+
+/** Template helper: true when the inner artefact card can dispatch an open-in-editor handoff. */
+function canOpenInnerArtefactInEditor(artId: string): boolean {
+  if (!activeExampleRef?.value) return false
+  return !!innerArtefactCell(artId)?.sourceFile
+}
+
+const workspaceKeyRef = inject<Ref<string>>('tritonWorkspaceKey', ref(''))
+const scalaCoverageRef = useScalaCoverageKeyed(workspaceKeyRef, String(props.boxId ?? ''))
+
+/**
+ * Real coverage percentage from Scoverage (when available).
+ *
+ * Important: do not show any placeholder. When no coverage is known for this artefact,
+ * we render **no** coverage indicator at all.
+ */
+const coveragePercent = computed((): number | null => {
+  const v = scalaCoverageRef.value?.stmtPct
+  if (typeof v === 'number' && Number.isFinite(v)) return Math.round(v)
+  return null
+})
+
+const hasCoverage = computed(() => coveragePercent.value !== null)
+/** Safe numeric for template bindings (only used when `hasCoverage`). */
+const coveragePercentValue = computed(() => coveragePercent.value ?? 0)
 
 const innerDrillPathArr = computed(() => [...props.innerDrillPath])
 
@@ -130,12 +241,19 @@ const innerArtefactById = computed(() => {
   return m
 })
 
-/** LR columns: abstract parents left → concrete subtypes right (see {@link assignInnerArtefactLayers}). */
+/**
+ * LR columns: abstract parents left → concrete subtypes right (see {@link assignInnerArtefactLayers}).
+ *
+ * Only inheritance-style relations (`extends`, `with`) shape the column layout. `uses` edges
+ * are overlays on the same layout — routing them through the layering algorithm would push the
+ * used artefact into a column to the right of its user, which misrepresents them as subtypes.
+ */
 const innerArtefactLayerColumns = computed((): string[][] => {
   const ids = props.innerArtefacts.map((a) => a.id)
   if (!ids.length) return []
-  if (!innerArtefactRelationList.value.length) return [ids]
-  return assignInnerArtefactLayers(ids, innerArtefactRelationList.value)
+  const layoutEdges = innerArtefactRelationList.value.filter((r) => r.label !== 'uses')
+  if (!layoutEdges.length) return [ids]
+  return assignInnerArtefactLayers(ids, layoutEdges)
 })
 
 const innerEdgeMarkerId = computed(() =>
@@ -147,10 +265,15 @@ type InnerEdgeDraw = {
   path: string
   labelX: number
   labelY: number
-  /** YAML / graph value (`extends` | `with`). */
+  /** YAML / graph value (`extends` | `with` | `uses`). */
   relationLabel: string
   displayLabel: string
-  kind: 'extends' | 'with'
+  /**
+   * Rendering bucket — drives stroke color, display label, and SVG marker selection. We keep
+   * `'with'` and `'extends'` distinct from `'uses'` (instead of collapsing the two inheritance
+   * kinds) because the marker definitions are keyed on this value.
+   */
+  kind: 'extends' | 'with' | 'uses'
   stroke: string
   from: string
   to: string
@@ -172,16 +295,22 @@ function innerEdgeLabelSvgStyleFor(draw: InnerEdgeDraw): Record<string, string> 
   }
 }
 
-function innerArtefactRelationStroke(label: string): { kind: 'extends' | 'with'; stroke: string } {
-  const k = label === 'with' ? 'with' : 'extends'
-  return {
-    kind: k,
-    stroke: k === 'with' ? SCALA_HAS_TRAIT_STROKE : SCALA_EXTENDS_STROKE,
-  }
+function innerArtefactRelationStroke(label: string): { kind: 'extends' | 'with' | 'uses'; stroke: string } {
+  if (label === 'with') return { kind: 'with', stroke: SCALA_HAS_TRAIT_STROKE }
+  if (label === 'uses') return { kind: 'uses', stroke: SCALA_USES_STROKE }
+  return { kind: 'extends', stroke: SCALA_EXTENDS_STROKE }
 }
 
-function innerArtefactEdgeDisplayLabel(kind: 'extends' | 'with'): string {
-  return kind === 'with' ? 'has trait' : 'extends'
+function innerArtefactEdgeDisplayLabel(kind: 'extends' | 'with' | 'uses'): string {
+  if (kind === 'with') return 'has trait'
+  if (kind === 'uses') return 'uses'
+  return 'extends'
+}
+
+function innerEdgeMarkerSuffix(kind: 'extends' | 'with' | 'uses'): string {
+  if (kind === 'with') return 'hastrait'
+  if (kind === 'uses') return 'uses'
+  return 'extends'
 }
 
 const innerArtefactFocusActive = computed(
@@ -246,6 +375,14 @@ function refreshInnerArtefactEdges() {
     if (!fromEl || !toEl) continue
     const a = fromEl.getBoundingClientRect()
     const b = toEl.getBoundingClientRect()
+    /**
+     * Inheritance / has-trait edges always anchor on the **right** face of the source
+     * (parent) and the **left** face of the target (child) — same convention as outer
+     * `imports` / `depends on` edges. The column layout already places parents in left
+     * columns and children in right columns, so this gives a clean rightward smoothstep
+     * with the elbow landing in the inter-column gap, and the arrow head visibly meeting
+     * a horizontal anchor on each box (no top / bottom entry points).
+     */
     const sourceX = a.right - rr.left
     const sourceY = a.top + a.height / 2 - rr.top
     const targetX = b.left - rr.left
@@ -336,38 +473,38 @@ function onArtefactRowClick(id: string) {
 }
 
 /**
- * Per-inner-artefact pin / accent state, scoped to this PackageBox instance.
+ * Per-inner-artefact pin / accent state — single source of truth lives in the parent
+ * flow node's `data` (`innerArtefactPinned` / `innerArtefactColors` props), so it
  *
- * Top-level Scala leaves persist pin / color through `FlowPackageNode` → flow node `data`. Inner
- * artefacts live inside the package's `data.innerArtefacts` and don't have their own flow node, so
- * we keep these toggles local for now — they survive as long as this PackageBox stays mounted
- * (i.e. the user keeps the parent package focused). Persistence into the YAML / saved positions
- * can come later by lifting these maps into the parent flow node's `data`, mirroring how
- * `innerArtefactFocusId` already round-trips through `FlowPackageNode`.
+ *   1. Survives across {@link GraphDrillIn} layer-snapshot restores, and
+ *   2. Is observable by the drill machinery — which uses the pinned map to refuse
+ *      switching the layer drill away from a package whose inner artefact is pinned.
+ *
+ * This component is a lens over those props: read via the helpers below, write via the
+ * `update-inner-artefact-pinned` / `update-inner-artefact-colors` events. Mirrors the
+ * round-trip pattern already used for `focusedInnerArtefactId`.
  */
-const innerArtefactPinned = ref<Record<string, boolean>>({})
-const innerArtefactColors = ref<Record<string, string>>({})
-
 function isInnerArtefactPinned(id: string): boolean {
-  return !!innerArtefactPinned.value[id]
+  return !!props.innerArtefactPinned?.[id]
 }
 
 function innerArtefactAccent(id: string): string {
-  return innerArtefactColors.value[id] ?? boxColorForId(id)
+  return props.innerArtefactColors?.[id] ?? boxColorForId(id)
 }
 
 function onInnerArtefactTogglePin(id: string, ev: MouseEvent) {
   ev.stopPropagation()
-  const cur = innerArtefactPinned.value[id]
-  const next = { ...innerArtefactPinned.value }
-  if (cur) delete next[id]
+  const cur = props.innerArtefactPinned ?? {}
+  const next = { ...cur }
+  if (next[id]) delete next[id]
   else next[id] = true
-  innerArtefactPinned.value = next
+  emit('update-inner-artefact-pinned', next)
 }
 
 function onInnerArtefactCycleColor(id: string) {
-  const cur = innerArtefactColors.value[id] ?? boxColorForId(id)
-  innerArtefactColors.value = { ...innerArtefactColors.value, [id]: nextNamedBoxColor(cur) }
+  const cur = props.innerArtefactColors ?? {}
+  const currentColor = cur[id] ?? boxColorForId(id)
+  emit('update-inner-artefact-colors', { ...cur, [id]: nextNamedBoxColor(currentColor) })
 }
 
 /**
@@ -640,9 +777,27 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     v-if="embedded"
     ref="rootEl"
     class="package-box package-box--embedded"
-    :class="{ 'package-box--pinned': pinned }"
+    :class="{ 'package-box--pinned': pinned, 'package-box--has-coverage': hasCoverage }"
     :style="{ '--box-accent': accent }"
   >
+    <span
+      v-if="hasCoverage"
+      class="package-box__coverage package-box__coverage--embedded"
+      :title="`Code coverage: ${coveragePercentValue}%`"
+      role="img"
+      :aria-label="`Code coverage ${coveragePercentValue} percent`"
+    >
+      <svg viewBox="0 0 100 20" preserveAspectRatio="none" aria-hidden="true" class="package-box__coverage-svg">
+        <rect x="0" y="0" :width="coveragePercentValue" height="20" class="package-box__coverage-fill--covered" />
+        <rect
+          :x="coveragePercentValue"
+          y="0"
+          :width="100 - coveragePercentValue"
+          height="20"
+          class="package-box__coverage-fill--uncovered"
+        />
+      </svg>
+    </span>
     <div class="lang-icon-slot lang-icon-slot--embedded">
       <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
     </div>
@@ -668,14 +823,28 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       'package-box--tools-wide': showColorTool,
       'package-box--pin-only': showPinTool && !showColorTool,
       'package-box--editing': editing,
+      'package-box--has-coverage': hasCoverage,
     }"
     :style="{ '--box-accent': accent }"
   >
-    <div
-      v-if="showPinTool || showColorTool || $slots['focused-tools-prefix']"
-      class="package-box__tools"
-      @pointerdown.stop
-    >
+    <div class="package-box__tools" @pointerdown.stop>
+      <span
+        v-if="hasCoverage"
+        class="package-box__coverage"
+        :title="`Code coverage: ${coveragePercentValue}%`"
+        role="img"
+        :aria-label="`Code coverage ${coveragePercentValue} percent`"
+      >
+        <svg
+          viewBox="0 0 100 20"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          class="package-box__coverage-svg"
+        >
+          <rect x="0" y="0" :width="coveragePercentValue" height="20" class="package-box__coverage-fill--covered" />
+          <rect :x="coveragePercentValue" y="0" :width="100 - coveragePercentValue" height="20" class="package-box__coverage-fill--uncovered" />
+        </svg>
+      </span>
       <slot name="focused-tools-prefix" />
       <button
         v-if="showPinTool"
@@ -727,7 +896,27 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
           >
             {{ label }}
           </div>
-          <div v-if="subtitle" class="subtitle subtitle--header">{{ subtitle }}</div>
+          <div v-if="declaration || subtitle" class="subtitle subtitle--header">
+            <!--
+              Scala declaration header is a click-to-open target — clicking jumps the user's
+              editor to the row where this artefact is declared. We render a <button> wrapper
+              only for Scala leaves (plain packages don't have a source-file anchor), and only
+              when the caller actually wants it (the emit is a no-op for listeners that aren't
+              attached). `tabindex="-1"` keeps the focused-box keyboard flow unchanged; the tool
+              button in the header still owns the primary Tab target.
+            -->
+            <button
+              v-if="isScalaLeaf && declaration"
+              type="button"
+              class="subtitle__open-btn"
+              :title="'Click to open this declaration in the editor'"
+              tabindex="-1"
+              @click.stop="emit('declaration-click')"
+            >
+              <ShikiInlineCode :code="declaration" lang="scala" />
+            </button>
+            <template v-else>{{ declaration || subtitle }}</template>
+          </div>
         </div>
       </div>
 
@@ -815,14 +1004,19 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                       :box-id="artId"
                       :label="innerArtefactCell(artId)!.name"
                       :subtitle="innerArtefactCell(artId)!.subtitle ?? ''"
+                      :declaration="innerArtefactCell(artId)!.declaration"
+                      :constructor-params="innerArtefactCell(artId)!.constructorParams"
+                      :method-signatures="innerArtefactCell(artId)!.methodSignatures"
                       :notes="notes"
                       :box-color="innerArtefactAccent(artId)"
                       :pinned="isInnerArtefactPinned(artId)"
                       :show-pin-tool="true"
                       :show-color-tool="true"
+                      :can-open-in-editor="canOpenInnerArtefactInEditor(artId)"
                       class="package-box__inner-artefact-focus-card"
                       @toggle-pin="(ev: MouseEvent) => onInnerArtefactTogglePin(artId, ev)"
                       @cycle-color="onInnerArtefactCycleColor(artId)"
+                      @open-in-editor="(line?: number) => openInnerArtefactInEditor(artId, line)"
                     />
                   </div>
                   <!--
@@ -862,7 +1056,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                         aria-hidden="true"
                       />
                       <div class="lang-icon-slot lang-icon-slot--artefact">
-                        <img class="lang-svg" :src="scalaIconUrl" alt="" aria-hidden="true" decoding="async" />
+                        <img
+                          class="lang-svg"
+                          :src="scalaIconForKind(innerArtefactCell(artId)!.subtitle)"
+                          :alt="innerArtefactCell(artId)!.subtitle ?? ''"
+                          aria-hidden="true"
+                          decoding="async"
+                        />
                       </div>
                       <div class="package-box__artefact-text">
                         <div class="package-box__artefact-title">{{ innerArtefactCell(artId)!.name }}</div>
@@ -885,26 +1085,38 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                 <marker
                   :id="`${innerEdgeMarkerId}-extends`"
                   class="package-box__inner-edge-marker"
-                  markerWidth="12"
-                  markerHeight="12"
-                  refX="10"
+                  markerWidth="14"
+                  markerHeight="14"
+                  refX="12"
                   refY="6"
                   orient="auto"
                   markerUnits="userSpaceOnUse"
                 >
-                  <path d="M 0 0 L 10 6 L 0 12 L 2.5 6 Z" class="package-box__inner-edge-marker-shape--extends" />
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--extends" />
                 </marker>
                 <marker
                   :id="`${innerEdgeMarkerId}-hastrait`"
                   class="package-box__inner-edge-marker"
-                  markerWidth="12"
-                  markerHeight="12"
-                  refX="10"
+                  markerWidth="14"
+                  markerHeight="14"
+                  refX="12"
                   refY="6"
                   orient="auto"
                   markerUnits="userSpaceOnUse"
                 >
-                  <path d="M 0 0 L 10 6 L 0 12 L 2.5 6 Z" class="package-box__inner-edge-marker-shape--hastrait" />
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--hastrait" />
+                </marker>
+                <marker
+                  :id="`${innerEdgeMarkerId}-uses`"
+                  class="package-box__inner-edge-marker"
+                  markerWidth="14"
+                  markerHeight="14"
+                  refX="12"
+                  refY="6"
+                  orient="auto"
+                  markerUnits="userSpaceOnUse"
+                >
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--uses" />
                 </marker>
               </defs>
               <g v-for="e in innerEdgeDraws" :key="e.id" class="package-box__inner-edge-group">
@@ -917,11 +1129,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                 />
                 <path
                   :d="e.path"
-                  class="package-box__inner-edge-path"
-                  :class="{ 'package-box__inner-edge-path--emph': innerEdgeEmphasized(e) }"
+                  :class="[
+                    'package-box__inner-edge-path',
+                    { 'package-box__inner-edge-path--emph': innerEdgeEmphasized(e) },
+                    e.kind === 'uses' ? 'package-box__inner-edge-path--uses' : null,
+                  ]"
                   fill="none"
                   :style="{ stroke: e.stroke }"
-                  :marker-end="`url(#${innerEdgeMarkerId}-${e.kind === 'with' ? 'hastrait' : 'extends'})`"
+                  :marker-end="`url(#${innerEdgeMarkerId}-${innerEdgeMarkerSuffix(e.kind)})`"
                 />
                 <text
                   :x="e.labelX"
@@ -1040,10 +1255,31 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       'package-box--tools-wide': showColorTool,
       'package-box--pin-only': showPinTool && !showColorTool,
       'package-box--editing': editing,
+      'package-box--has-coverage': hasCoverage,
     }"
     :style="{ '--box-accent': accent }"
   >
-    <div v-if="showPinTool || showColorTool" class="package-box__tools" @pointerdown.stop>
+    <div
+      class="package-box__tools"
+      @pointerdown.stop
+    >
+      <span
+        v-if="hasCoverage"
+        class="package-box__coverage"
+        :title="`Code coverage: ${coveragePercentValue}%`"
+        role="img"
+        :aria-label="`Code coverage ${coveragePercentValue} percent`"
+      >
+        <svg
+          viewBox="0 0 100 20"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          class="package-box__coverage-svg"
+        >
+          <rect x="0" y="0" :width="coveragePercentValue" height="20" class="package-box__coverage-fill--covered" />
+          <rect :x="coveragePercentValue" y="0" :width="100 - coveragePercentValue" height="20" class="package-box__coverage-fill--uncovered" />
+        </svg>
+      </span>
       <button
         v-if="showPinTool"
         type="button"
@@ -1084,8 +1320,8 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       <img
         class="lang-svg"
         :class="isScalaLeaf ? 'scala-leaf-icon' : 'folder-icon'"
-        :src="isScalaLeaf ? scalaIconUrl : folderIconUrl"
-        alt=""
+        :src="isScalaLeaf ? scalaIconForKind(subtitle) : folderIconUrl"
+        :alt="isScalaLeaf ? (subtitle ?? '') : ''"
         aria-hidden="true"
         decoding="async"
       />
@@ -1159,6 +1395,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
  */
 .package-box {
   --box-accent: steelblue;
+  /**
+   * Body fill is a very light wash of the accent strip so packages, Scala leaves, and
+   * inner artefact rows all share the same family-color identity (not just the strip).
+   * The 90% alpha keeps every box slightly translucent so dependency / inheritance edges
+   * routed *under* a box (see `.package-box__inner-artefact-edges` z-index: 0 below, plus
+   * Vue Flow rendering edges below nodes by default) stay faintly visible through it.
+   */
+  --box-fill: color-mix(in srgb, var(--box-accent) 8%, #ffffff);
   position: relative;
   width: 100%;
   height: 100%;
@@ -1173,7 +1417,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   padding-right: clamp(6px, 1.35vmin, 14px);
   border-radius: 8px;
   border: 1px solid rgb(30 41 59 / 0.88);
-  background: rgb(255 255 255 / 0.9);
+  background: color-mix(in srgb, var(--box-fill) 90%, transparent);
   box-shadow: inset 5px 0 0 0 var(--box-accent), 0 1px 2px rgb(15 23 42 / 0.08);
   font-family: ui-sans-serif, system-ui, sans-serif;
   overflow: hidden;
@@ -1207,6 +1451,35 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 
 .package-box--tools-wide {
   padding-right: clamp(72px, 12cqw, 108px);
+}
+
+/**
+ * Coverage bar in the top-right tools cluster. The cluster is `position: absolute`, so the
+ * box's content (title / icon) needs reserved padding-right or it slides under the bar.
+ * Each modifier below combines with `--has-coverage` for the multi-tool cases — pin / color
+ * buttons may wrap to a row below the bar, so the right-pad only needs to clear the widest
+ * single-row item, not the cluster's total height.
+ */
+.package-box--has-coverage {
+  padding-right: clamp(46px, 8cqw, 56px);
+}
+.package-box--has-coverage.package-box--pin-only {
+  padding-right: clamp(46px, 8cqw, 56px);
+}
+.package-box--has-coverage.package-box--tools-wide {
+  padding-right: clamp(72px, 12cqw, 108px);
+}
+/**
+ * Tight (narrow vertical) boxes: coverage bar lives in the top-right corner, but reserving
+ * 46–56px of right-padding on a ~87px-wide box would shrink the centered folder icon to
+ * 30–40px and push it visually left. Drop the right-pad here and reserve vertical space at
+ * the top instead — the icon stays its original size and re-centers below the bar.
+ */
+.package-box--tight.package-box--has-coverage,
+.package-box--tight.package-box--has-coverage.package-box--pin-only,
+.package-box--tight.package-box--has-coverage.package-box--tools-wide {
+  padding-right: clamp(4px, 1vmin, 10px);
+  padding-top: clamp(20px, 4vmin, 26px);
 }
 
 /**
@@ -1400,6 +1673,29 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   color: #475569;
 }
 /**
+ * The clickable declaration wrapper re-uses the subtitle typography — no chrome, no box —
+ * so the user sees highlighted code, not a button shape. `cursor: pointer` and a subtle
+ * hover underline are the only affordances; keeps the focused header visually calm.
+ */
+.subtitle__open-btn {
+  all: unset;
+  cursor: pointer;
+  display: inline;
+  text-align: left;
+}
+.subtitle__open-btn:hover :deep(.shiki-inline),
+.subtitle__open-btn:focus-visible :deep(.shiki-inline) {
+  text-decoration: underline;
+  text-decoration-color: var(--box-accent, #3b82f6);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.subtitle__open-btn:focus-visible {
+  outline: 2px solid var(--box-accent, #3b82f6);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+/**
  * Inner-diagram band hosts the focused package's child packages, artefact rows / cards, and
  * inheritance edges. The container is intentionally **invisible** — no background, no border —
  * so children space themselves against the surrounding `.package-box__focused-shell` (i.e. the
@@ -1467,7 +1763,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   width: 100%;
   height: 100%;
   pointer-events: none;
-  z-index: 2;
+  /**
+   * Render inheritance / has-trait edges *under* the inner artefact rows so the boxes
+   * keep their "on top of the wiring" feel — matching how Vue Flow draws outer dependency
+   * edges below module/package nodes by default. The arrow heads still terminate at the
+   * row border, so the marker tip stays visible just outside each box.
+   * Pair with `.package-box__inner-artefact-cols { z-index: 1 }` so the cols sit above.
+   */
+  z-index: 0;
   overflow: visible;
 }
 .package-box__inner-edge-hit {
@@ -1500,6 +1803,17 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .package-box__inner-edge-marker-shape--hastrait {
   fill: #9333ea;
+}
+.package-box__inner-edge-marker-shape--uses {
+  fill: #d97706;
+}
+/**
+ * `uses` edges are dashed so they read as a structural reference rather than an inheritance
+ * relation — same arrow head as `extends`, but the dashed body makes the distinction obvious
+ * even in grayscale / when hovered for emphasis.
+ */
+.package-box__inner-edge-path--uses {
+  stroke-dasharray: 5 3;
 }
 .package-box__inner-edge-label {
   paint-order: stroke fill;
@@ -1672,7 +1986,16 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   gap: 6px;
   border-radius: 8px;
   border: 1px solid rgb(30 41 59 / 0.88);
-  background: rgb(255 255 255 / 0.9);
+  /**
+   * Inner artefact rows reuse the accent-tinted 90% body fill from `.package-box` so a
+   * row inside a focused package looks like a slim sibling card (color identity + slight
+   * translucency over the inheritance edges routed underneath).
+   */
+  background: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--box-accent, steelblue) 8%, #ffffff) 90%,
+    transparent
+  );
   box-shadow:
     inset 5px 0 0 0 var(--box-accent, steelblue),
     0 1px 2px rgb(15 23 42 / 0.08);
@@ -1907,6 +2230,52 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   flex-wrap: wrap;
   gap: 5px;
   max-width: calc(100% - 10px);
+}
+
+/**
+ * Coverage indicator: slim horizontal split bar (green = covered, red = uncovered).
+ * Mirrors the `assets/horizontal-bar.svg` reference but inlined so the green/red split
+ * can move with a real coverage signal later. `flex-basis: 100%` forces it onto its own
+ * row inside the tools cluster so the pin / color buttons (when present) wrap underneath
+ * — keeps the chrome tidy regardless of which tools the box currently shows.
+ */
+.package-box__coverage {
+  flex: 0 0 100%;
+  width: 100%;
+  height: 10px;
+  border-radius: 3px;
+  border: 1px solid rgb(15 23 42 / 0.22);
+  background: rgb(255 255 255 / 0.85);
+  overflow: hidden;
+  display: block;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.08);
+  pointer-events: auto;
+  /** Bar wants a fixed visual width regardless of how wide the tools-cluster row is. */
+  max-width: 36px;
+  align-self: flex-end;
+}
+.package-box__coverage-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.package-box__coverage-fill--covered {
+  fill: #22c55e;
+}
+.package-box__coverage-fill--uncovered {
+  fill: #ef4444;
+}
+
+/** Embedded inner-card: coverage bar is absolute so it stays visible even in tiny tiles. */
+.package-box__coverage--embedded {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  max-width: 36px;
+}
+.package-box--embedded.package-box--has-coverage {
+  /** Make sure the bar doesn't overlap the embedded icon row in very small tiles. */
+  padding-top: 18px;
 }
 .package-box--pinned:not(.package-box--focused) {
   box-shadow:

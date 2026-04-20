@@ -1,0 +1,6 @@
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Scala trait">
+  <circle cx="12" cy="12" r="11" fill="#7e57c2"/>
+  <text x="12" y="12.6" text-anchor="middle" dominant-baseline="central"
+        font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif"
+        font-weight="700" font-size="13" fill="#ffffff">T</text>
+</svg>

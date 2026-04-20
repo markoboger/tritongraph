@@ -316,6 +316,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 <style scoped>
 .project-box {
   --box-accent: steelblue;
+  /**
+   * Body fill is a faint wash of the accent strip — same recipe as `.package-box` so
+   * project boxes, package boxes, Scala leaves, and inner artefact rows all share the
+   * same family-color identity (not just the left strip). The 90% alpha keeps the box
+   * slightly translucent so dependency edges routed under it stay faintly visible.
+   */
+  --box-fill: color-mix(in srgb, var(--box-accent) 8%, #ffffff);
   position: relative;
   width: 100%;
   height: 100%;
@@ -330,8 +337,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   padding-right: clamp(6px, 1.35vmin, 14px);
   border-radius: 8px;
   border: 1px solid rgb(30 41 59 / 0.88);
-  /* 10% transparent fill so edges behind the box remain visible */
-  background: rgb(255 255 255 / 0.9);
+  background: color-mix(in srgb, var(--box-fill) 90%, transparent);
   box-shadow: inset 5px 0 0 0 var(--box-accent), 0 1px 2px rgb(15 23 42 / 0.08);
   font-family: ui-sans-serif, system-ui, sans-serif;
   overflow: hidden;

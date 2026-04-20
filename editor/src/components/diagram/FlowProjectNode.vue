@@ -10,6 +10,7 @@ import {
 import type { ModuleAnchorTops } from '../../graph/layoutDependencyLayers'
 import { edgeContributesToClasspathDepth, strokeColorForFlowEdge } from '../../graph/relationKinds'
 import { usedHandlesForNode } from '../../graph/usedFlowHandles'
+import { setNodeColor, setNodeNotes, setNodePinned } from '../../store/overlayStore'
 import DiagramSection from './DiagramSection.vue'
 import ProjectBox from './ProjectBox.vue'
 
@@ -30,7 +31,18 @@ const props = defineProps<{
   data: {
     label: string
     subtitle?: string
+    /**
+     * Source-derived description (file lists, fqn, …) emitted by the scanner. Round-trips
+     * through YAML unchanged so structural diffs only reflect code changes; user-typed
+     * notes go to {@link notes} (overlay-backed) and are NOT written back to YAML.
+     */
     description?: string
+    /**
+     * Free-form user note (overlay-backed). When non-empty it replaces `description` in the
+     * box body. Persisted in the runtime overlay store (TinyBase + localStorage) keyed by
+     * `(workspaceKey, nodeId)` — see `applyOverlayToFlowNodes` in `App.vue`.
+     */
+    notes?: string
     layerDrillFocus?: boolean
     drillNote?: string
     layerFlip?: LayerFlipPayload
@@ -43,6 +55,15 @@ const props = defineProps<{
 }>()
 
 const { updateNodeData, getNodes, getEdges } = useVueFlow()
+
+/**
+ * Workspace key supplied by `App.vue` so overlay-store writes target the active tab. Empty
+ * string when nothing is open yet (boot path) — overlay setters are no-ops in that case.
+ */
+const workspaceKey = inject<{ value: string } | undefined>('tritonWorkspaceKey', undefined)
+function ws(): string {
+  return workspaceKey?.value ?? ''
+}
 
 const used = computed(() => usedHandlesForNode(props.id, getEdges.value))
 
@@ -166,7 +187,10 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
 
 function cycleColor() {
   const accent = (props.data.boxColor as string) || boxColorForId(props.id)
-  updateNodeData(props.id, { boxColor: nextNamedBoxColor(accent) })
+  const next = nextNamedBoxColor(accent)
+  updateNodeData(props.id, { boxColor: next })
+  patchNodeData?.(props.id, { boxColor: next })
+  setNodeColor(ws(), props.id, next)
 }
 
 function onRename(newLabel: string) {
@@ -175,16 +199,26 @@ function onRename(newLabel: string) {
   updateNodeData(props.id, { label: newLabel })
 }
 
+/**
+ * The "description editor" is the user-note editor: writes go to the overlay store
+ * (persisted, kept out of YAML round-trip) and into `data.notes`. The scanner-emitted
+ * description (`data.scannerDescription`) is left untouched so the YAML output keeps
+ * showing source-derived metadata even after a user typed a personal note.
+ */
 function onDescriptionChange(newDescription: string) {
-  if (newDescription === (props.data.description ?? '')) return
-  patchNodeData?.(props.id, { description: newDescription })
-  updateNodeData(props.id, { description: newDescription })
+  const cur = (props.data.notes as string | undefined) ?? ''
+  if (newDescription === cur) return
+  patchNodeData?.(props.id, { notes: newDescription })
+  updateNodeData(props.id, { notes: newDescription })
+  setNodeNotes(ws(), props.id, newDescription)
 }
 
 function togglePin(ev: MouseEvent) {
   ev.stopPropagation()
   const next = !props.data.pinned
   updateNodeData(props.id, { pinned: next })
+  patchNodeData?.(props.id, { pinned: next })
+  setNodePinned(ws(), props.id, next)
   void nextTick(async () => {
     refreshDimming?.()
     await relayoutViewport?.()
@@ -202,7 +236,7 @@ function togglePin(ev: MouseEvent) {
             :box-id="id"
             :label="data.label"
             :subtitle="data.subtitle"
-            :description="data.description"
+            :description="(data.notes as string | undefined) || data.description"
             :notes="data.drillNote"
             :language="data.language"
             :box-color="data.boxColor"

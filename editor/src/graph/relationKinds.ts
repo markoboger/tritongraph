@@ -7,6 +7,13 @@ export const SCALA_EXTENDS_STROKE = '#1d4ed8'
 /** Inner-package mixin parent (`with` in Scala → shown as “has trait” in the UI). */
 export const SCALA_HAS_TRAIT_STROKE = '#9333ea'
 
+/**
+ * Inner-package "uses" relation: artefact A takes artefact B as a primary-constructor
+ * parameter (directly or through a generic wrapper). Amber tone so it reads as a structural
+ * reference distinct from inheritance (`extends` blue, `with` purple).
+ */
+export const SCALA_USES_STROKE = '#d97706'
+
 /** sbt `aggregate(...)` — task scope / project grouping; also contributes to depth columns. */
 export const SBT_AGGREGATE_STROKE = '#16a34a'
 
