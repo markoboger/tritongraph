@@ -14,7 +14,7 @@ defineOptions({ name: 'PackageBox' })
  *   - Folder icon (hardcoded — packages are always folder-shaped).
  *   - Plain-text subtitle (no markdown link parsing; package boxes don't have outbound diagram links yet).
  */
-import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onScopeDispose, onUnmounted, ref, watch, type Ref } from 'vue'
 import { openInEditor } from '../../openInEditor'
 import { getSmoothStepPath, Position } from '@vue-flow/core'
 import type {
@@ -38,6 +38,7 @@ import scalaObjectIconUrl from '../../assets/language-icons/scala-object.svg'
 import scalaEnumIconUrl from '../../assets/language-icons/scala-enum.svg'
 import ShikiInlineCode from '../ShikiInlineCode.vue'
 import { useScalaCoverageKeyed } from '../../store/useOverlay'
+import { getScalaCoverage, onScalaCoverageChanged } from '../../store/overlayStore'
 
 /**
  * Pick the kind-specific Scala badge (class / trait / object / enum) for a Scala leaf
@@ -222,6 +223,28 @@ const coveragePercent = computed((): number | null => {
 const hasCoverage = computed(() => coveragePercent.value !== null)
 /** Safe numeric for template bindings (only used when `hasCoverage`). */
 const coveragePercentValue = computed(() => coveragePercent.value ?? 0)
+
+const innerCoverageVersion = ref(0)
+const offInnerCoverage = onScalaCoverageChanged(() => {
+  innerCoverageVersion.value += 1
+})
+onScopeDispose(offInnerCoverage)
+
+function innerCoveragePercent(id: string): number | null {
+  void innerCoverageVersion.value
+  const ws = workspaceKeyRef.value ?? ''
+  const v = getScalaCoverage(ws, id)?.stmtPct
+  if (typeof v === 'number' && Number.isFinite(v)) return Math.round(v)
+  return null
+}
+
+function innerHasCoverage(id: string): boolean {
+  return innerCoveragePercent(id) !== null
+}
+
+function innerCoveragePercentValue(id: string): number {
+  return innerCoveragePercent(id) ?? 0
+}
 
 const innerDrillPathArr = computed(() => [...props.innerDrillPath])
 
@@ -1045,6 +1068,35 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                     @click.stop="onArtefactRowClick(artId)"
                   >
                     <div class="package-box__artefact-row">
+                      <span
+                        v-if="innerHasCoverage(artId)"
+                        class="package-box__coverage package-box__coverage--inner-artefact"
+                        :title="`Code coverage: ${innerCoveragePercentValue(artId)}%`"
+                        role="img"
+                        :aria-label="`Code coverage ${innerCoveragePercentValue(artId)} percent`"
+                      >
+                        <svg
+                          viewBox="0 0 100 20"
+                          preserveAspectRatio="none"
+                          aria-hidden="true"
+                          class="package-box__coverage-svg"
+                        >
+                          <rect
+                            x="0"
+                            y="0"
+                            :width="innerCoveragePercentValue(artId)"
+                            height="20"
+                            class="package-box__coverage-fill--covered"
+                          />
+                          <rect
+                            :x="innerCoveragePercentValue(artId)"
+                            y="0"
+                            :width="100 - innerCoveragePercentValue(artId)"
+                            height="20"
+                            class="package-box__coverage-fill--uncovered"
+                          />
+                        </svg>
+                      </span>
                       <span
                         class="package-box__artefact-anchor package-box__artefact-anchor--in"
                         :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
@@ -2005,6 +2057,9 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   container-type: inline-size;
   container-name: pkg-artefact-row;
 }
+.package-box__artefact-row:has(.package-box__coverage--inner-artefact) {
+  padding-top: 18px;
+}
 /** Ridge handles (same idea as `.tg-handle-anchor` on Vue Flow modules). */
 .package-box__artefact-anchor {
   position: absolute;
@@ -2272,6 +2327,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   top: 6px;
   right: 8px;
   max-width: 36px;
+}
+.package-box__coverage--inner-artefact {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  max-width: 34px;
+  height: 8px;
+  z-index: 3;
 }
 .package-box--embedded.package-box--has-coverage {
   /** Make sure the bar doesn't overlap the embedded icon row in very small tiles. */

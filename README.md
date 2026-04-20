@@ -20,6 +20,10 @@ Open the URL Vite prints (by default `http://127.0.0.1:5173`) in Cursor’s **Si
 
 Auto-layout uses **from** dependent **to** dependency in YAML. The canvas places **columns by dependency depth** (consumers on the **left**, classpath foundations on the **right**). Each column gets an **equal share of viewport width**; nodes in a column split **viewport height** (margins + stack gaps). Every box gets explicit **width/height** from that allocation so modules **scale with the pane**. Nested groups use the same rules inside the parent frame.
 
+## Editor plugin roadmap
+
+The current direction is a browser-first Triton integration for VS Code and Cursor, with a local service now and cloud/webhook support later. The working product and architecture plan lives in [docs/vscode-plugin-roadmap.md](/Users/markoboger/workspace/tritongraph/docs/vscode-plugin-roadmap.md).
+
 ## Ilograph compatibility
 
 The YAML follows the Ilograph spec: top-level `resources` (tree via `children`) and `perspectives` with `relations` using `from` / `to` (dependent → depended-on), matching Ilograph relation semantics so you can open the same file in Ilograph as a backup viewer.

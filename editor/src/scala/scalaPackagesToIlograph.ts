@@ -8,10 +8,15 @@ import type {
 } from '../ilograph/types'
 import {
   summarizeScala,
+  type ParsedScalaMethodSignature,
   type ParsedScalaParent,
   type ScalaFileSummary,
 } from './parseScalaWithTreeSitter'
 import type { LoadedScalaFile } from './scalaSourceLoader'
+import {
+  buildScalaPackageGraphFromSummaries,
+  collectScalaArtefactDocs as collectScalaArtefactDocsFromCore,
+} from '../../../packages/triton-core/src/scalaPackageGraph.ts'
 
 export interface ScalaArtefact {
   /**
@@ -23,10 +28,67 @@ export interface ScalaArtefact {
   name: string
   /** File the artefact was declared in, relative to project root. */
   file: string
+  /**
+   * 0-indexed source row where the declaration starts (tree-sitter `startPosition.row`). Used by
+   * the "open in editor" click handler to jump to the right line; callers must `+1` when handing
+   * to a 1-indexed editor URL scheme (see `editor/src/openInEditor.ts`).
+   */
+  startRow: number
   /** Fully-qualified package the artefact lives in (`com.example.animalsfruit.animal`). */
   packageName: string
   /** `extends X with Y with Z` parents in source order; empty for top-level defs / vals etc. */
   parents: ParsedScalaParent[]
+  /**
+   * Simple type names referenced from this artefact's primary constructor parameter list(s).
+   * See {@link ParsedScalaDefinition.paramTypeNames}. Empty for kinds without a constructor.
+   */
+  paramTypeNames: string[]
+  /**
+   * Source text of the primary constructor parameter clauses (with parens preserved, whitespace
+   * collapsed). See {@link ParsedScalaDefinition.constructorParams}. Empty for objects / traits
+   * without a ctor / defs / vals.
+   *
+   * Rendered in the focused "Arguments" panel as a Shiki-highlighted Scala snippet, prefixed
+   * with `class Name` so the highlighter has a syntactic anchor ("bare" tuples aren't valid
+   * Scala and render poorly). Kept out of the YAML via `slimInnerArtefactForExport` — it's
+   * scanner-derived prose that belongs to the source code, not the diagram structure.
+   */
+  constructorParams: string
+  /**
+   * Leading Scala modifier keywords in source order (`sealed`, `abstract`, `final`, `private`,
+   * `private[app]`, …). Empty when none apply. Carried so the rendered declaration retains
+   * qualifiers that affect meaning (`sealed trait` ≠ `trait`, `abstract class` ≠ `class`).
+   */
+  modifiers: string[]
+  /**
+   * One-line signatures of `def` members declared directly inside this artefact, with a
+   * 0-indexed source row per entry so the focused Methods panel can wire each signature
+   * as a click-to-open-at-line action. See {@link ParsedScalaDefinition.methodSignatures}
+   * for extraction scope / normalisation.
+   */
+  methodSignatures: ParsedScalaMethodSignature[]
+  /**
+   * One-line human-readable declaration — `"{modifiers} {kind} {name}"` with the original
+   * `extends … with …` chain appended when parents are present (`"sealed trait Animal extends Named"`,
+   * `"object Demo extends App"`). Constructor parameter lists are intentionally omitted so this
+   * stays short enough for a focused box header.
+   *
+   * Built once at parse time (in {@link buildScalaPackageGraph}) so every downstream consumer
+   * (ilograph resource, focused box subtitle, markdown descriptions …) renders identical text.
+   */
+  declaration: string
+  /**
+   * Scaladoc preceding this artefact in source, with opening `/**`, closing delimiter, and
+   * per-line `*` gutters stripped. Empty string when no Scaladoc block precedes the
+   * definition. See {@link ParsedScalaDefinition.doc} for the stripping rules.
+   *
+   * Held in-memory only and mirrored into the TinyBase overlay store under the `scalaDocs`
+   * table keyed by artefact resource id — see `App.loadScalaPackagesForExample`. Intentionally
+   * **not** emitted into the Ilograph YAML (the YAML should stay source-structure-only;
+   * Scaladoc is scanned freshly from `.scala` sources on every load so persisting it would
+   * add diff noise for no benefit).
+   */
+  doc: string
 }
 
 export interface ScalaInheritanceEdge {
@@ -38,6 +100,21 @@ export interface ScalaInheritanceEdge {
   kind: 'extends' | 'with'
 }
 
+/**
+ * "Uses" relation: an artefact's primary constructor takes another known artefact as a parameter
+ * (directly or as the inner type of a generic wrapper — see {@link resolveUsesEdges}).
+ * Rendered with its own stroke / marker so it reads as a structural reference rather than
+ * inheritance. Directed `user → used` (consumer on the left face of the edge).
+ */
+export interface ScalaUsesEdge {
+  /** The class that declares the constructor parameter — the "user". */
+  fromArtefactId: string
+  /** The artefact referenced by that parameter's type — the "used". */
+  toArtefactId: string
+  /** Fixed to `'uses'` for now; kept as a discriminant field so future refinements (e.g. `uses-collection-of`) slot in without changing the edge type. */
+  kind: 'uses'
+}
+
 export interface ScalaPackageNode {
   /** Fully-qualified package name (`com.example.core`). Files without a package land in `<root>`. */
   name: string
@@ -46,22 +123,6 @@ export interface ScalaPackageNode {
   /** Top-level Scala artefacts (classes / objects / traits / enums / top-level defs etc.). */
   artefacts: ScalaArtefact[]
 }
-
-/**
- * Kinds we render as their own flow leaf (`PackageBox` unfocused + `ScalaArtefactBox` when drilled).
- * Top-level `val` / `var` / `type` / `given`
- * are intentionally omitted: they are rarely declared directly under a `package` clause and would
- * mostly add visual noise next to the type / object boxes that anchor the package's API.
- */
-const ARTEFACT_KINDS = new Set([
-  'class',
-  'case class',
-  'object',
-  'case object',
-  'trait',
-  'enum',
-  'def',
-])
 
 export interface ScalaPackageEdge {
   /** Source package (the importer). */
@@ -77,28 +138,23 @@ export interface ScalaPackageGraph {
   edges: ScalaPackageEdge[]
   /** `extends` / `with` relations between artefacts (resolved by simple-name lookup). */
   inheritance: ScalaInheritanceEdge[]
+  /**
+   * "Uses" relations inferred from primary-constructor parameter types — user → used. Unlike
+   * `inheritance`, these don't contribute to the inner artefact column layout (children still
+   * land in the column right of their parents); they are purely overlays on the same layout.
+   */
+  uses: ScalaUsesEdge[]
+  /**
+   * Top-level Scala artefacts discovered under `src/test/scala`.
+   *
+   * These are intentionally **not** emitted into the diagram/YAML (the user asked to ignore test
+   * sources in the diagram), but we still keep them so the UI can link from "tested by" lists to
+   * real spec source locations.
+   */
+  testArtefacts: ScalaArtefact[]
 }
 
 const ROOT_PACKAGE = '<root>'
-
-/** True when `ancestor` is a strict prefix of `maybeDesc` as package FQNs (`a.b` ancestor of `a.b.c`). */
-function packageIsStrictAncestor(ancestor: string, maybeDesc: string): boolean {
-  if (!ancestor || !maybeDesc || ancestor === ROOT_PACKAGE || ancestor === maybeDesc) return false
-  return maybeDesc.startsWith(`${ancestor}.`)
-}
-
-/** Best-effort: decide whether an `import foo.bar.X` targets a package we know about. */
-function resolveImportToPackage(prefix: string, knownPackages: Set<string>): string | undefined {
-  if (!prefix) return undefined
-  if (knownPackages.has(prefix)) return prefix
-  // `import com.example.core.Domain` (Domain is a class, not a package) — try the parent.
-  const dot = prefix.lastIndexOf('.')
-  if (dot > 0) {
-    const parent = prefix.slice(0, dot)
-    if (knownPackages.has(parent)) return parent
-  }
-  return undefined
-}
 
 /**
  * Parse every file with tree-sitter, then aggregate into packages + import-derived edges.
@@ -110,90 +166,29 @@ export async function buildScalaPackageGraph(
   const summaries = await Promise.all(
     files.map(async (f) => ({ file: f, summary: await summarizeScala(f.source) } as { file: LoadedScalaFile; summary: ScalaFileSummary })),
   )
-
-  // Group by package name.
-  const byPackage = new Map<string, { files: string[]; artefacts: ScalaArtefact[] }>()
-  for (const { file, summary } of summaries) {
-    const pkg = summary.packageName || ROOT_PACKAGE
-    const bucket = byPackage.get(pkg) ?? { files: [], artefacts: [] }
-    bucket.files.push(file.relPath)
-    for (const def of summary.topLevel) {
-      if (!ARTEFACT_KINDS.has(def.kind)) continue
-      bucket.artefacts.push({
-        kind: def.kind,
-        name: def.name,
-        file: file.relPath,
-        packageName: pkg,
-        parents: def.parents,
-      })
-    }
-    byPackage.set(pkg, bucket)
-  }
-
-  const knownPackages = new Set(byPackage.keys())
-
-  /**
-   * Package → package edges from imports whose **prefix** resolves to a known package FQN:
-   * `import p._`, `import p.{T, U}`, and `import p.T` (see {@link resolveImportToPackage}).
-   * Skip parent → descendant (`from` strict ancestor of `to`): the parent already *contains* the
-   * child; that access is containment, not an `imports` layering edge between nested packages.
-   */
-  const edgeCounts = new Map<string, number>()
-  for (const { file, summary } of summaries) {
-    const fromPkg = summary.packageName || ROOT_PACKAGE
-    for (const imp of summary.imports) {
-      const target = resolveImportToPackage(imp.prefix, knownPackages)
-      if (!target || target === fromPkg) continue
-      if (packageIsStrictAncestor(fromPkg, target)) continue
-      const key = `${fromPkg}\u0001${target}`
-      edgeCounts.set(key, (edgeCounts.get(key) ?? 0) + 1)
-      void file
-    }
-  }
-
-  const packages: ScalaPackageNode[] = [...byPackage.entries()]
-    .map(([name, b]) => ({
-      name,
-      files: dedupeSortedStrings(b.files),
-      artefacts: dedupeArtefacts(b.artefacts),
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name))
-
-  const edges: ScalaPackageEdge[] = [...edgeCounts.entries()]
-    .map(([key, weight]) => {
-      const [from, to] = key.split('\u0001') as [string, string]
-      return { from, to, weight }
-    })
-    .sort((a, b) => (a.from === b.from ? a.to.localeCompare(b.to) : a.from.localeCompare(b.from)))
-
-  const inheritance = resolveInheritanceEdges(packages, summaries)
-
-  return { packages, edges, inheritance }
+  return buildScalaPackageGraphFromSummaries(summaries)
 }
 
 /**
- * Walk every artefact's `extends … with …` parent list and resolve each parent name to a known
- * artefact id. Resolution priority (first hit wins, mirroring how the Scala compiler resolves
- * unqualified type references in practice):
+ * Walk every artefact's `paramTypeNames` (simple names collected from the primary constructor
+ * parameter list — see {@link ParsedScalaDefinition.paramTypeNames}) and resolve each to a
+ * known artefact using the same machinery as inheritance parents.
  *
- *   1. Same package as the child (most common — siblings in `Animal.scala` extend each other).
- *   2. Wildcard imports in the child's file (`import com.example.fruit._`) — promote any artefact
- *      defined in the imported package.
- *   3. Explicit single-name imports in the child's file (`import com.example.fruit.Apple`).
- *   4. Globally unique simple name across the entire project.
+ * Stdlib and third-party types (`String`, `Int`, `Option`, `Try`, `Future`, `cats.effect.IO`,
+ * …) are NOT in the local artefact index, so {@link resolveParentName} returns `undefined`
+ * for them — they are silently dropped. This matches the user requirement: ignore stdlib
+ * types, and for generic wrappers keep the *inner* type (`Option[Foo]` contributes only the
+ * resolved `Foo`, the wrapper `Option` drops on its own).
  *
- * Anything still unresolved is dropped: it's almost always a stdlib type (`Set`, `String`, `Any`,
- * `Throwable`, …) or a third-party library type that doesn't belong on the artefact diagram.
+ * Self-uses (a class taking itself as a parameter — rare but legal, e.g. recursive ADTs) are
+ * skipped to avoid a self-loop edge cluttering the diagram.
  */
-function resolveInheritanceEdges(
+function resolveUsesEdges(
   packages: readonly ScalaPackageNode[],
   summaries: readonly { file: LoadedScalaFile; summary: ScalaFileSummary }[],
-): ScalaInheritanceEdge[] {
-  /** Index every artefact by its FQN-with-kind id (computed identically to `artefactResourceId`). */
+): ScalaUsesEdge[] {
   const artefactById = new Map<string, ScalaArtefact>()
-  /** simple name → list of artefacts with that name (across all packages). For globally-unique fallback. */
   const bySimpleName = new Map<string, ScalaArtefact[]>()
-  /** package fqn → artefacts in that package. For same-package and import-as-wildcard resolution. */
   const byPackage = new Map<string, ScalaArtefact[]>()
   for (const p of packages) {
     byPackage.set(p.name, p.artefacts)
@@ -204,33 +199,31 @@ function resolveInheritanceEdges(
       bySimpleName.set(a.name, bucket)
     }
   }
-  /** file relPath → ScalaFileSummary; we need the per-file `imports` to resolve type names. */
   const summaryByFile = new Map<string, ScalaFileSummary>()
   for (const s of summaries) summaryByFile.set(s.file.relPath, s.summary)
 
-  const out: ScalaInheritanceEdge[] = []
-  /** De-dupe in case a type appears multiple times in the same parent list (shouldn't, but keep edges unique). */
+  const out: ScalaUsesEdge[] = []
   const seen = new Set<string>()
   for (const p of packages) {
     const samePackageArtefacts = byPackage.get(p.name) ?? []
-    for (const child of p.artefacts) {
-      const childId = artefactResourceId(child.packageName, child)
-      const summary = summaryByFile.get(child.file)
+    for (const user of p.artefacts) {
+      const userId = artefactResourceId(user.packageName, user)
+      const summary = summaryByFile.get(user.file)
       const imports = summary?.imports ?? []
-      for (const parent of child.parents) {
-        const parentArt = resolveParentName(parent.name, {
+      for (const rawName of user.paramTypeNames) {
+        const usedArt = resolveParentName(rawName, {
           samePackageArtefacts,
           imports,
           bySimpleName,
           artefactById,
         })
-        if (!parentArt) continue
-        const parentId = artefactResourceId(parentArt.packageName, parentArt)
-        if (parentId === childId) continue
-        const key = `${parentId}\u0001${childId}\u0001${parent.kind}`
+        if (!usedArt) continue
+        const usedId = artefactResourceId(usedArt.packageName, usedArt)
+        if (usedId === userId) continue
+        const key = `${userId}\u0001${usedId}`
         if (seen.has(key)) continue
         seen.add(key)
-        out.push({ fromArtefactId: parentId, toArtefactId: childId, kind: parent.kind })
+        out.push({ fromArtefactId: userId, toArtefactId: usedId, kind: 'uses' })
       }
     }
   }
@@ -416,6 +409,21 @@ function artefactResourceId(packageFqn: string, art: ScalaArtefact): string {
   return `${root}::${safeKind}:${art.name}`
 }
 
+/**
+ * Flatten the scanner graph into `{ id, doc }` pairs for every artefact that carries Scaladoc.
+ *
+ * Consumed by `App.loadScalaPackagesForExample` to seed the TinyBase `scalaDocs` table on each
+ * scan: since Scaladoc is scanner-derived (refreshed every load) it lives in TinyBase rather
+ * than the YAML, and callers need the same resource ids we use for flow nodes so the box
+ * component can look up its doc by `boxId`. Artefacts without documentation are omitted — the
+ * UI treats an absent row as "show the placeholder" without needing an explicit clear.
+ */
+export function collectScalaArtefactDocs(
+  graph: ScalaPackageGraph,
+): Array<{ id: string; doc: string }> {
+  return collectScalaArtefactDocsFromCore(graph)
+}
+
 /** Stable inner-list entries for artefacts declared in this package (layer-drill UI only). */
 function innerArtefactSpecsForNode(n: PackageTreeNode): TritonInnerArtefactSpec[] {
   if (!n.artefacts.length) return []
@@ -426,10 +434,23 @@ function innerArtefactSpecsForNode(n: PackageTreeNode): TritonInnerArtefactSpec[
       id: artefactResourceId(n.fqn, a),
       name: a.name,
       subtitle: a.kind,
+      declaration: a.declaration,
+      ...(a.constructorParams ? { constructorParams: a.constructorParams } : {}),
+      ...(a.methodSignatures.length ? { methodSignatures: a.methodSignatures } : {}),
+      ...(a.file ? { sourceFile: a.file } : {}),
+      ...(Number.isFinite(a.startRow) ? { sourceRow: a.startRow } : {}),
     }))
 }
 
-/** `extends` / `with` between inner-list members only (both ends in this package’s artefact set). */
+/**
+ * `extends` / `with` / `uses` between inner-list members only (both ends must live in this
+ * package's artefact set, otherwise we'd draw an edge to a box the viewer can't see).
+ *
+ * The edges are emitted in label-priority order (`extends` → `with` → `uses`) so the `seen`
+ * set de-duplicates an artefact pair to its *structural* relation when both exist — a class
+ * that both `extends Animal` and takes `Animal` as a constructor parameter renders as `extends`
+ * only; drawing both would be visual noise.
+ */
 function innerArtefactRelationSpecsForNode(
   n: PackageTreeNode,
   graph: ScalaPackageGraph,
@@ -438,14 +459,22 @@ function innerArtefactRelationSpecsForNode(
   if (innerArts.length < 2) return []
   const idSet = new Set(innerArts.map((a) => a.id))
   const out: TritonInnerArtefactRelationSpec[] = []
-  const seen = new Set<string>()
+  /** Keyed by endpoint pair only — stronger structural labels win over `uses`. */
+  const seenPair = new Set<string>()
   for (const e of graph.inheritance) {
     if (!idSet.has(e.fromArtefactId) || !idSet.has(e.toArtefactId)) continue
-    const label: 'extends' | 'with' = e.kind === 'with' ? 'with' : 'extends'
-    const key = `${e.fromArtefactId}\u0001${e.toArtefactId}\u0001${label}`
-    if (seen.has(key)) continue
-    seen.add(key)
+    const pairKey = `${e.fromArtefactId}\u0001${e.toArtefactId}`
+    if (seenPair.has(pairKey)) continue
+    seenPair.add(pairKey)
+    const label: TritonInnerArtefactRelationSpec['label'] = e.kind === 'with' ? 'with' : 'extends'
     out.push({ from: e.fromArtefactId, to: e.toArtefactId, label })
+  }
+  for (const e of graph.uses) {
+    if (!idSet.has(e.fromArtefactId) || !idSet.has(e.toArtefactId)) continue
+    const pairKey = `${e.fromArtefactId}\u0001${e.toArtefactId}`
+    if (seenPair.has(pairKey)) continue
+    seenPair.add(pairKey)
+    out.push({ from: e.fromArtefactId, to: e.toArtefactId, label: 'uses' })
   }
   out.sort((a, b) => (a.to === b.to ? a.from.localeCompare(b.from) : a.to.localeCompare(b.to)))
   return out
@@ -495,23 +524,19 @@ function rootInnerPackageSpecs(picked: PackageTreeNode): TritonInnerPackageSpec[
  * box is layer-drill focused (stacked inner package shells).
  */
 function rootOnlyPackageLeafResource(node: PackageTreeNode, graph: ScalaPackageGraph): IlographResource {
+  // Description used to list the package fqn + every source file — all data that is already
+  // redundantly encoded by `id` (= fqn) and by the scanner re-reading `.scala` sources on every
+  // load. We skip it so the exported YAML carries only the structural graph and diffs stay
+  // focused on real code changes (renames, new artefacts, new edges) instead of file-listing noise.
   const files = collectSubtreeFiles(node)
   const name = node.segment || node.fqn || ROOT_PACKAGE
-  const lines: string[] = []
-  lines.push(`Package: \`${node.fqn || ROOT_PACKAGE}\``)
-  if (files.length) {
-    lines.push('')
-    lines.push(`Files (${files.length}):`)
-    for (const f of files) lines.push(`  - ${f}`)
-  }
   const inner = rootInnerPackageSpecs(node)
   const innerArts = innerArtefactSpecsForNode(node)
   const innerRels = innerArtefactRelationSpecsForNode(node, graph)
   return {
     id: node.fqn || ROOT_PACKAGE,
     name,
-    subtitle: `${files.length} Scala file${files.length === 1 ? '' : 's'}`,
-    description: lines.join('\n'),
+    subtitle: formatArtefactBreakdown(node.artefacts, files.length),
     ...(inner.length ? { 'x-triton-inner-packages': inner } : {}),
     ...(innerArts.length ? { 'x-triton-inner-artefacts': innerArts } : {}),
     ...(innerRels.length ? { 'x-triton-inner-artefact-relations': innerRels } : {}),
@@ -554,22 +579,16 @@ function flattenDescendantPackageResources(
 }
 
 function packageLeafResourceForGraph(n: PackageTreeNode, graph: ScalaPackageGraph): IlographResource {
+  // Same rationale as `rootOnlyPackageLeafResource`: description was pure boilerplate
+  // (fqn + file list, both recoverable from the scan) and is dropped from the YAML.
   const c = collapseLinearChains(n)
   const files = collectSubtreeFiles(c)
-  const lines: string[] = []
-  lines.push(`Package: \`${c.fqn}\``)
-  if (files.length) {
-    lines.push('')
-    lines.push(`Files (${files.length}):`)
-    for (const f of files) lines.push(`  - ${f}`)
-  }
   const innerArts = innerArtefactSpecsForNode(c)
   const innerRels = innerArtefactRelationSpecsForNode(c, graph)
   return {
     id: c.fqn,
     name: c.segment || c.fqn,
-    subtitle: `${files.length} Scala file${files.length === 1 ? '' : 's'}`,
-    description: lines.join('\n'),
+    subtitle: formatArtefactBreakdown(c.artefacts, files.length),
     'x-triton-node-type': 'package',
     ...(innerArts.length ? { 'x-triton-inner-artefacts': innerArts } : {}),
     ...(innerRels.length ? { 'x-triton-inner-artefact-relations': innerRels } : {}),
@@ -577,32 +596,220 @@ function packageLeafResourceForGraph(n: PackageTreeNode, graph: ScalaPackageGrap
 }
 
 /**
+ * Package subtitle: breakdown of the top-level Scala artefacts declared directly in this
+ * package, grouped by kind (classes, traits, objects, enums, defs). Falls back to a file
+ * count for artefact-free packages so the chrome never renders an empty subtitle. Companion
+ * `case` variants fold into their base kind (`case class` → class, `case object` → object)
+ * because the headline count answers "how many types live here" — the `case` modifier is a
+ * declaration detail visible on the drilled-in artefact card.
+ */
+function formatArtefactBreakdown(artefacts: readonly ScalaArtefact[], fileCount: number): string {
+  if (!artefacts.length) {
+    return `${fileCount} Scala file${fileCount === 1 ? '' : 's'}`
+  }
+  let classes = 0
+  let traits = 0
+  let objects = 0
+  let enums = 0
+  let defs = 0
+  for (const a of artefacts) {
+    switch (a.kind) {
+      case 'class':
+      case 'case class':
+        classes += 1
+        break
+      case 'trait':
+        traits += 1
+        break
+      case 'object':
+      case 'case object':
+        objects += 1
+        break
+      case 'enum':
+        enums += 1
+        break
+      case 'def':
+        defs += 1
+        break
+      default:
+        break
+    }
+  }
+  const parts: string[] = []
+  if (classes) parts.push(`${classes} ${classes === 1 ? 'Class' : 'Classes'}`)
+  if (traits) parts.push(`${traits} ${traits === 1 ? 'Trait' : 'Traits'}`)
+  if (objects) parts.push(`${objects} ${objects === 1 ? 'Object' : 'Objects'}`)
+  if (enums) parts.push(`${enums} ${enums === 1 ? 'Enum' : 'Enums'}`)
+  if (defs) parts.push(`${defs} ${defs === 1 ? 'Def' : 'Defs'}`)
+  if (!parts.length) {
+    return `${fileCount} Scala file${fileCount === 1 ? '' : 's'}`
+  }
+  return parts.join(', ')
+}
+
+/**
+ * Detect the source language of a subtree from file paths. Priority:
+ *
+ *   1. The `src/main/<lang>/…` Maven / sbt / Gradle convention — counts the segment directly
+ *      under `src/main/` across every file and returns the dominant one. Works for multi-language
+ *      repos that follow the convention (`src/main/scala` vs. `src/main/java` vs. `src/main/kotlin`).
+ *   2. Fallback: dominant file extension (`.scala`, `.java`, `.kt`, `.ts` / `.tsx`, `.js` / `.jsx`,
+ *      `.py`, `.rb`, `.go`, `.rs`, `.swift`).
+ *
+ * Returns `undefined` when nothing can be inferred — caller then omits the logo entirely
+ * instead of guessing. Normalized to one of the `LanguageIconId` keys declared in
+ * `editor/src/graph/languages.ts` (`scala`, `java`, `kotlin`, `ts`, `js`, `python`, `ruby`,
+ * `go`, `rust`, `swift`) so the downstream `LanguageIcon` component resolves the asset directly.
+ */
+function detectLanguageFromFilePaths(files: readonly string[]): string | undefined {
+  if (!files.length) return undefined
+  const dirCounts = new Map<string, number>()
+  for (const f of files) {
+    const m = /(?:^|\/)src\/main\/([^/]+)\//.exec(f)
+    if (!m) continue
+    const dir = m[1]!.toLowerCase()
+    dirCounts.set(dir, (dirCounts.get(dir) ?? 0) + 1)
+  }
+  if (dirCounts.size > 0) {
+    const top = [...dirCounts.entries()].sort((a, b) => b[1] - a[1])[0]![0]
+    if (top === 'scala') return 'scala'
+    if (top === 'java' || top === 'groovy') return 'java'
+    if (top === 'kotlin') return 'kotlin'
+    if (top === 'typescript') return 'ts'
+    if (top === 'javascript') return 'js'
+    if (top === 'python') return 'python'
+    if (top === 'ruby') return 'ruby'
+    if (top === 'go') return 'go'
+    if (top === 'rust') return 'rust'
+    if (top === 'swift') return 'swift'
+    return undefined
+  }
+  const extCounts = new Map<string, number>()
+  for (const f of files) {
+    const dot = f.lastIndexOf('.')
+    if (dot < 0) continue
+    const ext = f.slice(dot + 1).toLowerCase()
+    extCounts.set(ext, (extCounts.get(ext) ?? 0) + 1)
+  }
+  if (!extCounts.size) return undefined
+  const topExt = [...extCounts.entries()].sort((a, b) => b[1] - a[1])[0]![0]
+  switch (topExt) {
+    case 'scala':
+      return 'scala'
+    case 'java':
+      return 'java'
+    case 'kt':
+    case 'kts':
+      return 'kotlin'
+    case 'ts':
+    case 'tsx':
+      return 'ts'
+    case 'js':
+    case 'jsx':
+    case 'mjs':
+    case 'cjs':
+      return 'js'
+    case 'py':
+      return 'python'
+    case 'rb':
+      return 'ruby'
+    case 'go':
+      return 'go'
+    case 'rs':
+      return 'rust'
+    case 'swift':
+      return 'swift'
+    default:
+      return undefined
+  }
+}
+
+/**
+ * Each top-level Scala artefact declared directly under the outer scope (e.g. `Demo` and
+ * `FoxAppleEater` in `com.example.animalsfruit/Demo.scala`) becomes its own **artefact** leaf
+ * inside the scope group — a sibling to the sub-package leaves. This is the only way the
+ * user sees "the package has subpackages AND its own classes" at a glance: a single `Demo`
+ * box next to `animal`, `fruit`, `relation`, etc. (Wrapping them in a synthetic self-package
+ * leaf hid them one extra click deep; drilling the scope group was the only way to reveal
+ * `Demo`, which read as "missing" at the top level.)
+ *
+ * Artefact leaves use `x-triton-node-type: 'artefact'` so Vue Flow renders them via the
+ * `ScalaArtefactBox` path in {@link FlowPackageNode}. Their id is the same `artefactResourceId`
+ * used for inner-list entries, so {@link ScalaInheritanceEdge} / {@link ScalaUsesEdge}
+ * endpoints line up if we ever emit artefact-level relations at the scope level.
+ */
+function scopeDirectArtefactLeafResources(scope: PackageTreeNode): IlographResource[] {
+  if (!scope.artefacts.length) return []
+  return dedupeArtefacts(scope.artefacts)
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind))
+    .map((a) => {
+      // Description used to repeat `Scala <kind>: <name>` / `Package: <fqn>` / `File: <relPath>`,
+      // all of which are already surfaced via `name`, the enclosing group id, and the new
+      // `x-triton-source-file` field respectively. Dropped to keep the YAML lean.
+      const id = artefactResourceId(scope.fqn, a)
+      return {
+        id,
+        name: a.name,
+        subtitle: a.kind,
+        'x-triton-node-type': 'artefact',
+        'x-triton-declaration': a.declaration,
+        ...(a.constructorParams ? { 'x-triton-constructor-params': a.constructorParams } : {}),
+        ...(a.methodSignatures.length ? { 'x-triton-method-signatures': a.methodSignatures } : {}),
+        ...(a.file ? { 'x-triton-source-file': a.file } : {}),
+        ...(Number.isFinite(a.startRow) ? { 'x-triton-source-row': a.startRow } : {}),
+      } as IlographResource
+    })
+}
+
+/**
  * Outer picked scope as a **group** (`x-triton-package-scope`): package-style chrome in
- * {@link GroupNode}. All descendant packages are **flat** child resources for dependency layout.
+ * {@link GroupNode}. All descendant packages are **flat** child resources for dependency layout,
+ * and — when the scope itself owns files / artefacts — a synthetic "self" leaf is added so the
+ * scope's own classes show up next to its sub-packages instead of being hidden by the group.
  */
 function pickedPackageGroupResource(picked: PackageTreeNode, graph: ScalaPackageGraph): IlographResource {
   const top = collapseLinearChains(picked)
   const files = collectSubtreeFiles(top)
   const name = top.segment || top.fqn || ROOT_PACKAGE
-  const childResources = flattenDescendantPackageResources(top, graph)
-  const lines: string[] = []
-  lines.push(`Package scope: \`${top.fqn}\``)
-  if (files.length) {
-    lines.push('')
-    lines.push(`Files (${files.length}):`)
-    for (const f of files) lines.push(`  - ${f}`)
+  const descendantResources = flattenDescendantPackageResources(top, graph)
+  const directArtefactLeaves = scopeDirectArtefactLeafResources(top)
+  const childResources = directArtefactLeaves.length
+    ? [...directArtefactLeaves, ...descendantResources].sort((a, b) =>
+        String(a.id ?? a.name).localeCompare(String(b.id ?? b.name)),
+      )
+    : descendantResources
+  const language = detectLanguageFromFilePaths(files)
+  // Description used to list fqn, detected language, and every source file — all already
+  // captured via `id`, `x-triton-package-language`, and the scanner's fresh source reads.
+  // Dropping it keeps the outer group YAML to a few structural fields only.
+  const subtitleParts: string[] = []
+  subtitleParts.push(`${files.length} Scala file${files.length === 1 ? '' : 's'}`)
+  const pkgCount = descendantResources.length
+  if (pkgCount) {
+    subtitleParts.push(`${pkgCount} nested package${pkgCount === 1 ? '' : 's'}`)
+  }
+  if (directArtefactLeaves.length) {
+    subtitleParts.push(
+      `${directArtefactLeaves.length} direct ${directArtefactLeaves.length === 1 ? 'artefact' : 'artefacts'}`,
+    )
   }
   return {
     id: top.fqn,
     name,
-    subtitle: `${files.length} Scala file${files.length === 1 ? '' : 's'} · ${childResources.length} nested packages (flat graph)`,
-    description: lines.join('\n'),
+    subtitle: subtitleParts.join(' · '),
     'x-triton-package-scope': true,
+    ...(language ? { 'x-triton-package-language': language } : {}),
     children: childResources,
   }
 }
 
-/** All `imports` edges whose endpoints lie in the picked subtree (any depth). */
+/**
+ * All `imports` edges whose endpoints lie in the picked subtree (any depth).
+ * `buildScalaPackageGraph` already drops strict-ancestor → descendant imports (containment),
+ * so the outer scope FQN itself never appears as an edge endpoint here — it's the group
+ * id, not a leaf, and Vue Flow would silently drop edges attached to it anyway.
+ */
 function relationsInPickedSubtree(graph: ScalaPackageGraph, picked: PackageTreeNode): IlographRelation[] {
   const endpoints = collectSubtreePackageFqns(picked)
   const out: IlographRelation[] = []
@@ -673,28 +880,21 @@ export function scalaPackageGraphToIlographDocument(
     topResources = []
   }
 
-  const descParts = [
-    meta.title ??
-      'Scala package (tree-sitter): outer scope as a group; direct sub-packages as nodes laid out by `imports` edges from import statements.',
-    'Parent → descendant package imports are omitted (containment). Imports of packages not in this graph produce no edge.',
-    'Inner `x-triton-inner-artefact-relations` list `extends` / `with` edges between top-level types in the same package (from parsed inheritance).',
-  ]
+  // Doc-level description used to carry ~3 paragraphs of explainer prose that described the
+  // tree-sitter-based import-resolution behaviour. That belongs in developer docs, not in the
+  // per-workspace YAML — keep only a user-supplied override and/or a `Source: <path>` hint.
+  const descParts: string[] = []
+  if (meta.title) descParts.push(meta.title)
   if (meta.sourcePath) descParts.push(`Source: \`${meta.sourcePath}\``)
 
-  const perspectiveNotes =
-    relations.length > 0
-      ? 'Edges: `imports` from `import …` when the import prefix resolves to another package in this scope (classpath-style LR columns).'
-      : 'No package-level import edges among direct sub-packages of the picked scope.'
-
   return {
-    description: descParts.join('\n'),
+    ...(descParts.length ? { description: descParts.join('\n') } : {}),
     resources: topResources,
     perspectives: [
       {
         name: 'package imports',
         orientation: 'leftToRight',
         color: 'royalblue',
-        notes: perspectiveNotes,
         relations,
       },
     ],

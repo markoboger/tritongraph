@@ -4,8 +4,12 @@
  * Flow:
  *   1. `.triton.yaml` is read by `vite-plugin-triton-config.ts` at dev/build start.
  *   2. Its `editor` block is surfaced to the browser as `virtual:triton-config`.
- *   3. {@link openInEditor} resolves the click site's `(root, exampleDir, relPath, line)` into
- *      an absolute path, interpolates the preset/template, and triggers `window.location.href`.
+ *   3. If the page URL carries an `ideOpenUrl` query param (injected by the VS Code / Cursor
+ *      extension), {@link openInEditor} treats it as a callback template and interpolates
+ *      `{relPath}`, `{absPath}`, `{line}`, `{col}` directly into that URI.
+ *   4. Otherwise it resolves the click site's `(root, exampleDir, relPath, line)` into an
+ *      absolute path, interpolates the configured preset/template, and triggers
+ *      `window.location.href`.
  *   4. The browser dispatches the URL scheme (`cursor://…`, `vscode://…`, …); the OS routes it
  *      to the registered app, which jumps the file+line into view. No native bridge required.
  *
@@ -30,8 +34,16 @@ const PRESET_TEMPLATES: Record<string, string> = {
 /** Fallback when neither `urlTemplate` nor a recognised `name` is present in the YAML. */
 const FALLBACK_TEMPLATE = PRESET_TEMPLATES.cursor
 
+function queryTemplateFromLocation(): string | null {
+  if (typeof window === 'undefined') return null
+  const value = new URLSearchParams(window.location.search).get('ideOpenUrl')?.trim()
+  return value || null
+}
+
 /** Return the effective URL template after resolving preset + override precedence. */
 function resolveTemplate(): string {
+  const queryTpl = queryTemplateFromLocation()
+  if (queryTpl) return queryTpl
   const tpl = config.editor.urlTemplate?.trim()
   if (tpl) return tpl
   const name = (config.editor.name ?? '').trim().toLowerCase()
@@ -59,8 +71,17 @@ function buildAbsPath(t: OpenInEditorTarget): string {
   return parts.join('/').replace(/\/+/g, '/')
 }
 
-function interpolate(template: string, absPath: string, line: number, col: number): string {
+function interpolate(
+  template: string,
+  target: OpenInEditorTarget,
+  absPath: string,
+  line: number,
+  col: number,
+): string {
   return template
+    .replaceAll('{root}', target.root)
+    .replaceAll('{exampleDir}', target.exampleDir)
+    .replaceAll('{relPath}', target.relPath)
     .replaceAll('{absPath}', absPath)
     .replaceAll('{line}', String(line))
     .replaceAll('{col}', String(col))
@@ -74,7 +95,7 @@ export function openInEditor(target: OpenInEditorTarget): string {
   const line = Math.max(1, target.line ?? 1)
   const col = Math.max(1, target.col ?? 1)
   const absPath = buildAbsPath(target)
-  const url = interpolate(resolveTemplate(), absPath, line, col)
+  const url = interpolate(resolveTemplate(), target, absPath, line, col)
   if (typeof window !== 'undefined') {
     // Using `location.href` (not `window.open`) so the protocol handler fires without
     // triggering popup-blocker heuristics that some browsers apply to non-http schemes.

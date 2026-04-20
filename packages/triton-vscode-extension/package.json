@@ -1,0 +1,68 @@
+{
+  "name": "triton-vscode-extension",
+  "displayName": "Triton Graph",
+  "description": "Open Triton's browser-based Scala architecture diagram from VS Code or Cursor, print the local diagram URL, and handle deep links back into the IDE.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "triton",
+  "scripts": {
+    "package:vsix": "node ./scripts/build-vsix.js"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:triton.openDiagram",
+    "onCommand:triton.copyDiagramUrl",
+    "onCommand:triton.showOutput",
+    "onUri"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "triton.openDiagram",
+        "title": "Triton: Open Diagram",
+        "category": "Triton"
+      },
+      {
+        "command": "triton.copyDiagramUrl",
+        "title": "Triton: Copy Diagram URL",
+        "category": "Triton"
+      },
+      {
+        "command": "triton.showOutput",
+        "title": "Triton: Show Output",
+        "category": "Triton"
+      }
+    ],
+    "configuration": {
+      "title": "Triton",
+      "properties": {
+        "triton.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:5173",
+          "description": "Base URL of the local Triton browser app."
+        },
+        "triton.openMode": {
+          "type": "string",
+          "enum": [
+            "external",
+            "copy"
+          ],
+          "default": "external",
+          "description": "How Triton opens the browser-based diagram."
+        },
+        "triton.logLinksInOutput": {
+          "type": "boolean",
+          "default": true,
+          "description": "Print the generated Triton URL and IDE callback URL in the Triton output channel."
+        }
+      }
+    }
+  }
+}

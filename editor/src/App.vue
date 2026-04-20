@@ -38,9 +38,9 @@ import { parseScoverageXml } from './sbt/parseScoverageXml'
 import { listScalaSourcesIn } from './scala/scalaSourceLoader'
 import {
   buildScalaPackageGraph,
-  collectScalaArtefactDocs,
   scalaPackageGraphToIlographDocument,
 } from './scala/scalaPackagesToIlograph'
+import { buildScalaWorkspacePayload } from '../../packages/triton-core/src/tritonWorkspacePayload'
 import {
   clearScalaDocsForWorkspace,
   clearScalaCoverageForWorkspace,
@@ -55,6 +55,7 @@ import {
   setScalaTestBlock,
   whenOverlayStoreReady,
 } from './store/overlayStore'
+
 const nodes = ref<any[]>([])
 const edges = ref<any[]>([])
 const perspectiveName = ref<string | undefined>('dependencies')
@@ -550,6 +551,22 @@ async function loadScalaPackagesForExample(root: string, dir: string) {
     const graph = await buildScalaPackageGraph(files)
     const sourceLabel = `${root}/${dir}/`
     sourcePath.value = sourceLabel
+    const log = getSbtTestLogFor(root, dir)
+    const rep = getScoverageReportFor(root, dir)
+    const parsedTestLog = log?.text ? parseSbtTestLog(log.text) : undefined
+    const parsedCoverage = rep?.xml ? parseScoverageXml(rep.xml) : undefined
+    const ilographDoc = scalaPackageGraphToIlographDocument(graph, {
+      title: `Scala packages: ${dir}`,
+      sourcePath: sourceLabel,
+    })
+    const payload = buildScalaWorkspacePayload({
+      sourcePath: sourceLabel,
+      title: `Scala packages: ${dir}`,
+      graph,
+      ilographDocument: ilographDoc,
+      ...(parsedTestLog ? { parsedTestLog } : {}),
+      ...(parsedCoverage ? { parsedCoverage } : {}),
+    })
     /**
      * Seed the TinyBase `scalaDocs` table with the freshly scanned Scaladoc text, keyed by
      * the same resource id the flow node uses. We do this before `applyDoc` so the focused
@@ -569,141 +586,24 @@ async function loadScalaPackagesForExample(root: string, dir: string) {
       clearScalaTestBlocksForWorkspace(ws)
       clearScalaCoverageForWorkspace(ws)
       clearScalaSpecsForWorkspace(ws)
-      for (const { id, doc } of collectScalaArtefactDocs(graph)) {
+      for (const { id, doc } of payload.docs) {
         setScalaDoc(ws, id, doc)
       }
-      /**
-       * If the example folder contains a captured `sbt-test.log`, parse it and store one
-       * console-like checklist block per resolved artefact id.
-       */
-      const log = getSbtTestLogFor(root, dir)
-      if (log?.text) {
-        const blocks = parseSbtTestLog(log.text)
-        // Build a simple-name index of known artefact ids so `Fruit.Banana` → `Banana` resolves.
-        const byName = new Map<string, string[]>()
-        for (const p of graph.packages) {
-          for (const a of p.artefacts) {
-            const id = `${a.packageName || '<root>'}::${a.kind.replace(/\s+/g, '-')}:${a.name}`
-            const bucket = byName.get(a.name) ?? []
-            bucket.push(id)
-            byName.set(a.name, bucket)
-          }
-        }
-        for (const b of blocks) {
-          const raw = String(b.subject ?? '').trim()
-          if (!raw) continue
-          const simple = raw.includes('.') ? raw.slice(raw.lastIndexOf('.') + 1) : raw
-          const ids = byName.get(simple) ?? []
-          if (ids.length !== 1) continue
-          setScalaTestBlock(ws, ids[0]!, { suite: b.suite, subject: b.subject, blockText: b.blockText })
-        }
-
-        // Spec source locations live under `src/test/scala`, which we omit from the diagram/YAML.
-        // We still scan them so we can link "Tests and Specs" lines back to their source.
-        const specNameCounts = new Map<string, number>()
-        const specByName = new Map<string, { name: string; declaration: string; file: string; startRow: number }>()
-        for (const a of graph.testArtefacts ?? []) {
-          if (!a?.name || !a?.file) continue
-          specNameCounts.set(a.name, (specNameCounts.get(a.name) ?? 0) + 1)
-          specByName.set(a.name, {
-            name: a.name,
-            declaration: a.declaration || `${a.kind} ${a.name}`,
-            file: a.file,
-            startRow: Number.isFinite(a.startRow) ? a.startRow : 0,
-          })
-        }
-        // Only keep unambiguous spec names (simple-name lookup only).
-        for (const [name, count] of specNameCounts.entries()) {
-          if (count !== 1) specByName.delete(name)
-        }
-
-        const specsByArtefactId = new Map<string, Array<{ name: string; declaration: string; file: string; startRow: number }>>()
-        for (const b of blocks) {
-          const rawSubject = String(b.subject ?? '').trim()
-          if (!rawSubject) continue
-          const simple = rawSubject.includes('.') ? rawSubject.slice(rawSubject.lastIndexOf('.') + 1) : rawSubject
-          const ids = byName.get(simple) ?? []
-          if (ids.length !== 1) continue
-          const artId = ids[0]!
-          const suiteLine = String(b.suite ?? '').trim()
-          if (!suiteLine) continue
-          const suiteName = suiteLine.endsWith(':') ? suiteLine.slice(0, -1) : suiteLine
-          const spec = specByName.get(suiteName)
-          if (!spec) continue
-          const bucket = specsByArtefactId.get(artId) ?? []
-          if (!bucket.some((x) => x.name === spec.name)) bucket.push(spec)
-          specsByArtefactId.set(artId, bucket)
-        }
-        for (const [artId, specs] of specsByArtefactId.entries()) {
-          setScalaSpecs(ws, artId, specs)
-        }
+      for (const block of payload.testBlocks) {
+        setScalaTestBlock(ws, block.id, {
+          suite: block.suite,
+          subject: block.subject,
+          blockText: block.blockText,
+        })
       }
-
-      // Parse scoverage XML if present and store statement coverage per artefact.
-      const rep = getScoverageReportFor(root, dir)
-      if (rep?.xml) {
-        const rates = parseScoverageXml(rep.xml)
-        // Index graph artefacts by (packageFqn, name) → ids by kind.
-        const idx = new Map<string, { classIds: string[]; objectIds: string[]; traitIds: string[] }>()
-        for (const p of graph.packages) {
-          for (const a of p.artefacts) {
-            const id = `${a.packageName || '<root>'}::${a.kind.replace(/\s+/g, '-')}:${a.name}`
-            const key = `${a.packageName || '<root>'}\u0001${a.name}`
-            const bucket = idx.get(key) ?? { classIds: [], objectIds: [], traitIds: [] }
-            const k = a.kind.toLowerCase()
-            if (k.includes('trait')) bucket.traitIds.push(id)
-            else if (k.includes('object')) bucket.objectIds.push(id)
-            else if (k.includes('class')) bucket.classIds.push(id)
-            idx.set(key, bucket)
-          }
-        }
-        for (const r of rates) {
-          const dot = r.fullName.lastIndexOf('.')
-          if (dot <= 0) continue
-          const pkg = r.fullName.slice(0, dot)
-          const rawSimple = r.fullName.slice(dot + 1)
-          /**
-           * Scala/JVM artifacts often show up in scoverage with `$` suffixes:
-           * - objects / companions: `Foo$`
-           * - inner / synthetic: `Foo$Bar`, `Foo$package$`, etc.
-           *
-           * Our scanner artefacts are source-level names (`Foo`, `Bar`), so attempt matching:
-           *   1) exact simple name
-           *   2) strip a single trailing `$`
-           *   3) take the prefix before the first `$`
-           */
-          const simpleCandidates = Array.from(
-            new Set([
-              rawSimple,
-              rawSimple.endsWith('$') ? rawSimple.slice(0, -1) : rawSimple,
-              rawSimple.includes('$') ? rawSimple.slice(0, rawSimple.indexOf('$')) : rawSimple,
-            ].filter(Boolean)),
-          )
-
-          let hit: { classIds: string[]; objectIds: string[]; traitIds: string[] } | undefined
-          for (const s of simpleCandidates) {
-            hit = idx.get(`${pkg}\u0001${s}`)
-            if (hit) break
-          }
-          if (!hit) continue
-
-          const t = (r.classType || '').toLowerCase()
-          const candidates =
-            t === 'object' ? hit.objectIds : t === 'trait' ? hit.traitIds : hit.classIds
-          // Be permissive: if several artefacts share the same (pkg, name) bucket, apply the
-          // same class-level statement rate to each candidate. This avoids dropping coverage
-          // entirely due to ambiguity (e.g. case class vs class, or compiler-emitted companions).
-          for (const id of candidates) {
-            setScalaCoverage(ws, id, r.statementRate)
-          }
-        }
+      for (const entry of payload.specsByArtefact) {
+        setScalaSpecs(ws, entry.id, entry.specs)
+      }
+      for (const entry of payload.coverage) {
+        setScalaCoverage(ws, entry.id, entry.stmtPct)
       }
     }
-    const doc = scalaPackageGraphToIlographDocument(graph, {
-      title: `Scala packages: ${dir}`,
-      sourcePath: sourceLabel,
-    })
-    const yaml = stringifyIlographYaml(doc)
+    const yaml = stringifyIlographYaml(payload.ilographDocument ?? ilographDoc)
     await applyDoc(yaml, `${root}/${dir}/packages.ilograph.yaml`, false, {
       moduleNodeType: 'package',
     })

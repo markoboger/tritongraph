@@ -1,0 +1,12 @@
+{
+  "name": "triton-core",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./parseBuildSbt": "./src/parseBuildSbt.ts",
+    "./parseSbtTestLog": "./src/parseSbtTestLog.ts",
+    "./parseScoverageXml": "./src/parseScoverageXml.ts"
+  }
+}

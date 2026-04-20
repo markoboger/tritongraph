@@ -1,6 +1,12 @@
 package com.example.animalsfruit
 
-/** Placeholder test sources so `src/test/scala` exists for tooling/parsers. */
-object Sanity {
-  def ok: Boolean = true
+import org.scalatest.wordspec.AnyWordSpec
+import org.scalatest.matchers.should.Matchers
+
+final class SanitySpec extends AnyWordSpec with Matchers {
+  "The test suite" should {
+    "load ScalaTest and run" in {
+      1 + 1 shouldBe 2
+    }
+  }
 }
