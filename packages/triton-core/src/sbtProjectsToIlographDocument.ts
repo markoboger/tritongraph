@@ -6,18 +6,21 @@ export interface SbtToIlographMeta {
   sourcePath?: string
   /**
    * Subprojects that contain `.scala` sources. Each entry gets a markdown link in its subtitle:
-   * `[packages](triton:packages)` — consumers that understand the `triton:` scheme can route it
-   * to a package-graph view. Other consumers can ignore the link or strip it.
+   * `[packages](triton://diagram/packages?project=<id>)` — consumers that understand the
+   * `triton:` scheme can route it to a project-scoped package-graph view. Other consumers can
+   * ignore the link or strip it.
    */
   projectsWithScalaSources?: ReadonlySet<string>
 }
 
-const PACKAGES_LINK_MD = '[packages](triton:packages)'
+function packagesLinkMarkdown(projectId: string): string {
+  return `[packages](triton://diagram/packages?project=${encodeURIComponent(projectId)})`
+}
 
 function makeSubtitle(p: SbtSubproject, meta: SbtToIlographMeta): string | undefined {
   const parts: string[] = []
   if (p.baseDir && p.baseDir !== '.') parts.push(p.baseDir)
-  if (meta.projectsWithScalaSources?.has(p.id)) parts.push(PACKAGES_LINK_MD)
+  if (meta.projectsWithScalaSources?.has(p.id)) parts.push(packagesLinkMarkdown(p.id))
   return parts.length ? parts.join(' · ') : undefined
 }
 

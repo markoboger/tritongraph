@@ -207,6 +207,11 @@ interface RuntimeWorkspaceActionResult {
   note?: string
 }
 
+interface ProjectScope {
+  id: string
+  baseDir?: string
+}
+
 const tabs = ref<DiagramTab[]>([])
 const activeTabId = ref<string | null>(null)
 
@@ -214,21 +219,34 @@ const activeTab = computed<DiagramTab | undefined>(() =>
   tabs.value.find((t) => t.id === activeTabId.value),
 )
 
-const activeRuntimeWorkspace = computed<{ workspacePath: string; workspaceName: string } | null>(() => {
-  const k = activeTab.value?.key ?? ''
+function stripExampleProjectSuffix(body: string): string {
+  const hash = body.indexOf('#')
+  return hash >= 0 ? body.slice(0, hash) : body
+}
+
+function parseRuntimeTabKey(
+  key: string,
+): { workspacePath: string; workspaceName: string; projectId?: string } | null {
   const prefixes = ['runtime-sbt:', 'runtime-packages:']
   for (const prefix of prefixes) {
-    if (k.startsWith(prefix)) {
-      const body = k.slice(prefix.length)
-      const cut = body.indexOf('::')
-      if (cut < 0) return { workspacePath: body, workspaceName: 'workspace' }
-      return {
-        workspacePath: body.slice(0, cut),
-        workspaceName: body.slice(cut + 2) || 'workspace',
-      }
+    if (!key.startsWith(prefix)) continue
+    const body = key.slice(prefix.length)
+    const firstCut = body.indexOf('::')
+    if (firstCut < 0) return { workspacePath: body, workspaceName: 'workspace' }
+    const rest = body.slice(firstCut + 2)
+    const secondCut = rest.indexOf('::')
+    return {
+      workspacePath: body.slice(0, firstCut),
+      workspaceName: secondCut < 0 ? rest || 'workspace' : rest.slice(0, secondCut) || 'workspace',
+      ...(secondCut < 0 ? {} : { projectId: rest.slice(secondCut + 2) || undefined }),
     }
   }
   return null
+}
+
+const activeRuntimeWorkspace = computed<{ workspacePath: string; workspaceName: string } | null>(() => {
+  const parsed = parseRuntimeTabKey(activeTab.value?.key ?? '')
+  return parsed ? { workspacePath: parsed.workspacePath, workspaceName: parsed.workspaceName } : null
 })
 const runtimeActionBusy = ref<string>('')
 const runtimeEmptyStateMessage = computed(() => {
@@ -269,7 +287,7 @@ const activeExampleSelectionKey = computed<string>(() => {
   const k = activeTab.value?.key ?? ''
   if (k === 'builtin') return '__builtin__'
   if (k.startsWith('sbt:')) return k
-  if (k.startsWith('packages:')) return `sbt:${k.slice('packages:'.length)}`
+  if (k.startsWith('packages:')) return `sbt:${stripExampleProjectSuffix(k.slice('packages:'.length))}`
   return ''
 })
 
@@ -281,7 +299,7 @@ const activeExample = computed<{ root: string; dir: string } | null>(() => {
   }
   let body = ''
   if (k.startsWith('sbt:')) body = k.slice('sbt:'.length)
-  else if (k.startsWith('packages:')) body = k.slice('packages:'.length)
+  else if (k.startsWith('packages:')) body = stripExampleProjectSuffix(k.slice('packages:'.length))
   else return null
   const slash = body.indexOf('/')
   if (slash < 0) return null
@@ -644,10 +662,15 @@ async function openSbtExampleTab(root: string, dir: string): Promise<void> {
   )
 }
 
-async function openScalaPackagesTab(root: string, dir: string): Promise<void> {
+async function openScalaPackagesTab(root: string, dir: string, projectId?: string): Promise<void> {
+  const scopeSuffix = projectId ? `#${projectId}` : ''
   await openOrActivateTab(
-    { key: `packages:${root}/${dir}`, title: dir, iconUrl: cubeIconUrl },
-    () => loadScalaPackagesForExample(root, dir),
+    {
+      key: `packages:${root}/${dir}${scopeSuffix}`,
+      title: projectId ? `${dir}:${projectId}` : dir,
+      iconUrl: cubeIconUrl,
+    },
+    () => loadScalaPackagesForExample(root, dir, projectId),
   )
 }
 
@@ -662,14 +685,15 @@ async function openRuntimeSbtTab(workspacePath: string, workspaceName: string): 
   )
 }
 
-async function openRuntimePackagesTab(workspacePath: string, workspaceName: string): Promise<void> {
+async function openRuntimePackagesTab(workspacePath: string, workspaceName: string, projectId?: string): Promise<void> {
+  const scopeSuffix = projectId ? `::${projectId}` : ''
   await openOrActivateTab(
     {
-      key: runtimeTabKey('runtime-packages', workspacePath, workspaceName),
-      title: workspaceName,
+      key: `${runtimeTabKey('runtime-packages', workspacePath, workspaceName)}${scopeSuffix}`,
+      title: projectId ? `${workspaceName}:${projectId}` : workspaceName,
       iconUrl: cubeIconUrl,
     },
-    () => loadScalaPackagesForRuntimeWorkspace(workspacePath, workspaceName),
+    () => loadScalaPackagesForRuntimeWorkspace(workspacePath, workspaceName, projectId),
   )
 }
 
@@ -677,10 +701,11 @@ async function reloadActiveRuntimeTab(): Promise<void> {
   const runtimeWs = activeRuntimeWorkspace.value
   if (!runtimeWs || !activeTab.value) return
   const key = activeTab.value.key
+  const parsed = parseRuntimeTabKey(key)
   if (key.startsWith('runtime-sbt:')) {
     await loadSbtBuildForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName)
   } else if (key.startsWith('runtime-packages:')) {
-    await loadScalaPackagesForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName)
+    await loadScalaPackagesForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName, parsed?.projectId)
   }
   snapshotActiveTab()
 }
@@ -740,32 +765,67 @@ function computeProjectsWithScalaSourceFiles(
   return out
 }
 
-async function loadScalaPackagesForExample(root: string, dir: string) {
-  const files = listScalaSourcesIn(root, dir)
+function normalizeProjectBaseDir(project: { id: string; baseDir?: string }): string {
+  return (project.baseDir ?? project.id).replace(/^\/+|\/+$/g, '')
+}
+
+function projectScopeById(
+  projects: ReadonlyArray<{ id: string; baseDir?: string }>,
+  projectId?: string,
+): ProjectScope | null {
+  const id = String(projectId ?? '').trim()
+  if (!id) return null
+  const hit = projects.find((p) => p.id === id)
+  return hit ? { id: hit.id, ...(hit.baseDir ? { baseDir: hit.baseDir } : {}) } : null
+}
+
+function filterScalaFilesForProject<T extends { relPath: string }>(
+  files: readonly T[],
+  project: { id: string; baseDir?: string } | null,
+): T[] {
+  if (!project) return [...files]
+  const rawDir = normalizeProjectBaseDir(project)
+  if (!rawDir || rawDir === '.') return [...files]
+  const prefix = `${rawDir}/`
+  return files.filter((f) => f.relPath === rawDir || f.relPath.startsWith(prefix))
+}
+
+async function loadScalaPackagesForExample(root: string, dir: string, projectId?: string) {
+  const allFiles = listScalaSourcesIn(root, dir)
+  const buildHit = sbtExamplesAll.find((e) => e.root === root && e.dir === dir)
+  const projects = buildHit?.source ? parseBuildSbt(buildHit.source) : []
+  const projectScope = projectScopeById(projects, projectId)
+  const files = filterScalaFilesForProject(allFiles, projectScope)
   if (!files.length) {
-    sourcePath.value = `${root}/${dir}/`
+    sourcePath.value = projectScope
+      ? `${root}/${dir}/${normalizeProjectBaseDir(projectScope) || '.'}/`
+      : `${root}/${dir}/`
     nodes.value = []
     edges.value = []
     yamlBaseline.value = yamlPreview.value
-    status.value = `No .scala files found under ${root}/${dir}/.`
+    status.value = projectScope
+      ? `No .scala files found for sbt project ${projectScope.id} under ${root}/${dir}/.`
+      : `No .scala files found under ${root}/${dir}/.`
     return
   }
   status.value = `Parsing ${files.length} Scala file${files.length === 1 ? '' : 's'} with tree-sitter…`
   try {
     const graph = await buildScalaPackageGraph(files)
-    const sourceLabel = `${root}/${dir}/`
+    const sourceLabel = projectScope
+      ? `${root}/${dir}/${normalizeProjectBaseDir(projectScope) || '.'}/`
+      : `${root}/${dir}/`
     sourcePath.value = sourceLabel
     const log = getSbtTestLogFor(root, dir)
     const rep = getScoverageReportFor(root, dir)
     const parsedTestLog = log?.text ? parseSbtTestLog(log.text) : undefined
     const parsedCoverage = rep?.xml ? parseScoverageXml(rep.xml) : undefined
     const ilographDoc = scalaPackageGraphToIlographDocument(graph, {
-      title: `Scala packages: ${dir}`,
+      title: projectScope ? `Scala packages: ${dir}:${projectScope.id}` : `Scala packages: ${dir}`,
       sourcePath: sourceLabel,
     })
     const payload = buildScalaWorkspacePayload({
       sourcePath: sourceLabel,
-      title: `Scala packages: ${dir}`,
+      title: projectScope ? `Scala packages: ${dir}:${projectScope.id}` : `Scala packages: ${dir}`,
       graph,
       ilographDocument: ilographDoc,
       ...(parsedTestLog ? { parsedTestLog } : {}),
@@ -808,10 +868,14 @@ async function loadScalaPackagesForExample(root: string, dir: string) {
       }
     }
     const yaml = stringifyIlographYaml(payload.ilographDocument ?? ilographDoc)
-    await applyDoc(yaml, `${root}/${dir}/packages.ilograph.yaml`, false, {
+    await applyDoc(yaml, projectScope
+      ? `${root}/${dir}/${projectScope.id}.packages.ilograph.yaml`
+      : `${root}/${dir}/packages.ilograph.yaml`, false, {
       moduleNodeType: 'package',
     })
-    status.value = `Parsed ${files.length} Scala file${files.length === 1 ? '' : 's'} → outer package group with sub-package nodes; package imports (wildcard and explicit) as LR edges.`
+    status.value = projectScope
+      ? `Parsed ${files.length} Scala file${files.length === 1 ? '' : 's'} for sbt project ${projectScope.id} → project-scoped package graph.`
+      : `Parsed ${files.length} Scala file${files.length === 1 ? '' : 's'} → outer package group with sub-package nodes; package imports (wildcard and explicit) as LR edges.`
   } catch (err) {
     status.value = `Failed to parse Scala sources: ${(err as Error).message}`
   }
@@ -847,37 +911,45 @@ async function loadSbtBuildForRuntimeWorkspace(workspacePath: string, workspaceN
   }
 }
 
-async function loadScalaPackagesForRuntimeWorkspace(workspacePath: string, workspaceName: string) {
+async function loadScalaPackagesForRuntimeWorkspace(workspacePath: string, workspaceName: string, projectId?: string) {
   status.value = `Loading Scala workspace from ${workspaceName} via Triton runtime…`
   try {
     const bundle = await fetchRuntimeWorkspaceBundle(workspacePath, workspaceName)
-    const files = bundle.scalaFiles.map((f) => ({
+    const projects = bundle.buildSbt?.source ? parseBuildSbt(bundle.buildSbt.source) : []
+    const projectScope = projectScopeById(projects, projectId)
+    const files = filterScalaFilesForProject(bundle.scalaFiles.map((f) => ({
       root: '',
       exampleDir: '',
       relPath: f.relPath,
       source: f.source,
-    }))
+    })), projectScope)
     if (!files.length) {
-      sourcePath.value = `${workspacePath}/`
+      sourcePath.value = projectScope
+        ? `${workspacePath}/${normalizeProjectBaseDir(projectScope) || '.'}/`
+        : `${workspacePath}/`
       nodes.value = []
       edges.value = []
       yamlBaseline.value = yamlPreview.value
-      status.value = `No .scala files found under ${workspacePath}.`
+      status.value = projectScope
+        ? `No .scala files found for sbt project ${projectScope.id} under ${workspacePath}.`
+        : `No .scala files found under ${workspacePath}.`
       return
     }
     status.value = `Parsing ${files.length} Scala file${files.length === 1 ? '' : 's'} from ${workspaceName}…`
     const graph = await buildScalaPackageGraph(files)
-    const sourceLabel = `${workspacePath}/`
+    const sourceLabel = projectScope
+      ? `${workspacePath}/${normalizeProjectBaseDir(projectScope) || '.'}/`
+      : `${workspacePath}/`
     sourcePath.value = sourceLabel
     const parsedTestLog = bundle.testLog?.text ? parseSbtTestLog(bundle.testLog.text) : undefined
     const parsedCoverage = bundle.coverageReport?.xml ? parseScoverageXml(bundle.coverageReport.xml) : undefined
     const ilographDoc = scalaPackageGraphToIlographDocument(graph, {
-      title: `Scala packages: ${workspaceName}`,
+      title: projectScope ? `Scala packages: ${workspaceName}:${projectScope.id}` : `Scala packages: ${workspaceName}`,
       sourcePath: sourceLabel,
     })
     const payload = buildScalaWorkspacePayload({
       sourcePath: sourceLabel,
-      title: `Scala packages: ${workspaceName}`,
+      title: projectScope ? `Scala packages: ${workspaceName}:${projectScope.id}` : `Scala packages: ${workspaceName}`,
       graph,
       ilographDocument: ilographDoc,
       ...(parsedTestLog ? { parsedTestLog } : {}),
@@ -902,10 +974,14 @@ async function loadScalaPackagesForRuntimeWorkspace(workspacePath: string, works
       for (const entry of payload.coverage) setScalaCoverage(ws, entry.id, entry.stmtPct)
     }
     const yaml = stringifyIlographYaml(payload.ilographDocument ?? ilographDoc)
-    await applyDoc(yaml, `${workspaceName}.packages.runtime.ilograph.yaml`, false, {
+    await applyDoc(yaml, projectScope
+      ? `${workspaceName}.${projectScope.id}.packages.runtime.ilograph.yaml`
+      : `${workspaceName}.packages.runtime.ilograph.yaml`, false, {
       moduleNodeType: 'package',
     })
-    status.value = `Loaded ${files.length} Scala file${files.length === 1 ? '' : 's'} from runtime workspace ${workspaceName}.`
+    status.value = projectScope
+      ? `Loaded ${files.length} Scala file${files.length === 1 ? '' : 's'} from runtime workspace ${workspaceName} for sbt project ${projectScope.id}.`
+      : `Loaded ${files.length} Scala file${files.length === 1 ? '' : 's'} from runtime workspace ${workspaceName}.`
   } catch (err) {
     status.value = `Failed to load runtime Scala workspace: ${(err as Error).message}`
   }
@@ -940,16 +1016,25 @@ async function runRuntimeWorkspaceAction(
 
 /**
  * Internal `triton:` URL scheme used by markdown links inside project-box subtitles.
- * Examples: `triton:packages` (open/activate the packages tab for the current example),
+ * Examples: `triton:packages` or `triton://diagram/packages?project=App`
+ * (open/activate the packages tab for the current example, optionally filtered to one sbt
+ * project),
  * `triton:sbt` (open/activate the sbt build tab). Unknown links fall through to a normal
  * `window.open` so authors can also embed external docs links.
  */
 function onNodeLinkAction(payload: { nodeId: string; href: string }) {
   const href = payload.href.trim()
-  if (href === 'triton:packages' || href === 'triton://diagram/packages') {
+  let tritonUrl: URL | null = null
+  try {
+    tritonUrl = href.startsWith('triton://') ? new URL(href) : null
+  } catch {
+    tritonUrl = null
+  }
+  const projectId = tritonUrl?.searchParams.get('project')?.trim() ?? ''
+  if (href === 'triton:packages' || href === 'triton://diagram/packages' || tritonUrl?.pathname === '/packages') {
     const runtimeWs = activeRuntimeWorkspace.value
     if (runtimeWs) {
-      void openRuntimePackagesTab(runtimeWs.workspacePath, runtimeWs.workspaceName)
+      void openRuntimePackagesTab(runtimeWs.workspacePath, runtimeWs.workspaceName, projectId || undefined)
       return
     }
     const ex = activeExample.value
@@ -957,7 +1042,7 @@ function onNodeLinkAction(payload: { nodeId: string; href: string }) {
       status.value = 'Cannot open packages view — no sbt example loaded.'
       return
     }
-    void openScalaPackagesTab(ex.root, ex.dir)
+    void openScalaPackagesTab(ex.root, ex.dir, projectId || undefined)
     return
   }
   if (href === 'triton:sbt' || href === 'triton://diagram/sbt') {
