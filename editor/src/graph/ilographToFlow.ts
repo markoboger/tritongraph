@@ -419,29 +419,78 @@ export function ilographDocumentToFlow(
   }
 
   // Create cross-package artifact edges
+  // Collect all cross-package relations from all packages
+  const allCrossPackageRels: Array<{ from: string; to: string; label: string; fromPkgId: string; toPkgId: string }> = []
   packageNodes.forEach((pkgNode) => {
+    const innerArts = pkgNode.data.innerArtefacts
+    const localArtifactIds = new Set(Array.isArray(innerArts) ? innerArts.map((a: Record<string, unknown>) => String(a.id)) : [])
     const crossRels = pkgNode.data.crossArtefactRelations
     if (crossRels && crossRels.length) {
-      crossRels.forEach((rel: TritonInnerArtefactRelationSpec, relIndex: number) => {
-        const fromId = `${pkgNode.id}:${rel.from}`
-        const toId = `${pkgNode.id}:${rel.to}`
-        // Check if both endpoints are artifact nodes
-        const fromArtifact = artifactNodes.find((n) => n.id === fromId)
-        const toArtifact = artifactNodes.find((n) => n.id === toId)
-        if (fromArtifact && toArtifact) {
-          const edgeId = `cross-art-${pkgNode.id}-${relIndex}`
-          edges.push({
-            id: edgeId,
-            source: fromId,
-            target: toId,
-            label: rel.label,
-            type: 'smoothstep',
-            sourcePosition: Position.Right,
-            targetPosition: Position.Left,
-            style: dependencyEdgeStyle(DEP_EDGE_STROKE),
-            markerEnd: dependencyMarker(DEP_EDGE_STROKE),
-          })
+      crossRels.forEach((rel: TritonInnerArtefactRelationSpec) => {
+        if (!rel || typeof rel !== 'object') return
+        const from = typeof rel.from === 'string' ? rel.from : ''
+        const to = typeof rel.to === 'string' ? rel.to : ''
+        const label = typeof rel.label === 'string' ? rel.label : ''
+
+        // Check if from is local and to is foreign, or vice versa
+        const fromLocal = localArtifactIds.has(from)
+        const toLocal = localArtifactIds.has(to)
+
+        if (fromLocal && !toLocal) {
+          // from is in this package, to is in another package
+          allCrossPackageRels.push({ from, to, label, fromPkgId: pkgNode.id, toPkgId: '' })
+        } else if (!fromLocal && toLocal) {
+          // to is in this package, from is in another package
+          allCrossPackageRels.push({ from, to, label, fromPkgId: '', toPkgId: pkgNode.id })
         }
+      })
+    }
+  })
+
+  // Find the package ID for each foreign artifact endpoint
+  allCrossPackageRels.forEach((rel) => {
+    if (rel.fromPkgId === '') {
+      // Find the package that contains the 'from' artifact
+      for (const pkgNode of packageNodes) {
+        const innerArts = pkgNode.data.innerArtefacts
+        const localArtifactIds = new Set(Array.isArray(innerArts) ? innerArts.map((a: Record<string, unknown>) => String(a.id)) : [])
+        if (localArtifactIds.has(rel.from)) {
+          rel.fromPkgId = pkgNode.id
+          break
+        }
+      }
+    }
+    if (rel.toPkgId === '') {
+      // Find the package that contains the 'to' artifact
+      for (const pkgNode of packageNodes) {
+        const innerArts = pkgNode.data.innerArtefacts
+        const localArtifactIds = new Set(Array.isArray(innerArts) ? innerArts.map((a: Record<string, unknown>) => String(a.id)) : [])
+        if (localArtifactIds.has(rel.to)) {
+          rel.toPkgId = pkgNode.id
+          break
+        }
+      }
+    }
+  })
+
+  // Create edges for cross-package relations
+  allCrossPackageRels.forEach((rel, index) => {
+    const fromId = `${rel.fromPkgId}:${rel.from}`
+    const toId = `${rel.toPkgId}:${rel.to}`
+    const fromArtifact = artifactNodes.find((n) => n.id === fromId)
+    const toArtifact = artifactNodes.find((n) => n.id === toId)
+    if (fromArtifact && toArtifact) {
+      const edgeId = `cross-art-${index}`
+      edges.push({
+        id: edgeId,
+        source: fromId,
+        target: toId,
+        label: rel.label,
+        type: 'smoothstep',
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
+        style: dependencyEdgeStyle(DEP_EDGE_STROKE),
+        markerEnd: dependencyMarker(DEP_EDGE_STROKE),
       })
     }
   })
