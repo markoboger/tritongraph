@@ -756,6 +756,17 @@ async function applyLayerDrill(moduleId: string) {
       } as GraphNode
     }
 
+    /** Artifact nodes: show only when their parent package is visible and in the same region. */
+    if (n.type === 'artefact') {
+      const parentId = n.parentNode != null ? String(n.parentNode) : ''
+      const parentHidden = hiddenSiblingIds.has(parentId)
+      const parentInSameRegion = sameRegion && isLayerDrillBoxNode(nodes.find((x) => x.id === parentId))
+      return {
+        ...n,
+        hidden: parentHidden || !parentInSameRegion,
+      } as GraphNode
+    }
+
     if (!sameRegion || !isLayerDrillBoxNode(n)) {
       return { ...n, hidden: false } as GraphNode
     }
