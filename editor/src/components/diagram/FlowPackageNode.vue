@@ -346,13 +346,6 @@ function onLayoutUpdateRequest() {
   window.dispatchEvent(new Event('resize'))
 }
 
-/** Detect whether there are child artifact nodes (nodes with type 'artefact' and parentNode equal to this node's id). */
-const hasChildArtifactNodes = computed(() => {
-  const { getNodes } = useVueFlow()
-  const nodes = getNodes.value
-  return nodes.some((n) => n.type === 'artefact' && n.parentNode === props.id)
-})
-
 function refreshOwnNodeDimensions() {
   const el = rootEl.value?.parentElement as HTMLDivElement | null
   if (el) updateNodeDimensions([{ id: props.id, nodeElement: el, forceUpdate: true }])
@@ -461,7 +454,7 @@ watch(
             :focused-inner-artefact-id="data.innerArtefactFocusId"
             :inner-artefact-pinned="data.innerArtefactPinned"
             :inner-artefact-colors="data.innerArtefactColors"
-            :skip-inner-artifact-rendering="hasChildArtifactNodes"
+            :skip-inner-artifact-rendering="false"
             @toggle-pin="togglePin"
             @cycle-color="cycleColor"
             @rename="onRename"
