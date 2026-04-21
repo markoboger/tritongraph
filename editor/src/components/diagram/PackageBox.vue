@@ -153,6 +153,11 @@ const props = withDefaults(
      * Used to hide the focused chrome (pin tools, color tools) to avoid confusion.
      */
     crossPackageFocused?: boolean
+    /**
+     * When true, skip inner artifact rendering (artifact nodes are rendered as separate Vue Flow nodes).
+     * Used during the architectural refactoring to transition from inner diagram rendering to node-based rendering.
+     */
+    skipInnerArtifactRendering?: boolean
   }>(),
   {
     innerPackages: () => [],
@@ -164,6 +169,7 @@ const props = withDefaults(
     embedded: false,
     leafVisual: 'package',
     crossPackageFocused: false,
+    skipInnerArtifactRendering: false,
   },
 )
 
@@ -1208,7 +1214,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 
         <template v-if="!innerDrillPathArr.length">
           <div
-            v-if="innerArtefactLayerColumns.length || topLevelInnerPackages.length"
+            v-if="!skipInnerArtifactRendering && (innerArtefactLayerColumns.length || topLevelInnerPackages.length)"
             ref="innerArtefactDiagramRef"
             class="package-box__inner-artefact-diagram"
             :class="{ 'package-box__inner-artefact-diagram--artefact-focus': innerArtefactFocusActive }"
@@ -1757,7 +1763,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 
     <!-- Cross-package focus preview: show full inner diagram when a connected artefact elsewhere is focused -->
     <div
-      v-if="crossPackagePreviewActive && innerArtefactLayerColumns.length"
+      v-if="crossPackagePreviewActive && !skipInnerArtifactRendering && innerArtefactLayerColumns.length"
       ref="innerArtefactDiagramRef"
       class="package-box__inner-artefact-diagram nodrag nopan"
       @pointerdown.stop
