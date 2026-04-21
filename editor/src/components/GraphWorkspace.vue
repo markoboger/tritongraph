@@ -142,17 +142,6 @@ function computePackageRelationVisibleNodeIds(): Set<string> | null {
       }
     }
   }
-
-  // Include artifact nodes when their parent package is visible
-  for (const n of nodes.value) {
-    if (n.type === 'artefact') {
-      const parentId = n.parentNode != null ? String(n.parentNode) : ''
-      if (parentId && visible.has(parentId)) {
-        visible.add(String(n.id))
-      }
-    }
-  }
-
   return visible
 }
 

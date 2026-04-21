@@ -454,7 +454,6 @@ watch(
             :focused-inner-artefact-id="data.innerArtefactFocusId"
             :inner-artefact-pinned="data.innerArtefactPinned"
             :inner-artefact-colors="data.innerArtefactColors"
-            :skip-inner-artifact-rendering="false"
             @toggle-pin="togglePin"
             @cycle-color="cycleColor"
             @rename="onRename"
