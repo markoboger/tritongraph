@@ -376,6 +376,8 @@ export function ilographDocumentToFlow(
           target: toId,
           label: rel.label,
           type: 'smoothstep',
+          sourcePosition: Position.Right,
+          targetPosition: Position.Left,
           style: dependencyEdgeStyle(DEP_EDGE_STROKE),
           markerEnd: dependencyMarker(DEP_EDGE_STROKE),
         })
@@ -434,6 +436,8 @@ export function ilographDocumentToFlow(
             target: toId,
             label: rel.label,
             type: 'smoothstep',
+            sourcePosition: Position.Right,
+            targetPosition: Position.Left,
             style: dependencyEdgeStyle(DEP_EDGE_STROKE),
             markerEnd: dependencyMarker(DEP_EDGE_STROKE),
           })
