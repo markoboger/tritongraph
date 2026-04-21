@@ -380,7 +380,7 @@ const innerArtefactLayerColumns = computed((): string[][] => {
   const allIds = props.innerArtefacts.map((a) => a.id)
   const ids = filter ? allIds.filter((id) => filter.has(id)) : allIds
   if (!ids.length) return []
-  const rels = innerArtefactRelationList.value.filter((r) => r.label === 'extends' || r.label === 'with')
+  const rels = innerArtefactRelationList.value
   const filteredRels = filter ? rels.filter((r) => filter.has(r.from) && filter.has(r.to)) : rels
   if (!filteredRels.length) return [ids]
   return assignInnerArtefactLayers(ids, filteredRels)
@@ -449,6 +449,17 @@ function innerEdgeMarkerSuffix(kind: 'extends' | 'with' | 'gets' | 'creates'): s
 const innerArtefactFocusActive = computed(
   () => !!props.focusedInnerArtefactId && !innerDrillPathArr.value.length,
 )
+
+/**
+ * True when this box is unfocused (no layer drill) but a cross-package focus is active —
+ * i.e. another package has a focused artefact that is connected to artefacts in this package.
+ * Drives the compact artefact preview shown in the unfocused box.
+ */
+const crossPackagePreviewActive = computed(() => {
+  if (props.focused) return false
+  const ids = focusFilteredIds.value
+  return ids !== null && ids.size > 0
+})
 
 const emphasizedInnerEdgeDraws = computed(() => innerEdgeDraws.value.filter((draw) => innerEdgeEmphasized(draw)))
 const normalInnerEdgeDraws = computed(() => innerEdgeDraws.value.filter((draw) => !innerEdgeEmphasized(draw)))
@@ -1027,6 +1038,100 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
             :class="{ 'package-box__inner-artefact-diagram--artefact-focus': innerArtefactFocusActive }"
           >
             <!--
+              Base edge SVG comes first in DOM so it paints below the artefact cols.
+              Both the SVG and cols are at z-index: 0, so DOM order determines stacking.
+              The overlay SVG (z-index: 2) still renders above cols via explicit z-index.
+            -->
+            <svg
+              v-if="innerEdgeDraws.length"
+              class="package-box__inner-artefact-edges"
+              aria-hidden="true"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <defs>
+                <marker
+                  :id="`${innerEdgeMarkerId}-extends`"
+                  class="package-box__inner-edge-marker"
+                  markerWidth="14"
+                  markerHeight="14"
+                  refX="12"
+                  refY="6"
+                  orient="auto"
+                  markerUnits="userSpaceOnUse"
+                >
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--extends" />
+                </marker>
+                <marker
+                  :id="`${innerEdgeMarkerId}-hastrait`"
+                  class="package-box__inner-edge-marker"
+                  markerWidth="14"
+                  markerHeight="14"
+                  refX="12"
+                  refY="6"
+                  orient="auto"
+                  markerUnits="userSpaceOnUse"
+                >
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--hastrait" />
+                </marker>
+                <marker
+                  :id="`${innerEdgeMarkerId}-gets`"
+                  class="package-box__inner-edge-marker"
+                  markerWidth="14"
+                  markerHeight="14"
+                  refX="12"
+                  refY="6"
+                  orient="auto"
+                  markerUnits="userSpaceOnUse"
+                >
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--gets" />
+                </marker>
+                <marker
+                  :id="`${innerEdgeMarkerId}-creates`"
+                  class="package-box__inner-edge-marker"
+                  markerWidth="14"
+                  markerHeight="14"
+                  refX="12"
+                  refY="6"
+                  orient="auto"
+                  markerUnits="userSpaceOnUse"
+                >
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--creates" />
+                </marker>
+              </defs>
+              <g v-for="e in normalInnerEdgeDraws" :key="e.id" class="package-box__inner-edge-group">
+                <path
+                  :d="e.path"
+                  class="package-box__inner-edge-hit"
+                  fill="none"
+                  @mouseenter="onInnerEdgeEnter(e)"
+                  @mouseleave="onInnerEdgeLeave(e)"
+                />
+                <path
+                  :d="e.path"
+                  :class="[
+                    'package-box__inner-edge-path',
+                    { 'package-box__inner-edge-path--emph': innerEdgeEmphasized(e) },
+                    e.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
+                    e.kind === 'creates' ? 'package-box__inner-edge-path--creates' : null,
+                  ]"
+                  fill="none"
+                  :style="{ stroke: e.stroke }"
+                  :marker-end="`url(#${innerEdgeMarkerId}-${innerEdgeMarkerSuffix(e.kind)})`"
+                />
+                <text
+                  :x="e.labelX"
+                  :y="e.labelY - 15"
+                  class="package-box__inner-edge-label"
+                  :class="{ 'package-box__inner-edge-label--emph': innerEdgeEmphasized(e) }"
+                  :style="innerEdgeLabelSvgStyleFor(e)"
+                  text-anchor="middle"
+                  dominant-baseline="middle"
+                >
+                  {{ e.displayLabel }}
+                </text>
+              </g>
+            </svg>
+            <!--
               Focus inside an inheritance column: the focused column stretches to the full
               sub-diagram height and replaces its rows with a single ScalaArtefactBox card.
               Sibling artefacts in the same column are hidden (`v-if` skip) so the focus card
@@ -1151,95 +1256,6 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                 </template>
               </div>
             </div>
-            <svg
-              v-if="innerEdgeDraws.length"
-              class="package-box__inner-artefact-edges"
-              aria-hidden="true"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <defs>
-                <marker
-                  :id="`${innerEdgeMarkerId}-extends`"
-                  class="package-box__inner-edge-marker"
-                  markerWidth="14"
-                  markerHeight="14"
-                  refX="12"
-                  refY="6"
-                  orient="auto"
-                  markerUnits="userSpaceOnUse"
-                >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--extends" />
-                </marker>
-                <marker
-                  :id="`${innerEdgeMarkerId}-hastrait`"
-                  class="package-box__inner-edge-marker"
-                  markerWidth="14"
-                  markerHeight="14"
-                  refX="12"
-                  refY="6"
-                  orient="auto"
-                  markerUnits="userSpaceOnUse"
-                >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--hastrait" />
-                </marker>
-                <marker
-                  :id="`${innerEdgeMarkerId}-gets`"
-                  class="package-box__inner-edge-marker"
-                  markerWidth="14"
-                  markerHeight="14"
-                  refX="12"
-                  refY="6"
-                  orient="auto"
-                  markerUnits="userSpaceOnUse"
-                >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--gets" />
-                </marker>
-                <marker
-                  :id="`${innerEdgeMarkerId}-creates`"
-                  class="package-box__inner-edge-marker"
-                  markerWidth="14"
-                  markerHeight="14"
-                  refX="12"
-                  refY="6"
-                  orient="auto"
-                  markerUnits="userSpaceOnUse"
-                >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--creates" />
-                </marker>
-              </defs>
-              <g v-for="e in normalInnerEdgeDraws" :key="e.id" class="package-box__inner-edge-group">
-                <path
-                  :d="e.path"
-                  class="package-box__inner-edge-hit"
-                  fill="none"
-                  @mouseenter="onInnerEdgeEnter(e)"
-                  @mouseleave="onInnerEdgeLeave(e)"
-                />
-                <path
-                  :d="e.path"
-                  :class="[
-                    'package-box__inner-edge-path',
-                    { 'package-box__inner-edge-path--emph': innerEdgeEmphasized(e) },
-                    e.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
-                    e.kind === 'creates' ? 'package-box__inner-edge-path--creates' : null,
-                  ]"
-                  fill="none"
-                  :style="{ stroke: e.stroke }"
-                  :marker-end="`url(#${innerEdgeMarkerId}-${innerEdgeMarkerSuffix(e.kind)})`"
-                />
-                <text
-                  :x="e.labelX"
-                  :y="e.labelY - 15"
-                  class="package-box__inner-edge-label"
-                  :class="{ 'package-box__inner-edge-label--emph': innerEdgeEmphasized(e) }"
-                  :style="innerEdgeLabelSvgStyleFor(e)"
-                  text-anchor="middle"
-                  dominant-baseline="middle"
-                >
-                  {{ e.displayLabel }}
-                </text>
-              </g>
-            </svg>
             <svg class="package-box__inner-artefact-edges package-box__inner-artefact-edges--overlay" aria-hidden="true">
               <defs>
                 <marker
@@ -1428,6 +1444,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       'package-box--pin-only': showPinTool && !showColorTool,
       'package-box--editing': editing,
       'package-box--has-metrics': true,
+      'package-box--cross-preview': crossPackagePreviewActive,
     }"
     :style="{ '--box-accent': accent }"
   >
@@ -1505,6 +1522,97 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
         :title="description"
       >
         {{ description }}
+      </div>
+    </div>
+
+    <!-- Cross-package focus preview: compact artefact rows when a connected artefact elsewhere is focused -->
+    <div
+      v-if="crossPackagePreviewActive && innerArtefactLayerColumns.length"
+      ref="innerArtefactDiagramRef"
+      class="package-box__inner-artefact-diagram package-box__inner-artefact-diagram--cross-preview nodrag nopan"
+      @pointerdown.stop
+      @wheel.stop
+    >
+      <!-- SVG first so DOM order places it below the cols (both at z-index: 0). -->
+      <svg
+        v-if="innerEdgeDraws.length"
+        class="package-box__inner-artefact-edges"
+        aria-hidden="true"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <defs>
+          <marker :id="`${innerEdgeMarkerId}-xp-extends`" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+            <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--extends" />
+          </marker>
+          <marker :id="`${innerEdgeMarkerId}-xp-hastrait`" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+            <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--hastrait" />
+          </marker>
+          <marker :id="`${innerEdgeMarkerId}-xp-gets`" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+            <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--gets" />
+          </marker>
+          <marker :id="`${innerEdgeMarkerId}-xp-creates`" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+            <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--creates" />
+          </marker>
+        </defs>
+        <g v-for="e in innerEdgeDraws" :key="e.id">
+          <path
+            :d="e.path"
+            class="package-box__inner-edge-path"
+            fill="none"
+            :style="{ stroke: e.stroke }"
+            :marker-end="`url(#${innerEdgeMarkerId}-xp-${innerEdgeMarkerSuffix(e.kind)})`"
+          />
+          <text
+            :x="e.labelX"
+            :y="e.labelY - 15"
+            class="package-box__inner-edge-label"
+            :style="innerEdgeLabelSvgStyleFor(e)"
+            text-anchor="middle"
+            dominant-baseline="middle"
+          >{{ e.displayLabel }}</text>
+        </g>
+      </svg>
+      <div class="package-box__inner-artefact-cols">
+        <div
+          v-for="(col, ci) in innerArtefactLayerColumns"
+          :key="'col-' + ci"
+          class="package-box__inner-artefact-col"
+        >
+          <template v-for="artId in col" :key="artId">
+            <div
+              v-if="innerArtefactCell(artId)"
+              :ref="(el) => bindInnerArtefactSlotEl(artId, el)"
+              class="package-box__inner-slot package-box__inner-slot--artefact package-box__inner-slot--artefact-layer"
+              :style="{ '--box-accent': innerArtefactAccent(artId) }"
+            >
+              <div class="package-box__artefact-row">
+                <span
+                  class="package-box__artefact-anchor package-box__artefact-anchor--in"
+                  aria-hidden="true"
+                />
+                <span
+                  class="package-box__artefact-anchor package-box__artefact-anchor--out"
+                  aria-hidden="true"
+                />
+                <div class="lang-icon-slot lang-icon-slot--artefact">
+                  <img
+                    class="lang-svg"
+                    :src="scalaIconForKind(innerArtefactCell(artId)!.subtitle)"
+                    :alt="innerArtefactCell(artId)!.subtitle ?? ''"
+                    aria-hidden="true"
+                    decoding="async"
+                  />
+                </div>
+                <div class="package-box__artefact-text">
+                  <div class="package-box__artefact-title">{{ innerArtefactCell(artId)!.name }}</div>
+                  <div v-if="innerArtefactCell(artId)!.subtitle" class="package-box__artefact-subtitle">
+                    {{ innerArtefactCell(artId)!.subtitle }}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
       </div>
     </div>
 
@@ -1600,6 +1708,21 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 /** Layer-drill root may still animate chrome; default cards skip padding animation to avoid ResizeObserver ↔ measure loops. */
 .package-box:not(.package-box--focused-layout) {
   transition: box-shadow 0.45s ease, outline 0.45s ease;
+}
+
+/**
+ * Cross-package focus preview: the unfocused box grows to show connected artefacts.
+ * `height: auto` overrides the normal `height: 100%` so the node expands with content;
+ * `overflow: visible` lets the inner diagram spill out if the Vue Flow node allocation
+ * hasn't caught up yet.
+ */
+.package-box--cross-preview {
+  height: auto;
+  overflow: visible;
+}
+.package-box__inner-artefact-diagram--cross-preview {
+  margin-top: 8px;
+  flex: 0 0 auto;
 }
 
 /**
@@ -1957,17 +2080,16 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   height: 100%;
   pointer-events: none;
   /**
-   * Render inheritance / has-trait edges *under* the inner artefact rows so the boxes
-   * keep their "on top of the wiring" feel — matching how Vue Flow draws outer dependency
-   * edges below module/package nodes by default. The arrow heads still terminate at the
-   * row border, so the marker tip stays visible just outside each box.
-   * Pair with `.package-box__inner-artefact-cols { z-index: 1 }` so the cols sit above.
+   * Base edge SVG is placed *before* the cols in the DOM template so that with both at
+   * z-index: 0, DOM paint order makes the SVG render below the cols. This matches the
+   * "edges under artefact rows" feel without relying on a z-index difference that could
+   * interact badly with intermediate stacking contexts (container-type: size, overflow: auto).
    */
   z-index: 0;
   overflow: visible;
 }
 .package-box__inner-artefact-edges--overlay {
-  z-index: 2;
+  z-index: 1;
 }
 .package-box__inner-edge-hit {
   stroke: transparent;
@@ -2030,7 +2152,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .package-box__inner-artefact-cols {
   position: relative;
-  z-index: 1;
+  z-index: 0;
   display: flex;
   flex-direction: row;
   flex-wrap: nowrap;

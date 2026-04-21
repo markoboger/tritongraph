@@ -480,7 +480,10 @@ function innerArtefactRelationSpecsForNode(
     if (seenPair.has(pairKey)) continue
     seenPair.add(pairKey)
     const label: TritonInnerArtefactRelationSpec['label'] = e.kind === 'with' ? 'with' : 'extends'
-    out.push({ from: e.fromArtefactId, to: e.toArtefactId, label })
+    // UML convention: child (subtype) is the source, parent (supertype) is the target.
+    // fromArtefactId is the parent, toArtefactId is the child — swap so the arrow points
+    // from child toward parent (child LEFT, parent RIGHT in the LR column layout).
+    out.push({ from: e.toArtefactId, to: e.fromArtefactId, label })
   }
   for (const e of graph.gets) {
     if (!idSet.has(e.fromArtefactId) || !idSet.has(e.toArtefactId)) continue

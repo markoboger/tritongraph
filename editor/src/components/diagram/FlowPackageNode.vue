@@ -8,7 +8,7 @@
  * links yet — re-add the `tritonEmitLinkAction` injection here when that changes).
  */
 import { useVueFlow } from '@vue-flow/core'
-import { computed, inject, nextTick, watch } from 'vue'
+import { computed, inject, nextTick, ref, watch } from 'vue'
 import { boxColorForId, nextNamedBoxColor } from '../../graph/boxColors'
 import type { ModuleAnchorTops } from '../../graph/layoutDependencyLayers'
 import {
@@ -139,7 +139,8 @@ const innerDrillPathForBox = computed(() => {
   return Array.isArray(raw) ? raw.map(String) : []
 })
 
-const { updateNodeData, getNodes } = useVueFlow()
+const { updateNodeData, getNodes, updateNodeDimensions } = useVueFlow()
+const rootEl = ref<HTMLDivElement | null>(null)
 
 /**
  * The inner artefact ID that is currently focused in ANY package node. When non-null and
@@ -341,10 +342,20 @@ watch(
     updateNodeData(props.id, { innerDrillPath: [], innerArtefactFocusId: undefined })
   },
 )
+
+watch(
+  globalFocusedArtefactId,
+  async () => {
+    if (!crossArtefactRelationsForBox.value.length) return
+    await nextTick()
+    const el = rootEl.value?.parentElement as HTMLDivElement | null
+    if (el) updateNodeDimensions([{ id: props.id, nodeElement: el, forceUpdate: true }])
+  },
+)
 </script>
 
 <template>
-  <div class="flow-graph-node flow-graph-node--package">
+  <div ref="rootEl" class="flow-graph-node flow-graph-node--package">
     <div class="flow-graph-node__flip-outer" :style="layerFlipStyle">
       <div class="flow-graph-node__flip-counter" :style="layerFlipCounterStyle">
         <DiagramSection>

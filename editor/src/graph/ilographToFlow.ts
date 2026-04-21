@@ -144,7 +144,7 @@ function normalizeInnerArtefactRelationSpec(raw: unknown): TritonInnerArtefactRe
   if (typeof o.to !== 'string' || !o.to) return null
   /** Unknown labels fall back to `extends` so a hand-edited YAML with a typo still renders. */
   const label: TritonInnerArtefactRelationSpec['label'] =
-    o.label === 'with' ? 'with' : o.label === 'gets' ? 'gets' : 'extends'
+    o.label === 'with' ? 'with' : o.label === 'gets' ? 'gets' : o.label === 'creates' ? 'creates' : 'extends'
   const wrapperName = typeof o.wrapperName === 'string' ? o.wrapperName : undefined
   return { from: o.from, to: o.to, label, ...(wrapperName ? { wrapperName } : {}) }
 }

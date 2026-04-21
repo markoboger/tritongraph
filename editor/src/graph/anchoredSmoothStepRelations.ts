@@ -50,6 +50,15 @@ export function buildAnchoredSmoothStepRelationDraws(
   const outAnchorSelector = opts.outAnchorSelector ?? '.package-box__artefact-anchor--out'
   const borderRadius = opts.borderRadius ?? 8
 
+  /**
+   * Vue Flow applies a CSS transform (scale) to the canvas for zoom. `getBoundingClientRect()`
+   * returns visual/screen pixels (after scale), but the SVG coordinate system uses CSS layout
+   * pixels (before scale). We derive the scale factor from the ratio of the root element's
+   * clientWidth (layout px) to its screen width (getBoundingClientRect px) and apply it to all
+   * coordinate deltas so edge paths land exactly on the anchor dots at any zoom level.
+   */
+  const scale = rootRect.width > 0 ? root.clientWidth / rootRect.width : 1
+
   const draws: AnchoredRelationDraw[] = []
   for (const rel of opts.relations) {
     const fromEl = opts.slotEls.get(rel.from)
@@ -60,10 +69,10 @@ export function buildAnchoredSmoothStepRelationDraws(
     const tgtPt = anchoredSlotCenter(toEl, inAnchorSelector, 'left')
 
     const fwd = srcPt.x <= tgtPt.x
-    const sourceX = (fwd ? srcPt.x : tgtPt.x) - rootRect.left
-    const sourceY = (fwd ? srcPt.y : tgtPt.y) - rootRect.top
-    const targetX = (fwd ? tgtPt.x : srcPt.x) - rootRect.left
-    const targetY = (fwd ? tgtPt.y : srcPt.y) - rootRect.top
+    const sourceX = ((fwd ? srcPt.x : tgtPt.x) - rootRect.left) * scale
+    const sourceY = ((fwd ? srcPt.y : tgtPt.y) - rootRect.top) * scale
+    const targetX = ((fwd ? tgtPt.x : srcPt.x) - rootRect.left) * scale
+    const targetY = ((fwd ? tgtPt.y : srcPt.y) - rootRect.top) * scale
 
     const [path, labelX, labelY] = getSmoothStepPath({
       sourceX,
