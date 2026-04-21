@@ -623,6 +623,14 @@ const crossPackageBoundaryStubRelations = computed((): readonly BoundaryStubRela
   if (!props.focused && !crossPackagePreviewActive) return []
   if (!props.innerArtefacts.length) return []
 
+  // Debug: Log crossArtefactRelations data
+  console.log(`Package ${props.boxId}:`, {
+    focused: props.focused,
+    crossPackagePreviewActive: crossPackagePreviewActive.value,
+    innerArtefacts: props.innerArtefacts.map((a) => a.id),
+    crossArtefactRelations: props.crossArtefactRelations,
+  })
+
   const localArtefactIds = new Set(props.innerArtefacts.map((a) => a.id))
   const focusedLocalId = props.focusedInnerArtefactId ?? null
   const childPackageIds = props.innerPackages.map((p) => p.id)
