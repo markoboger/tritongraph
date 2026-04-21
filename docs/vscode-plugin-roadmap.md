@@ -91,6 +91,11 @@ The extraction target should be:
   - browser app only
   - consumes a stable JSON payload from `triton-core`
   - owns rendering and IDE deep-link generation
+- `triton-runtime`
+  - local and future cloud service boundary
+  - workspace action endpoints
+  - scan/test/coverage orchestration
+  - reusable localhost/CI/CD execution shape
 - `triton-vscode-extension`
   - detects workspace roots
   - launches or connects to the local Triton service
@@ -190,3 +195,47 @@ The next implementation step after this Phase 1 write-up is to separate reusable
 - local browser-first runtime now
 - VS Code/Cursor extension integration next
 - cloud execution later
+
+## Progress snapshot
+
+Implemented so far:
+
+- `triton-core` now owns shared sbt parsing, scoverage parsing, Scala package-graph building, and a stable Scala workspace payload
+- the browser app consumes that shared payload when seeding docs, specs, test blocks, and coverage
+- a browser-first VS Code/Cursor extension scaffold exists under `packages/triton-vscode-extension`
+- a `triton-runtime` package now exists as the first service-shaped boundary for localhost and future cloud execution
+- the extension can:
+  - start and stop a local Triton dev server when configured with a repo path
+  - start and stop a local `triton-runtime` process when configured with a repo path
+  - open Triton in the browser
+  - refresh the browser launch for the active workspace
+  - run workspace `sbt test` and coverage commands
+  - copy the Triton URL
+  - reveal/copy the base Triton server URL
+  - log the Triton URL and IDE callback URL
+  - receive URI callbacks and open source files in the IDE
+  - probe the current workspace for Scala/sbt markers
+  - use the internal simple browser in `auto` / `simple-browser` mode when available
+  - watch `.git/HEAD` and branch refs for opt-in commit-triggered refresh
+  - send workspace actions to `triton-runtime`, with direct shell fallback while the runtime remains partial
+- `triton-runtime` now exposes a workspace bundle endpoint that discovers:
+  - `build.sbt`
+  - Scala source files
+  - `sbt-test.log`
+  - the latest `target/scala-*/scoverage-report/scoverage.xml`
+- the browser app can now boot a live runtime-backed workspace tab when launched from the extension with `workspaceFolder` + `runtimeUrl`
+- runtime-backed sessions currently open the live sbt workspace first and can switch into the runtime-backed packages view inside the browser
+- runtime-backed browser sessions now expose in-place actions for:
+  - refresh
+  - `sbt test`
+  - coverage
+  and then reload the active runtime tab without depending on an extension-level browser reopen
+- the browser app now detects extension-provided `ideOpenUrl` callbacks and routes open-in-editor actions through the IDE
+- a local `.vsix` packaging path exists for manual installation/testing
+
+Most immediate next steps:
+
+1. Validate the install/open/click-back loop in live VS Code and Cursor sessions.
+2. Validate the new in-browser runtime refresh/test/coverage loop against a real Scala workspace in VS Code/Cursor.
+3. Replace repo-layout-dependent dev-server/runtime startup with a packaged runtime/server strategy.
+4. Validate whether `auto` should stay Cursor-first or become the default for all compatible IDE hosts.

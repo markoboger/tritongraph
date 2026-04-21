@@ -125,7 +125,7 @@ export interface ParsedScalaDefinition {
    * Empty for kinds without a primary constructor (`trait` with no parameter clause, `object`,
    * `def`, `val`, `var`, `type`, `given`). De-duplicated, source-ordered.
    */
-  paramTypeNames: string[]
+  paramTypeRefs: Array<{ name: string; wrapper?: string }>
   /**
    * Source text of the primary constructor parameter clauses for a `class` / `case class`,
    * preserving the author's parentheses — e.g. `"(variety: String, ripeness: Ripeness.Value)"`,
@@ -352,7 +352,7 @@ function collectTopLevel(packageNode: TSNode | null, rootNode: TSNode): ParsedSc
       startRow: c.startPosition.row,
       endRow: c.endPosition.row,
       parents: extractParents(c),
-      paramTypeNames: extractConstructorParamTypeNames(c),
+      paramTypeRefs: extractConstructorParamTypeRefs(c),
       constructorParams: extractConstructorParamsSource(c),
       modifiers: extractModifiers(c, kind),
       methodSignatures: extractMethodSignatures(c),
@@ -492,21 +492,36 @@ function extractModifiers(defNode: TSNode, _kind: string): string[] {
  *
  * De-duplicated, source order.
  */
-function extractConstructorParamTypeNames(defNode: TSNode): string[] {
+function extractConstructorParamTypeRefs(defNode: TSNode): Array<{ name: string; wrapper?: string }> {
   const header = headerTextOf(defNode)
   const paramsText = extractConstructorParamListsText(header)
   if (!paramsText) return []
   const seen = new Set<string>()
-  const out: string[] = []
+  const out: Array<{ name: string; wrapper?: string }> = []
   const re = /\b[A-Z][\w]*/g
   let m: RegExpExecArray | null
   while ((m = re.exec(paramsText)) !== null) {
     const name = m[0]
     if (seen.has(name)) continue
     seen.add(name)
-    out.push(name)
+    out.push({ name, wrapper: findImmediateWrapper(paramsText, m.index) })
   }
   return out
+}
+
+function findImmediateWrapper(text: string, pos: number): string | undefined {
+  let depth = 0
+  for (let i = pos - 1; i >= 0; i--) {
+    const ch = text[i]
+    if (ch === ']') { depth++; continue }
+    if (ch === '[') {
+      if (depth > 0) { depth--; continue }
+      const wm = /\b([A-Z][\w]*)$/.exec(text.slice(0, i).trimEnd())
+      return wm?.[1]
+    }
+    if (depth === 0 && (ch === ':' || ch === '(' || ch === ')')) break
+  }
+  return undefined
 }
 
 /**

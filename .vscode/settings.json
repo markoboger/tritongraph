@@ -1,5 +1,10 @@
 {
     "files.watcherExclude": {
         "**/target": true
-    }
+    },
+    "triton.localRepoPath": "/Users/markoboger/workspace/tritongraph",
+    "triton.autoStartServer": true,
+    "triton.autoStartRuntime": true,
+    "triton.openMode": "auto",
+    "triton.refreshAction": "reopen"
 }

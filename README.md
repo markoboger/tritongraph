@@ -24,6 +24,14 @@ Auto-layout uses **from** dependent **to** dependency in YAML. The canvas places
 
 The current direction is a browser-first Triton integration for VS Code and Cursor, with a local service now and cloud/webhook support later. The working product and architecture plan lives in [docs/vscode-plugin-roadmap.md](/Users/markoboger/workspace/tritongraph/docs/vscode-plugin-roadmap.md).
 
+## Runtime direction
+
+The repo now also contains a first `triton-runtime` scaffold under [packages/triton-runtime/README.md](/Users/markoboger/workspace/tritongraph/packages/triton-runtime/README.md). This is the intended bridge between:
+
+- local IDE integrations today
+- browser UI data loading
+- future CI/CD and cloud-hosted Triton execution
+
 ## Ilograph compatibility
 
 The YAML follows the Ilograph spec: top-level `resources` (tree via `children`) and `perspectives` with `relations` using `from` / `to` (dependent → depended-on), matching Ilograph relation semantics so you can open the same file in Ilograph as a backup viewer.

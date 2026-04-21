@@ -97,16 +97,17 @@ export type TritonInnerArtefactSpec = {
  *
  *   - `extends` — first parent of a class / trait / object (Scala `extends` keyword).
  *   - `with`    — stacked mixin parent (Scala `with` keyword), rendered as *has trait*.
- *   - `uses`    — the `from` artefact's primary constructor takes the `to` artefact as a
+ *   - `gets`    — the `from` artefact's primary constructor takes the `to` artefact as a
  *                 parameter, directly or through a generic wrapper like `Option[X]`. See
- *                 {@link ScalaUsesEdge} in `scalaPackagesToIlograph.ts` for the full resolution
+ *                 {@link ScalaGetsEdge} in `scalaPackagesToIlograph.ts` for the full resolution
  *                 rules. Does NOT contribute to column layering (parents still left, children
  *                 still right); it's an overlay on the inheritance layout.
  */
 export type TritonInnerArtefactRelationSpec = {
   from: string
   to: string
-  label: 'extends' | 'with' | 'uses'
+  label: 'extends' | 'with' | 'gets'
+  wrapperName?: string
 }
 
 export interface IlographResource {
@@ -140,6 +141,8 @@ export interface IlographResource {
    * for types declared in this same package so the inner diagram stays self-contained.
    */
   'x-triton-inner-artefact-relations'?: ReadonlyArray<TritonInnerArtefactRelationSpec>
+  /** Cross-package artefact edges: exactly one endpoint is in this package, the other is foreign. */
+  'x-triton-cross-artefact-relations'?: ReadonlyArray<TritonInnerArtefactRelationSpec>
   /**
    * Non-standard: this resource is the **outer Scala package scope** rendered as a Vue Flow
    * `group` — {@link GroupNode} uses it to show package-style chrome (folder + title) while

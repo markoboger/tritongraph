@@ -33,7 +33,7 @@ export type {
   ScalaPackageEdge,
   ScalaPackageGraph,
   ScalaPackageNode,
-  ScalaUsesEdge,
+  ScalaGetsEdge,
   SourceTextFile,
 } from './scalaPackageGraph'
 export type {

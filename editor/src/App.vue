@@ -31,6 +31,7 @@ import {
 import { drillNoteForModuleId } from './graph/sbtStyleDrillNotes'
 import { listSbtExamples, sbtExampleSourceToYaml } from './sbt/sbtExampleBuilds'
 import { parseBuildSbt } from './sbt/parseBuildSbt'
+import { sbtProjectsToIlographDocument } from './sbt/sbtProjectsToIlographDocument'
 import { getSbtTestLogFor } from './sbt/sbtTestLogLoader'
 import { parseSbtTestLog } from './sbt/parseSbtTestLog'
 import { getScoverageReportFor } from './sbt/scoverageReportLoader'
@@ -62,6 +63,32 @@ const perspectiveName = ref<string | undefined>('dependencies')
 const fileName = ref('diagram.ilograph.yaml')
 /** Repo-relative source path the diagram was generated from (sbt build, YAML file, …). Shown top-left on the canvas and embedded in the AI prompt for context. */
 const sourcePath = ref('')
+const runtimeQuery = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
+const runtimeWorkspaceSession = computed(() => {
+  const workspacePath = runtimeQuery?.get('workspaceFolder')?.trim() ?? ''
+  const rawRuntimeUrl = runtimeQuery?.get('runtimeUrl')?.trim() ?? ''
+  const runtimeUrl = rawRuntimeUrl.replace(/\/$/, '')
+  if (!workspacePath || !runtimeUrl) return null
+  const workspaceName =
+    runtimeQuery?.get('workspaceName')?.trim() ||
+    workspacePath.split(/[\\/]/).filter(Boolean).pop() ||
+    'workspace'
+  return {
+    workspacePath,
+    workspaceName,
+    runtimeUrl,
+  }
+})
+const ideSession = computed(() => {
+  const ideOpenUrl = runtimeQuery?.get('ideOpenUrl')?.trim() ?? ''
+  if (!ideOpenUrl) return null
+  return {
+    ideName: runtimeQuery?.get('ideName')?.trim() || 'IDE',
+    workspaceName: runtimeQuery?.get('workspaceName')?.trim() || '',
+    activeFile: runtimeQuery?.get('activeFile')?.trim() || '',
+    ideOpenUrl,
+  }
+})
 
 /** Project root for AI prompts (what to operate on): for sbt this is the directory containing build.sbt. */
 const projectRoot = computed(() => {
@@ -162,12 +189,65 @@ interface DiagramTab {
   edges: any[]
 }
 
+interface RuntimeWorkspaceBundle {
+  ok: boolean
+  workspacePath: string
+  workspaceName: string
+  buildSbt: { relPath: string; source: string } | null
+  scalaFiles: Array<{ relPath: string; source: string }>
+  testLog: { relPath: string; text: string } | null
+  coverageReport: { relPath: string; xml: string } | null
+}
+
+interface RuntimeWorkspaceActionResult {
+  ok: boolean
+  action?: string
+  stdout?: string
+  stderr?: string
+  note?: string
+}
+
 const tabs = ref<DiagramTab[]>([])
 const activeTabId = ref<string | null>(null)
 
 const activeTab = computed<DiagramTab | undefined>(() =>
   tabs.value.find((t) => t.id === activeTabId.value),
 )
+
+const activeRuntimeWorkspace = computed<{ workspacePath: string; workspaceName: string } | null>(() => {
+  const k = activeTab.value?.key ?? ''
+  const prefixes = ['runtime-sbt:', 'runtime-packages:']
+  for (const prefix of prefixes) {
+    if (k.startsWith(prefix)) {
+      const body = k.slice(prefix.length)
+      const cut = body.indexOf('::')
+      if (cut < 0) return { workspacePath: body, workspaceName: 'workspace' }
+      return {
+        workspacePath: body.slice(0, cut),
+        workspaceName: body.slice(cut + 2) || 'workspace',
+      }
+    }
+  }
+  return null
+})
+const runtimeActionBusy = ref<string>('')
+const runtimeEmptyStateMessage = computed(() => {
+  if (!activeRuntimeWorkspace.value || nodes.value.length) return ''
+  const text = status.value.trim()
+  if (!text) return ''
+  if (
+    text.startsWith('Failed to load runtime') ||
+    text.startsWith('No build.sbt found') ||
+    text.startsWith('No .scala files found') ||
+    text.startsWith('Loading ') ||
+    text.startsWith('Refreshing workspace') ||
+    text.startsWith('Running sbt test') ||
+    text.startsWith('Running coverage')
+  ) {
+    return text
+  }
+  return ''
+})
 
 /**
  * Workspace key drives every overlay-store row id. Mirrors the active tab's `key` (so
@@ -196,6 +276,9 @@ const activeExampleSelectionKey = computed<string>(() => {
 /** `(root, dir)` of the example backing the active tab; `null` for builtin / file uploads. */
 const activeExample = computed<{ root: string; dir: string } | null>(() => {
   const k = activeTab.value?.key ?? ''
+  if (k.startsWith('runtime-sbt:') || k.startsWith('runtime-packages:')) {
+    return { root: '', dir: '' }
+  }
   let body = ''
   if (k.startsWith('sbt:')) body = k.slice('sbt:'.length)
   else if (k.startsWith('packages:')) body = k.slice('packages:'.length)
@@ -353,6 +436,82 @@ function exampleOptionLabel(dir: string): string {
   return dir.replace(/-/g, ' ')
 }
 
+async function fetchRuntimeWorkspaceBundle(
+  workspacePath: string,
+  workspaceName: string,
+): Promise<RuntimeWorkspaceBundle> {
+  const session = runtimeWorkspaceSession.value
+  if (!session?.runtimeUrl) {
+    throw new Error('No runtime URL was supplied by the IDE session.')
+  }
+  const url = new URL(`${session.runtimeUrl}/api/workspace/bundle`)
+  url.searchParams.set('workspacePath', workspacePath)
+  const res = await fetch(url.toString(), { method: 'GET' })
+  if (!res.ok) {
+    throw new Error(`Runtime bundle request failed (${res.status}).`)
+  }
+  const body = (await res.json()) as Partial<RuntimeWorkspaceBundle>
+  return {
+    ok: body.ok === true,
+    workspacePath: String(body.workspacePath ?? workspacePath),
+    workspaceName: String(body.workspaceName ?? workspaceName),
+    buildSbt:
+      body.buildSbt && typeof body.buildSbt === 'object'
+        ? {
+            relPath: String(body.buildSbt.relPath ?? 'build.sbt'),
+            source: String(body.buildSbt.source ?? ''),
+          }
+        : null,
+    scalaFiles: Array.isArray(body.scalaFiles)
+      ? body.scalaFiles.map((f) => ({
+          relPath: String(f?.relPath ?? ''),
+          source: String(f?.source ?? ''),
+        }))
+      : [],
+    testLog:
+      body.testLog && typeof body.testLog === 'object'
+        ? {
+            relPath: String(body.testLog.relPath ?? 'sbt-test.log'),
+            text: String(body.testLog.text ?? ''),
+          }
+        : null,
+    coverageReport:
+      body.coverageReport && typeof body.coverageReport === 'object'
+        ? {
+            relPath: String(body.coverageReport.relPath ?? 'target/scoverage.xml'),
+            xml: String(body.coverageReport.xml ?? ''),
+          }
+        : null,
+  }
+}
+
+async function postRuntimeWorkspaceAction(
+  workspacePath: string,
+  action: 'refresh' | 'sbt-test' | 'sbt-coverage',
+): Promise<RuntimeWorkspaceActionResult> {
+  const session = runtimeWorkspaceSession.value
+  if (!session?.runtimeUrl) {
+    throw new Error('No runtime URL was supplied by the IDE session.')
+  }
+  const url = `${session.runtimeUrl}/api/workspace/action`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action, workspacePath }),
+  })
+  const body = (await res.json().catch(() => ({}))) as Partial<RuntimeWorkspaceActionResult>
+  if (!res.ok) {
+    throw new Error(String(body.stderr || body.note || `Runtime action failed (${res.status}).`))
+  }
+  return {
+    ok: body.ok === true,
+    action: typeof body.action === 'string' ? body.action : action,
+    stdout: typeof body.stdout === 'string' ? body.stdout : '',
+    stderr: typeof body.stderr === 'string' ? body.stderr : '',
+    note: typeof body.note === 'string' ? body.note : '',
+  }
+}
+
 async function selectExample(id: string) {
   if (examplesMenu.value) examplesMenu.value.open = false
   if (id === '__builtin__') {
@@ -474,6 +633,10 @@ async function openBuiltinTab(): Promise<void> {
   )
 }
 
+function runtimeTabKey(prefix: 'runtime-sbt' | 'runtime-packages', workspacePath: string, workspaceName: string): string {
+  return `${prefix}:${workspacePath}::${workspaceName}`
+}
+
 async function openSbtExampleTab(root: string, dir: string): Promise<void> {
   await openOrActivateTab(
     { key: `sbt:${root}/${dir}`, title: dir, iconUrl: sbtLogoUrl },
@@ -486,6 +649,40 @@ async function openScalaPackagesTab(root: string, dir: string): Promise<void> {
     { key: `packages:${root}/${dir}`, title: dir, iconUrl: cubeIconUrl },
     () => loadScalaPackagesForExample(root, dir),
   )
+}
+
+async function openRuntimeSbtTab(workspacePath: string, workspaceName: string): Promise<void> {
+  await openOrActivateTab(
+    {
+      key: runtimeTabKey('runtime-sbt', workspacePath, workspaceName),
+      title: workspaceName,
+      iconUrl: sbtLogoUrl,
+    },
+    () => loadSbtBuildForRuntimeWorkspace(workspacePath, workspaceName),
+  )
+}
+
+async function openRuntimePackagesTab(workspacePath: string, workspaceName: string): Promise<void> {
+  await openOrActivateTab(
+    {
+      key: runtimeTabKey('runtime-packages', workspacePath, workspaceName),
+      title: workspaceName,
+      iconUrl: cubeIconUrl,
+    },
+    () => loadScalaPackagesForRuntimeWorkspace(workspacePath, workspaceName),
+  )
+}
+
+async function reloadActiveRuntimeTab(): Promise<void> {
+  const runtimeWs = activeRuntimeWorkspace.value
+  if (!runtimeWs || !activeTab.value) return
+  const key = activeTab.value.key
+  if (key.startsWith('runtime-sbt:')) {
+    await loadSbtBuildForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName)
+  } else if (key.startsWith('runtime-packages:')) {
+    await loadScalaPackagesForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName)
+  }
+  snapshotActiveTab()
 }
 
 async function loadSbtBuildForExample(root: string, dir: string) {
@@ -519,6 +716,13 @@ function computeProjectsWithScalaSources(
   projects: ReadonlyArray<{ id: string; baseDir?: string }>,
 ): Set<string> {
   const files = listScalaSourcesIn(root, exampleDir)
+  return computeProjectsWithScalaSourceFiles(files, projects)
+}
+
+function computeProjectsWithScalaSourceFiles(
+  files: ReadonlyArray<{ relPath: string }>,
+  projects: ReadonlyArray<{ id: string; baseDir?: string }>,
+): Set<string> {
   if (!files.length) return new Set()
   const out = new Set<string>()
   for (const p of projects) {
@@ -613,6 +817,127 @@ async function loadScalaPackagesForExample(root: string, dir: string) {
   }
 }
 
+async function loadSbtBuildForRuntimeWorkspace(workspacePath: string, workspaceName: string) {
+  status.value = `Loading sbt workspace from ${workspaceName} via Triton runtime…`
+  try {
+    const bundle = await fetchRuntimeWorkspaceBundle(workspacePath, workspaceName)
+    if (!bundle.buildSbt?.source.trim()) {
+      sourcePath.value = `${workspacePath}/`
+      nodes.value = []
+      edges.value = []
+      yamlBaseline.value = yamlPreview.value
+      status.value = `No build.sbt found under ${workspacePath}.`
+      return
+    }
+    const projects = parseBuildSbt(bundle.buildSbt.source)
+    const projectsWithScalaSources = computeProjectsWithScalaSourceFiles(bundle.scalaFiles, projects)
+    const doc = sbtProjectsToIlographDocument(projects, {
+      title: `sbt build: ${workspaceName}`,
+      sourcePath: `${workspacePath}/build.sbt`,
+      projectsWithScalaSources,
+    })
+    sourcePath.value = `${workspacePath}/build.sbt`
+    await applyDoc(stringifyIlographYaml(doc), `${workspaceName}.runtime.ilograph.yaml`, false)
+    const linkable = projectsWithScalaSources.size
+    status.value = `Loaded runtime sbt workspace \`${workspaceName}\` → ${projects.length} project(s)${
+      linkable ? `, ${linkable} with Scala sources (click [packages] in subtitle to switch view)` : ''
+    }.`
+  } catch (err) {
+    status.value = `Failed to load runtime sbt workspace: ${(err as Error).message}`
+  }
+}
+
+async function loadScalaPackagesForRuntimeWorkspace(workspacePath: string, workspaceName: string) {
+  status.value = `Loading Scala workspace from ${workspaceName} via Triton runtime…`
+  try {
+    const bundle = await fetchRuntimeWorkspaceBundle(workspacePath, workspaceName)
+    const files = bundle.scalaFiles.map((f) => ({
+      root: '',
+      exampleDir: '',
+      relPath: f.relPath,
+      source: f.source,
+    }))
+    if (!files.length) {
+      sourcePath.value = `${workspacePath}/`
+      nodes.value = []
+      edges.value = []
+      yamlBaseline.value = yamlPreview.value
+      status.value = `No .scala files found under ${workspacePath}.`
+      return
+    }
+    status.value = `Parsing ${files.length} Scala file${files.length === 1 ? '' : 's'} from ${workspaceName}…`
+    const graph = await buildScalaPackageGraph(files)
+    const sourceLabel = `${workspacePath}/`
+    sourcePath.value = sourceLabel
+    const parsedTestLog = bundle.testLog?.text ? parseSbtTestLog(bundle.testLog.text) : undefined
+    const parsedCoverage = bundle.coverageReport?.xml ? parseScoverageXml(bundle.coverageReport.xml) : undefined
+    const ilographDoc = scalaPackageGraphToIlographDocument(graph, {
+      title: `Scala packages: ${workspaceName}`,
+      sourcePath: sourceLabel,
+    })
+    const payload = buildScalaWorkspacePayload({
+      sourcePath: sourceLabel,
+      title: `Scala packages: ${workspaceName}`,
+      graph,
+      ilographDocument: ilographDoc,
+      ...(parsedTestLog ? { parsedTestLog } : {}),
+      ...(parsedCoverage ? { parsedCoverage } : {}),
+    })
+    await whenOverlayStoreReady()
+    const ws = activeWorkspaceKey.value
+    if (ws) {
+      clearScalaDocsForWorkspace(ws)
+      clearScalaTestBlocksForWorkspace(ws)
+      clearScalaCoverageForWorkspace(ws)
+      clearScalaSpecsForWorkspace(ws)
+      for (const { id, doc } of payload.docs) setScalaDoc(ws, id, doc)
+      for (const block of payload.testBlocks) {
+        setScalaTestBlock(ws, block.id, {
+          suite: block.suite,
+          subject: block.subject,
+          blockText: block.blockText,
+        })
+      }
+      for (const entry of payload.specsByArtefact) setScalaSpecs(ws, entry.id, entry.specs)
+      for (const entry of payload.coverage) setScalaCoverage(ws, entry.id, entry.stmtPct)
+    }
+    const yaml = stringifyIlographYaml(payload.ilographDocument ?? ilographDoc)
+    await applyDoc(yaml, `${workspaceName}.packages.runtime.ilograph.yaml`, false, {
+      moduleNodeType: 'package',
+    })
+    status.value = `Loaded ${files.length} Scala file${files.length === 1 ? '' : 's'} from runtime workspace ${workspaceName}.`
+  } catch (err) {
+    status.value = `Failed to load runtime Scala workspace: ${(err as Error).message}`
+  }
+}
+
+async function runRuntimeWorkspaceAction(
+  action: 'refresh' | 'sbt-test' | 'sbt-coverage',
+  label: string,
+): Promise<void> {
+  const runtimeWs = activeRuntimeWorkspace.value
+  if (!runtimeWs) {
+    status.value = `Cannot ${label.toLowerCase()} — no runtime-backed workspace is active.`
+    return
+  }
+  runtimeActionBusy.value = action
+  status.value = `${label} for ${runtimeWs.workspaceName}…`
+  try {
+    const result = await postRuntimeWorkspaceAction(runtimeWs.workspacePath, action)
+    if (!result.ok) {
+      throw new Error(result.stderr || result.note || `${label} failed.`)
+    }
+    await reloadActiveRuntimeTab()
+    status.value = result.note?.trim()
+      ? `${label} completed — ${result.note.trim()}`
+      : `${label} completed for ${runtimeWs.workspaceName}.`
+  } catch (err) {
+    status.value = `${label} failed: ${(err as Error).message}`
+  } finally {
+    runtimeActionBusy.value = ''
+  }
+}
+
 /**
  * Internal `triton:` URL scheme used by markdown links inside project-box subtitles.
  * Examples: `triton:packages` (open/activate the packages tab for the current example),
@@ -622,6 +947,11 @@ async function loadScalaPackagesForExample(root: string, dir: string) {
 function onNodeLinkAction(payload: { nodeId: string; href: string }) {
   const href = payload.href.trim()
   if (href === 'triton:packages' || href === 'triton://diagram/packages') {
+    const runtimeWs = activeRuntimeWorkspace.value
+    if (runtimeWs) {
+      void openRuntimePackagesTab(runtimeWs.workspacePath, runtimeWs.workspaceName)
+      return
+    }
     const ex = activeExample.value
     if (!ex) {
       status.value = 'Cannot open packages view — no sbt example loaded.'
@@ -631,6 +961,11 @@ function onNodeLinkAction(payload: { nodeId: string; href: string }) {
     return
   }
   if (href === 'triton:sbt' || href === 'triton://diagram/sbt') {
+    const runtimeWs = activeRuntimeWorkspace.value
+    if (runtimeWs) {
+      void openRuntimeSbtTab(runtimeWs.workspacePath, runtimeWs.workspaceName)
+      return
+    }
     const ex = activeExample.value
     if (!ex) {
       status.value = 'Cannot open sbt view — no sbt example loaded.'
@@ -1035,6 +1370,15 @@ async function relayoutAfterPanelToggle() {
 
 onMounted(() => {
   window.addEventListener('resize', scheduleRelayoutFromResize)
+  if (ideSession.value) {
+    const workspaceLabel = ideSession.value.workspaceName ? ` (${ideSession.value.workspaceName})` : ''
+    status.value = `Connected to ${ideSession.value.ideName}${workspaceLabel} for open-in-editor links.`
+  }
+  const runtimeSession = runtimeWorkspaceSession.value
+  if (runtimeSession) {
+    void openRuntimeSbtTab(runtimeSession.workspacePath, runtimeSession.workspaceName)
+    return
+  }
   /**
    * Boot into the first bundled Scala example (currently `scala-examples/animal-fruit`)
    * because the Scala package + artefact diagram is the showcase view we iterate on most.
@@ -1059,6 +1403,36 @@ onUnmounted(() => {
   <div class="shell">
     <header class="toolbar">
       <div class="brand">TritonGraph</div>
+      <div v-if="ideSession" class="ide-session-chip" :title="ideSession.ideOpenUrl">
+        <span class="ide-session-chip__label">Connected to {{ ideSession.ideName }}</span>
+        <span v-if="ideSession.workspaceName" class="ide-session-chip__meta">{{ ideSession.workspaceName }}</span>
+      </div>
+      <div v-if="activeRuntimeWorkspace" class="runtime-actions">
+        <button
+          type="button"
+          class="btn"
+          :disabled="!!runtimeActionBusy"
+          @click="void runRuntimeWorkspaceAction('refresh', 'Refreshing workspace')"
+        >
+          {{ runtimeActionBusy === 'refresh' ? 'Refreshing…' : 'Refresh' }}
+        </button>
+        <button
+          type="button"
+          class="btn"
+          :disabled="!!runtimeActionBusy"
+          @click="void runRuntimeWorkspaceAction('sbt-test', 'Running sbt test')"
+        >
+          {{ runtimeActionBusy === 'sbt-test' ? 'Running tests…' : 'Run sbt test' }}
+        </button>
+        <button
+          type="button"
+          class="btn"
+          :disabled="!!runtimeActionBusy"
+          @click="void runRuntimeWorkspaceAction('sbt-coverage', 'Running coverage')"
+        >
+          {{ runtimeActionBusy === 'sbt-coverage' ? 'Running coverage…' : 'Run coverage' }}
+        </button>
+      </div>
       <details ref="examplesMenu" class="examples-menu">
         <summary class="btn menu-summary">Examples</summary>
         <div class="menu-panel" role="menu" aria-label="Example diagrams">
@@ -1191,6 +1565,23 @@ onUnmounted(() => {
           <img class="source-path-overlay__logo" :src="cubeIconUrl" alt="" aria-hidden="true" />
           <span class="source-path-overlay__text">{{ sourcePath }}</span>
         </div>
+        <div
+          v-if="ideSession"
+          class="ide-session-overlay"
+          :title="ideSession.activeFile ? `${ideSession.ideName} active file: ${ideSession.activeFile}` : `Opened from ${ideSession.ideName}`"
+        >
+          <span class="ide-session-overlay__title">IDE link active</span>
+          <span class="ide-session-overlay__meta">
+            {{ ideSession.ideName }}<template v-if="ideSession.activeFile"> · {{ ideSession.activeFile }}</template>
+          </span>
+        </div>
+        <div v-if="runtimeEmptyStateMessage" class="runtime-empty-state" role="status" aria-live="polite">
+          <div class="runtime-empty-state__title">Runtime Workspace Not Loaded</div>
+          <div class="runtime-empty-state__body">{{ runtimeEmptyStateMessage }}</div>
+          <div class="runtime-empty-state__hint">
+            Check that `triton-runtime` is running for this workspace, then use `Refresh`.
+          </div>
+        </div>
         <GraphWorkspace
           ref="graphRef"
           v-model:nodes="nodes"
@@ -1320,6 +1711,31 @@ onUnmounted(() => {
   margin-right: 8px;
   font-family: ui-sans-serif, system-ui, sans-serif;
 }
+.ide-session-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  line-height: 1;
+}
+.ide-session-chip__label {
+  font-weight: 700;
+}
+.ide-session-chip__meta {
+  color: #475569;
+}
+.runtime-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
 .btn {
   border: 1px solid #cbd5e1;
   background: #fff;
@@ -1330,6 +1746,40 @@ onUnmounted(() => {
 }
 .btn:hover {
   background: #f1f5f9;
+}
+.btn:disabled {
+  cursor: wait;
+  opacity: 0.7;
+  background: #f8fafc;
+}
+.runtime-empty-state {
+  position: absolute;
+  inset: 84px auto auto 50%;
+  transform: translateX(-50%);
+  z-index: 12;
+  width: min(640px, calc(100% - 48px));
+  padding: 16px 18px;
+  border: 1px solid #fbcfe8;
+  border-radius: 16px;
+  background: rgba(255, 247, 250, 0.96);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
+  color: #831843;
+  backdrop-filter: blur(10px);
+}
+.runtime-empty-state__title {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+.runtime-empty-state__body {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.runtime-empty-state__hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #9d174d;
 }
 /*
  * Browser-like tab strip — one tab per opened diagram. The active tab's payload lives in the
@@ -1529,6 +1979,35 @@ onUnmounted(() => {
   min-width: 0;
   height: 100%;
   position: relative;
+}
+.ide-session-overlay {
+  position: absolute;
+  top: 38px;
+  left: 12px;
+  z-index: 10;
+  pointer-events: none;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  max-width: calc(100% - 24px);
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  background: rgba(239, 246, 255, 0.92);
+  color: #1d4ed8;
+}
+.ide-session-overlay__title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.ide-session-overlay__meta {
+  font-size: 11px;
+  color: #475569;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .source-path-overlay {
   position: absolute;

@@ -101,6 +101,8 @@ const props = defineProps<{
     /** Scala members listed inside the focused box (no separate flow nodes). */
     innerArtefacts?: readonly InnerArtefactSummary[]
     innerArtefactRelations?: readonly InnerArtefactRelationSummary[]
+    /** Cross-package artefact edges: one endpoint in this package, the other in a different package. */
+    crossArtefactRelations?: readonly InnerArtefactRelationSummary[]
     /** Nested inner drill: ids from first-tier `innerPackages` downward (flow-only UI state). */
     innerDrillPath?: readonly string[]
     /** Which inner Scala artefact row is focused (flow-only; does not change layer drill). */
@@ -133,12 +135,30 @@ const innerArtefactRelationsForBox = computed(() => {
   return Array.isArray(raw) ? raw : []
 })
 
+const crossArtefactRelationsForBox = computed(() => {
+  const raw = props.data.crossArtefactRelations
+  return Array.isArray(raw) ? raw : []
+})
+
 const innerDrillPathForBox = computed(() => {
   const raw = props.data.innerDrillPath
   return Array.isArray(raw) ? raw.map(String) : []
 })
 
 const { updateNodeData, getNodes, getEdges } = useVueFlow()
+
+/**
+ * The inner artefact ID that is currently focused in ANY package node. When non-null and
+ * not owned by this node, PackageBox uses it together with `crossArtefactRelations` to
+ * filter its own inner artefacts to only those connected to the focused foreign artefact.
+ */
+const globalFocusedArtefactId = computed((): string | null => {
+  for (const n of getNodes.value) {
+    const fid = (n.data as Record<string, unknown>).innerArtefactFocusId
+    if (typeof fid === 'string' && fid) return fid
+  }
+  return null
+})
 
 /** Active workspace key (see `App.vue`) — empty string = no overlay-store writes. */
 const workspaceKey = inject<{ value: string } | undefined>('tritonWorkspaceKey', undefined)
@@ -437,6 +457,8 @@ watch(
             :inner-packages="innerPackagesForBox"
             :inner-artefacts="innerArtefactsForBox"
             :inner-artefact-relations="innerArtefactRelationsForBox"
+            :cross-artefact-relations="crossArtefactRelationsForBox"
+            :global-focused-artefact-id="globalFocusedArtefactId"
             :inner-drill-path="innerDrillPathForBox"
             :focused-inner-artefact-id="data.innerArtefactFocusId"
             :inner-artefact-pinned="data.innerArtefactPinned"

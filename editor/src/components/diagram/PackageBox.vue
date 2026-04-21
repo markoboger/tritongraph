@@ -27,7 +27,7 @@ import { dependencyEdgeLabelStyle } from '../../graph/edgeTheme'
 import {
   SCALA_EXTENDS_STROKE,
   SCALA_HAS_TRAIT_STROKE,
-  SCALA_USES_STROKE,
+  SCALA_GETS_STROKE,
 } from '../../graph/relationKinds'
 import { assignInnerArtefactLayers } from '../../graph/innerArtefactLayerLayout'
 import folderIconUrl from '../../assets/language-icons/folder.svg'
@@ -108,6 +108,14 @@ const props = withDefaults(
     innerArtefacts?: readonly InnerArtefactSummary[]
     /** Same-package `extends` / `with` (parent → child), from YAML / graph generation. */
     innerArtefactRelations?: readonly InnerArtefactRelationSummary[]
+    /** Cross-package artefact edges: one endpoint is in this package, the other is foreign. */
+    crossArtefactRelations?: readonly InnerArtefactRelationSummary[]
+    /**
+     * The inner artefact ID currently focused in any package node (may be foreign to this box).
+     * Used together with `crossArtefactRelations` to filter this box when another package's
+     * artefact is focused.
+     */
+    globalFocusedArtefactId?: string | null
     /**
      * Path of inner package ids from the first tier under this node (`innerPackages`) downward.
      * Scoped UI state: outer `layerDrillFocus` stays unchanged while this drills inside the box.
@@ -138,6 +146,8 @@ const props = withDefaults(
     innerPackages: () => [],
     innerArtefacts: () => [],
     innerArtefactRelations: () => [],
+    crossArtefactRelations: () => [],
+    globalFocusedArtefactId: null,
     innerDrillPath: () => [],
     embedded: false,
     leafVisual: 'package',
@@ -265,18 +275,78 @@ const innerArtefactById = computed(() => {
 })
 
 /**
+ * When focus is active, the subset of artefact IDs to show: the focused artefact itself,
+ * its direct neighbours (1 hop, either direction), and their neighbours (2 hops). All
+ * other artefacts are hidden so the diagram stays readable.
+ *
+ * Cross-package case: when the globally focused artefact lives in another package, this box
+ * uses `crossArtefactRelations` to find which of its own artefacts are connected to that
+ * foreign artefact, then shows those plus their same-package neighbours (1 hop).
+ *
+ * Returns `null` when no focus is active (show everything).
+ */
+const focusFilteredIds = computed((): Set<string> | null => {
+  const rels = innerArtefactRelationList.value
+  const localIds = new Set(props.innerArtefacts.map((a) => a.id))
+
+  // --- local focus: the focused artefact is in this package ---
+  if (innerArtefactFocusActive.value && props.focusedInnerArtefactId) {
+    const focusedId = props.focusedInnerArtefactId
+    const direct = new Set<string>([focusedId])
+    for (const rel of rels) {
+      if (rel.from === focusedId) direct.add(rel.to)
+      if (rel.to === focusedId) direct.add(rel.from)
+    }
+    const visible = new Set(direct)
+    for (const rel of rels) {
+      if (direct.has(rel.from)) visible.add(rel.to)
+      if (direct.has(rel.to)) visible.add(rel.from)
+    }
+    return visible
+  }
+
+  // --- cross-package focus: some other package has a focused artefact ---
+  const globalId = props.globalFocusedArtefactId
+  if (globalId && !localIds.has(globalId)) {
+    // Find local artefacts directly connected to the foreign focused artefact
+    const crossRels = props.crossArtefactRelations ?? []
+    const locallyConnected = new Set<string>()
+    for (const rel of crossRels) {
+      if (rel.from === globalId && localIds.has(rel.to)) locallyConnected.add(rel.to)
+      if (rel.to === globalId && localIds.has(rel.from)) locallyConnected.add(rel.from)
+    }
+    if (!locallyConnected.size) return new Set() // hide all artefacts — no cross-connection
+    // Expand by 1 hop within this package
+    const visible = new Set(locallyConnected)
+    for (const rel of rels) {
+      if (locallyConnected.has(rel.from)) visible.add(rel.to)
+      if (locallyConnected.has(rel.to)) visible.add(rel.from)
+    }
+    return visible
+  }
+
+  return null
+})
+
+/**
  * LR columns: abstract parents left → concrete subtypes right (see {@link assignInnerArtefactLayers}).
  *
- * Only inheritance-style relations (`extends`, `with`) shape the column layout. `uses` edges
- * are overlays on the same layout — routing them through the layering algorithm would push the
- * used artefact into a column to the right of its user, which misrepresents them as subtypes.
+ * All relation kinds (`extends`, `with`, `gets`) shape the column layout:
+ *   - Inheritance: parent (from) left → child (to) right.
+ *   - Gets: consumer (from, Bear) left → dependency (to, DietProfile) right.
+ *
+ * When focus is active only the filtered subset of artefacts and their connecting
+ * edges are passed to the layout algorithm.
  */
 const innerArtefactLayerColumns = computed((): string[][] => {
-  const ids = props.innerArtefacts.map((a) => a.id)
+  const filter = focusFilteredIds.value
+  const allIds = props.innerArtefacts.map((a) => a.id)
+  const ids = filter ? allIds.filter((id) => filter.has(id)) : allIds
   if (!ids.length) return []
-  const layoutEdges = innerArtefactRelationList.value.filter((r) => r.label !== 'uses')
-  if (!layoutEdges.length) return [ids]
-  return assignInnerArtefactLayers(ids, layoutEdges)
+  const rels = innerArtefactRelationList.value
+  const filteredRels = filter ? rels.filter((r) => filter.has(r.from) && filter.has(r.to)) : rels
+  if (!filteredRels.length) return [ids]
+  return assignInnerArtefactLayers(ids, filteredRels)
 })
 
 const innerEdgeMarkerId = computed(() =>
@@ -288,15 +358,15 @@ type InnerEdgeDraw = {
   path: string
   labelX: number
   labelY: number
-  /** YAML / graph value (`extends` | `with` | `uses`). */
+  /** YAML / graph value (`extends` | `with` | `gets`). */
   relationLabel: string
   displayLabel: string
   /**
    * Rendering bucket — drives stroke color, display label, and SVG marker selection. We keep
-   * `'with'` and `'extends'` distinct from `'uses'` (instead of collapsing the two inheritance
+   * `'with'` and `'extends'` distinct from `'gets'` (instead of collapsing the two inheritance
    * kinds) because the marker definitions are keyed on this value.
    */
-  kind: 'extends' | 'with' | 'uses'
+  kind: 'extends' | 'with' | 'gets'
   stroke: string
   from: string
   to: string
@@ -318,21 +388,21 @@ function innerEdgeLabelSvgStyleFor(draw: InnerEdgeDraw): Record<string, string> 
   }
 }
 
-function innerArtefactRelationStroke(label: string): { kind: 'extends' | 'with' | 'uses'; stroke: string } {
+function innerArtefactRelationStroke(label: string): { kind: 'extends' | 'with' | 'gets'; stroke: string } {
   if (label === 'with') return { kind: 'with', stroke: SCALA_HAS_TRAIT_STROKE }
-  if (label === 'uses') return { kind: 'uses', stroke: SCALA_USES_STROKE }
+  if (label === 'gets') return { kind: 'gets', stroke: SCALA_GETS_STROKE }
   return { kind: 'extends', stroke: SCALA_EXTENDS_STROKE }
 }
 
-function innerArtefactEdgeDisplayLabel(kind: 'extends' | 'with' | 'uses'): string {
+function innerArtefactEdgeDisplayLabel(kind: 'extends' | 'with' | 'gets', wrapperName?: string): string {
   if (kind === 'with') return 'has trait'
-  if (kind === 'uses') return 'uses'
+  if (kind === 'gets') return wrapperName ? `gets as ${wrapperName}` : 'gets'
   return 'extends'
 }
 
-function innerEdgeMarkerSuffix(kind: 'extends' | 'with' | 'uses'): string {
+function innerEdgeMarkerSuffix(kind: 'extends' | 'with' | 'gets'): string {
   if (kind === 'with') return 'hastrait'
-  if (kind === 'uses') return 'uses'
+  if (kind === 'gets') return 'gets'
   return 'extends'
 }
 
@@ -378,6 +448,22 @@ function bindInnerArtefactSlotEl(artId: string, el: unknown) {
   else innerArtefactSlotEls.delete(artId)
 }
 
+/**
+ * Returns the viewport center of the named anchor dot (`--in` or `--out`) inside a slot
+ * element, falling back to the slot's left/right edge mid-Y when the anchor isn't found.
+ * The anchor spans are positioned at the artefact-row's exact midpoint, which is correct
+ * even when the surrounding slot div is taller due to `align-self: stretch`.
+ */
+function innerAnchorCenter(slotEl: HTMLElement, side: '--in' | '--out'): { x: number; y: number } {
+  const anchor = slotEl.querySelector(`.package-box__artefact-anchor${side}`)
+  if (anchor) {
+    const r = anchor.getBoundingClientRect()
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+  }
+  const r = slotEl.getBoundingClientRect()
+  return { x: side === '--in' ? r.left : r.right, y: r.top + r.height / 2 }
+}
+
 function refreshInnerArtefactEdges() {
   const root = innerArtefactDiagramRef.value
   const rels = innerArtefactRelationList.value
@@ -396,20 +482,20 @@ function refreshInnerArtefactEdges() {
     const fromEl = innerArtefactSlotEls.get(rel.from)
     const toEl = innerArtefactSlotEls.get(rel.to)
     if (!fromEl || !toEl) continue
-    const a = fromEl.getBoundingClientRect()
-    const b = toEl.getBoundingClientRect()
-    /**
-     * Inheritance / has-trait edges always anchor on the **right** face of the source
-     * (parent) and the **left** face of the target (child) — same convention as outer
-     * `imports` / `depends on` edges. The column layout already places parents in left
-     * columns and children in right columns, so this gives a clean rightward smoothstep
-     * with the elbow landing in the inter-column gap, and the arrow head visibly meeting
-     * a horizontal anchor on each box (no top / bottom entry points).
-     */
-    const sourceX = a.right - rr.left
-    const sourceY = a.top + a.height / 2 - rr.top
-    const targetX = b.left - rr.left
-    const targetY = b.top + b.height / 2 - rr.top
+    // Use the dedicated anchor dots as connection points. The slot divs use
+    // align-self:stretch so their height may exceed the visible row — using
+    // the slot rect's mid-Y lands the edge in the wrong place. The anchor
+    // spans are absolutely positioned to the artefact-row's midpoint and
+    // exactly at its left/right edges, matching what the user sees.
+    const srcPt = innerAnchorCenter(fromEl, '--out')
+    const tgtPt = innerAnchorCenter(toEl, '--in')
+    // Always route left-to-right: swap when the source is geometrically to
+    // the right of the target (safety net for layout edge cases).
+    const fwd = srcPt.x <= tgtPt.x
+    const sourceX = (fwd ? srcPt.x : tgtPt.x) - rr.left
+    const sourceY = (fwd ? srcPt.y : tgtPt.y) - rr.top
+    const targetX = (fwd ? tgtPt.x : srcPt.x) - rr.left
+    const targetY = (fwd ? tgtPt.y : srcPt.y) - rr.top
     const [path, labelX, labelY] = getSmoothStepPath({
       sourceX,
       sourceY,
@@ -426,7 +512,7 @@ function refreshInnerArtefactEdges() {
       labelX,
       labelY,
       relationLabel: rel.label,
-      displayLabel: innerArtefactEdgeDisplayLabel(kind),
+      displayLabel: innerArtefactEdgeDisplayLabel(kind, rel.wrapperName),
       kind,
       stroke,
       from: rel.from,
@@ -987,7 +1073,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
             />
           </div>
           <div
-            v-if="innerArtefacts.length"
+            v-if="innerArtefactLayerColumns.length"
             ref="innerArtefactDiagramRef"
             class="package-box__inner-artefact-diagram"
             :class="{ 'package-box__inner-artefact-diagram--artefact-focus': innerArtefactFocusActive }"
@@ -1159,7 +1245,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                   <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--hastrait" />
                 </marker>
                 <marker
-                  :id="`${innerEdgeMarkerId}-uses`"
+                  :id="`${innerEdgeMarkerId}-gets`"
                   class="package-box__inner-edge-marker"
                   markerWidth="14"
                   markerHeight="14"
@@ -1168,7 +1254,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                   orient="auto"
                   markerUnits="userSpaceOnUse"
                 >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--uses" />
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--gets" />
                 </marker>
               </defs>
               <g v-for="e in innerEdgeDraws" :key="e.id" class="package-box__inner-edge-group">
@@ -1184,7 +1270,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                   :class="[
                     'package-box__inner-edge-path',
                     { 'package-box__inner-edge-path--emph': innerEdgeEmphasized(e) },
-                    e.kind === 'uses' ? 'package-box__inner-edge-path--uses' : null,
+                    e.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
                   ]"
                   fill="none"
                   :style="{ stroke: e.stroke }"
@@ -1856,15 +1942,15 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .package-box__inner-edge-marker-shape--hastrait {
   fill: #9333ea;
 }
-.package-box__inner-edge-marker-shape--uses {
+.package-box__inner-edge-marker-shape--gets {
   fill: #d97706;
 }
 /**
- * `uses` edges are dashed so they read as a structural reference rather than an inheritance
+ * `gets` edges are dashed so they read as a structural reference rather than an inheritance
  * relation — same arrow head as `extends`, but the dashed body makes the distinction obvious
  * even in grayscale / when hovered for emphasis.
  */
-.package-box__inner-edge-path--uses {
+.package-box__inner-edge-path--gets {
   stroke-dasharray: 5 3;
 }
 .package-box__inner-edge-label {

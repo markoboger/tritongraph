@@ -42,7 +42,7 @@ export interface ScalaArtefact {
    * Simple type names referenced from this artefact's primary constructor parameter list(s).
    * See {@link ParsedScalaDefinition.paramTypeNames}. Empty for kinds without a constructor.
    */
-  paramTypeNames: string[]
+  paramTypeRefs: Array<{ name: string; wrapper?: string }>
   /**
    * Source text of the primary constructor parameter clauses (with parens preserved, whitespace
    * collapsed). See {@link ParsedScalaDefinition.constructorParams}. Empty for objects / traits
@@ -102,17 +102,17 @@ export interface ScalaInheritanceEdge {
 
 /**
  * "Uses" relation: an artefact's primary constructor takes another known artefact as a parameter
- * (directly or as the inner type of a generic wrapper — see {@link resolveUsesEdges}).
+ * (directly or as the inner type of a generic wrapper — see {@link resolveGetsEdges}).
  * Rendered with its own stroke / marker so it reads as a structural reference rather than
- * inheritance. Directed `user → used` (consumer on the left face of the edge).
+ * inheritance. Directed `getter → dependency` (consumer on the left face of the edge).
  */
-export interface ScalaUsesEdge {
-  /** The class that declares the constructor parameter — the "user". */
+export interface ScalaGetsEdge {
+  /** The class that declares the constructor parameter — the "getter". */
   fromArtefactId: string
-  /** The artefact referenced by that parameter's type — the "used". */
+  /** The artefact referenced by that parameter's type — the dependency. */
   toArtefactId: string
-  /** Fixed to `'uses'` for now; kept as a discriminant field so future refinements (e.g. `uses-collection-of`) slot in without changing the edge type. */
-  kind: 'uses'
+  kind: 'gets'
+  wrapperName?: string
 }
 
 export interface ScalaPackageNode {
@@ -139,11 +139,11 @@ export interface ScalaPackageGraph {
   /** `extends` / `with` relations between artefacts (resolved by simple-name lookup). */
   inheritance: ScalaInheritanceEdge[]
   /**
-   * "Uses" relations inferred from primary-constructor parameter types — user → used. Unlike
+   * "Gets" relations inferred from primary-constructor parameter types — getter → dependency. Unlike
    * `inheritance`, these don't contribute to the inner artefact column layout (children still
    * land in the column right of their parents); they are purely overlays on the same layout.
    */
-  uses: ScalaUsesEdge[]
+  gets: ScalaGetsEdge[]
   /**
    * Top-level Scala artefacts discovered under `src/test/scala`.
    *
@@ -183,10 +183,10 @@ export async function buildScalaPackageGraph(
  * Self-uses (a class taking itself as a parameter — rare but legal, e.g. recursive ADTs) are
  * skipped to avoid a self-loop edge cluttering the diagram.
  */
-function resolveUsesEdges(
+function resolveGetsEdges(
   packages: readonly ScalaPackageNode[],
   summaries: readonly { file: LoadedScalaFile; summary: ScalaFileSummary }[],
-): ScalaUsesEdge[] {
+): ScalaGetsEdge[] {
   const artefactById = new Map<string, ScalaArtefact>()
   const bySimpleName = new Map<string, ScalaArtefact[]>()
   const byPackage = new Map<string, ScalaArtefact[]>()
@@ -202,7 +202,7 @@ function resolveUsesEdges(
   const summaryByFile = new Map<string, ScalaFileSummary>()
   for (const s of summaries) summaryByFile.set(s.file.relPath, s.summary)
 
-  const out: ScalaUsesEdge[] = []
+  const out: ScalaGetsEdge[] = []
   const seen = new Set<string>()
   for (const p of packages) {
     const samePackageArtefacts = byPackage.get(p.name) ?? []
@@ -210,8 +210,8 @@ function resolveUsesEdges(
       const userId = artefactResourceId(user.packageName, user)
       const summary = summaryByFile.get(user.file)
       const imports = summary?.imports ?? []
-      for (const rawName of user.paramTypeNames) {
-        const usedArt = resolveParentName(rawName, {
+      for (const ref of user.paramTypeRefs) {
+        const usedArt = resolveParentName(ref.name, {
           samePackageArtefacts,
           imports,
           bySimpleName,
@@ -223,7 +223,7 @@ function resolveUsesEdges(
         const key = `${userId}\u0001${usedId}`
         if (seen.has(key)) continue
         seen.add(key)
-        out.push({ fromArtefactId: userId, toArtefactId: usedId, kind: 'uses' })
+        out.push({ fromArtefactId: userId, toArtefactId: usedId, kind: 'gets', wrapperName: ref.wrapper })
       }
     }
   }
@@ -469,13 +469,53 @@ function innerArtefactRelationSpecsForNode(
     const label: TritonInnerArtefactRelationSpec['label'] = e.kind === 'with' ? 'with' : 'extends'
     out.push({ from: e.fromArtefactId, to: e.toArtefactId, label })
   }
-  for (const e of graph.uses) {
+  for (const e of graph.gets) {
     if (!idSet.has(e.fromArtefactId) || !idSet.has(e.toArtefactId)) continue
     const pairKey = `${e.fromArtefactId}\u0001${e.toArtefactId}`
     if (seenPair.has(pairKey)) continue
     seenPair.add(pairKey)
-    out.push({ from: e.fromArtefactId, to: e.toArtefactId, label: 'uses' })
+    out.push({ from: e.fromArtefactId, to: e.toArtefactId, label: 'gets', wrapperName: e.wrapperName })
   }
+  out.sort((a, b) => (a.to === b.to ? a.from.localeCompare(b.from) : a.to.localeCompare(b.to)))
+  return out
+}
+
+/**
+ * Cross-package artefact edges for a package node: edges from `graph` where exactly ONE
+ * endpoint is an artefact in this package and the other belongs to a different package.
+ * Used by PackageBox to filter its artefacts when a foreign artefact is globally focused.
+ */
+function crossPackageArtefactRelationSpecsForNode(
+  n: PackageTreeNode,
+  graph: ScalaPackageGraph,
+): TritonInnerArtefactRelationSpec[] {
+  const innerArts = innerArtefactSpecsForNode(n)
+  if (!innerArts.length) return []
+  const idSet = new Set(innerArts.map((a) => a.id))
+  const out: TritonInnerArtefactRelationSpec[] = []
+  const seenPair = new Set<string>()
+
+  for (const e of graph.inheritance) {
+    const fromLocal = idSet.has(e.fromArtefactId)
+    const toLocal = idSet.has(e.toArtefactId)
+    if (fromLocal === toLocal) continue
+    const pairKey = `${e.fromArtefactId}\u0001${e.toArtefactId}`
+    if (seenPair.has(pairKey)) continue
+    seenPair.add(pairKey)
+    const label: TritonInnerArtefactRelationSpec['label'] = e.kind === 'with' ? 'with' : 'extends'
+    out.push({ from: e.fromArtefactId, to: e.toArtefactId, label })
+  }
+
+  for (const e of graph.gets) {
+    const fromLocal = idSet.has(e.fromArtefactId)
+    const toLocal = idSet.has(e.toArtefactId)
+    if (fromLocal === toLocal) continue
+    const pairKey = `${e.fromArtefactId}\u0001${e.toArtefactId}`
+    if (seenPair.has(pairKey)) continue
+    seenPair.add(pairKey)
+    out.push({ from: e.fromArtefactId, to: e.toArtefactId, label: 'gets', wrapperName: e.wrapperName })
+  }
+
   out.sort((a, b) => (a.to === b.to ? a.from.localeCompare(b.from) : a.to.localeCompare(b.to)))
   return out
 }
@@ -533,6 +573,7 @@ function rootOnlyPackageLeafResource(node: PackageTreeNode, graph: ScalaPackageG
   const inner = rootInnerPackageSpecs(node)
   const innerArts = innerArtefactSpecsForNode(node)
   const innerRels = innerArtefactRelationSpecsForNode(node, graph)
+  const crossRels = crossPackageArtefactRelationSpecsForNode(node, graph)
   return {
     id: node.fqn || ROOT_PACKAGE,
     name,
@@ -540,6 +581,7 @@ function rootOnlyPackageLeafResource(node: PackageTreeNode, graph: ScalaPackageG
     ...(inner.length ? { 'x-triton-inner-packages': inner } : {}),
     ...(innerArts.length ? { 'x-triton-inner-artefacts': innerArts } : {}),
     ...(innerRels.length ? { 'x-triton-inner-artefact-relations': innerRels } : {}),
+    ...(crossRels.length ? { 'x-triton-cross-artefact-relations': crossRels } : {}),
   }
 }
 
@@ -585,6 +627,7 @@ function packageLeafResourceForGraph(n: PackageTreeNode, graph: ScalaPackageGrap
   const files = collectSubtreeFiles(c)
   const innerArts = innerArtefactSpecsForNode(c)
   const innerRels = innerArtefactRelationSpecsForNode(c, graph)
+  const crossRels = crossPackageArtefactRelationSpecsForNode(c, graph)
   return {
     id: c.fqn,
     name: c.segment || c.fqn,
@@ -592,6 +635,7 @@ function packageLeafResourceForGraph(n: PackageTreeNode, graph: ScalaPackageGrap
     'x-triton-node-type': 'package',
     ...(innerArts.length ? { 'x-triton-inner-artefacts': innerArts } : {}),
     ...(innerRels.length ? { 'x-triton-inner-artefact-relations': innerRels } : {}),
+    ...(crossRels.length ? { 'x-triton-cross-artefact-relations': crossRels } : {}),
   }
 }
 
@@ -735,7 +779,7 @@ function detectLanguageFromFilePaths(files: readonly string[]): string | undefin
  *
  * Artefact leaves use `x-triton-node-type: 'artefact'` so Vue Flow renders them via the
  * `ScalaArtefactBox` path in {@link FlowPackageNode}. Their id is the same `artefactResourceId`
- * used for inner-list entries, so {@link ScalaInheritanceEdge} / {@link ScalaUsesEdge}
+ * used for inner-list entries, so {@link ScalaInheritanceEdge} / {@link ScalaGetsEdge}
  * endpoints line up if we ever emit artefact-level relations at the scope level.
  */
 function scopeDirectArtefactLeafResources(scope: PackageTreeNode): IlographResource[] {

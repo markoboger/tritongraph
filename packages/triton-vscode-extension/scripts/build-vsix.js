@@ -33,6 +33,7 @@ function copyIntoStage(stageDir, relPath) {
 
 function manifestXml() {
   const readme = 'extension/README.md'
+  const installGuide = 'extension/INSTALL.md'
   return `<?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
   <Metadata>
@@ -47,6 +48,7 @@ function manifestXml() {
     </Properties>
     <Assets>
       <Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="${readme}" Addressable="true" />
+      <Asset Type="Microsoft.VisualStudio.Services.Content.Changelog" Path="${installGuide}" Addressable="true" />
       <Asset Type="Microsoft.VisualStudio.Services.VSIXPackage" Path="extension.vsixmanifest" Addressable="true" />
       <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />
     </Assets>
@@ -85,7 +87,7 @@ function main() {
   ensureDir(path.join(stageDir, 'extension'))
   ensureDir(outDir)
 
-  for (const relPath of ['package.json', 'README.md', path.join('src', 'extension.js')]) {
+  for (const relPath of ['package.json', 'README.md', 'INSTALL.md', path.join('src', 'extension.js')]) {
     copyIntoStage(stageDir, relPath)
   }
 

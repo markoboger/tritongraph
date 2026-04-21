@@ -143,8 +143,9 @@ function normalizeInnerArtefactRelationSpec(raw: unknown): TritonInnerArtefactRe
   if (typeof o.to !== 'string' || !o.to) return null
   /** Unknown labels fall back to `extends` so a hand-edited YAML with a typo still renders. */
   const label: TritonInnerArtefactRelationSpec['label'] =
-    o.label === 'with' ? 'with' : o.label === 'uses' ? 'uses' : 'extends'
-  return { from: o.from, to: o.to, label }
+    o.label === 'with' ? 'with' : o.label === 'gets' ? 'gets' : 'extends'
+  const wrapperName = typeof o.wrapperName === 'string' ? o.wrapperName : undefined
+  return { from: o.from, to: o.to, label, ...(wrapperName ? { wrapperName } : {}) }
 }
 
 export function ilographDocumentToFlow(
@@ -193,6 +194,13 @@ export function ilographDocumentToFlow(
             .map(normalizeInnerArtefactRelationSpec)
             .filter((x): x is TritonInnerArtefactRelationSpec => x !== null)
         : undefined
+    const crossRelsRaw = res['x-triton-cross-artefact-relations']
+    const crossArtefactRelations =
+      Array.isArray(crossRelsRaw) && crossRelsRaw.length
+        ? crossRelsRaw
+            .map(normalizeInnerArtefactRelationSpec)
+            .filter((x): x is TritonInnerArtefactRelationSpec => x !== null)
+        : undefined
     return {
       id,
       type: isGroup ? 'group' : leafType,
@@ -226,6 +234,7 @@ export function ilographDocumentToFlow(
         ...(innerPackages?.length ? { innerPackages } : {}),
         ...(innerArtefacts?.length ? { innerArtefacts } : {}),
         ...(innerArtefactRelations?.length ? { innerArtefactRelations } : {}),
+        ...(crossArtefactRelations?.length ? { crossArtefactRelations } : {}),
         ...(isGroup && res['x-triton-package-scope'] === true ? { packageScope: true } : {}),
         ...(isGroup && res['x-triton-package-scope'] === true && typeof res['x-triton-package-language'] === 'string'
           ? { language: res['x-triton-package-language'] }

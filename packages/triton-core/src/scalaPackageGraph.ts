@@ -22,7 +22,7 @@ export interface ParsedScalaDefinition {
   endRow: number
   modifiers: string[]
   parents: ParsedScalaParent[]
-  paramTypeNames: string[]
+  paramTypeRefs: Array<{ name: string; wrapper?: string }>
   constructorParams: string
   methodSignatures: ParsedScalaMethodSignature[]
   doc: string
@@ -46,7 +46,7 @@ export interface ScalaArtefact {
   startRow: number
   packageName: string
   parents: ParsedScalaParent[]
-  paramTypeNames: string[]
+  paramTypeRefs: Array<{ name: string; wrapper?: string }>
   constructorParams: string
   modifiers: string[]
   methodSignatures: ParsedScalaMethodSignature[]
@@ -60,10 +60,11 @@ export interface ScalaInheritanceEdge {
   kind: 'extends' | 'with'
 }
 
-export interface ScalaUsesEdge {
+export interface ScalaGetsEdge {
   fromArtefactId: string
   toArtefactId: string
-  kind: 'uses'
+  kind: 'gets'
+  wrapperName?: string
 }
 
 export interface ScalaPackageNode {
@@ -82,7 +83,7 @@ export interface ScalaPackageGraph {
   packages: ScalaPackageNode[]
   edges: ScalaPackageEdge[]
   inheritance: ScalaInheritanceEdge[]
-  uses: ScalaUsesEdge[]
+  gets: ScalaGetsEdge[]
   testArtefacts: ScalaArtefact[]
 }
 
@@ -136,7 +137,7 @@ function artefactFromDefinition(file: SourceTextFile, pkg: string, def: ParsedSc
     startRow: def.startRow,
     packageName: pkg,
     parents: def.parents,
-    paramTypeNames: def.paramTypeNames ?? [],
+    paramTypeRefs: def.paramTypeRefs ?? [],
     constructorParams: def.constructorParams ?? '',
     modifiers,
     methodSignatures: def.methodSignatures ?? [],
@@ -193,7 +194,7 @@ export function buildScalaPackageGraphFromSummaries(
     .sort((a, b) => (a.from === b.from ? a.to.localeCompare(b.to) : a.from.localeCompare(b.from)))
 
   const inheritance = resolveInheritanceEdges(packages, mainSummaries)
-  const uses = resolveUsesEdges(packages, mainSummaries)
+  const gets = resolveGetsEdges(packages, mainSummaries)
 
   const testArtefacts: ScalaArtefact[] = []
   for (const { file, summary } of testSummaries) {
@@ -204,7 +205,7 @@ export function buildScalaPackageGraphFromSummaries(
     }
   }
 
-  return { packages, edges, inheritance, uses, testArtefacts }
+  return { packages, edges, inheritance, gets, testArtefacts }
 }
 
 function resolveInheritanceEdges(
@@ -259,10 +260,10 @@ function resolveInheritanceEdges(
   return out
 }
 
-function resolveUsesEdges(
+function resolveGetsEdges(
   packages: readonly ScalaPackageNode[],
   summaries: readonly { file: SourceTextFile; summary: ScalaFileSummary }[],
-): ScalaUsesEdge[] {
+): ScalaGetsEdge[] {
   const artefactById = new Map<string, ScalaArtefact>()
   const bySimpleName = new Map<string, ScalaArtefact[]>()
   const byPackage = new Map<string, ScalaArtefact[]>()
@@ -278,7 +279,7 @@ function resolveUsesEdges(
   const summaryByFile = new Map<string, ScalaFileSummary>()
   for (const s of summaries) summaryByFile.set(s.file.relPath, s.summary)
 
-  const out: ScalaUsesEdge[] = []
+  const out: ScalaGetsEdge[] = []
   const seen = new Set<string>()
   for (const p of packages) {
     const samePackageArtefacts = byPackage.get(p.name) ?? []
@@ -286,8 +287,8 @@ function resolveUsesEdges(
       const userId = artefactResourceId(user.packageName, user)
       const summary = summaryByFile.get(user.file)
       const imports = summary?.imports ?? []
-      for (const rawName of user.paramTypeNames) {
-        const usedArt = resolveParentName(rawName, {
+      for (const ref of user.paramTypeRefs) {
+        const usedArt = resolveParentName(ref.name, {
           samePackageArtefacts,
           imports,
           bySimpleName,
@@ -299,7 +300,7 @@ function resolveUsesEdges(
         const key = `${userId}\u0001${usedId}`
         if (seen.has(key)) continue
         seen.add(key)
-        out.push({ fromArtefactId: userId, toArtefactId: usedId, kind: 'uses' })
+        out.push({ fromArtefactId: userId, toArtefactId: usedId, kind: 'gets', wrapperName: ref.wrapper })
       }
     }
   }

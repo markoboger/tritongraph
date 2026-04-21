@@ -16,8 +16,17 @@
     "Other"
   ],
   "activationEvents": [
+    "onUri",
     "onCommand:triton.openDiagram",
+    "onCommand:triton.startServer",
+    "onCommand:triton.stopServer",
+    "onCommand:triton.startRuntime",
+    "onCommand:triton.stopRuntime",
+    "onCommand:triton.refreshDiagram",
+    "onCommand:triton.runSbtTest",
+    "onCommand:triton.runCoverageReport",
     "onCommand:triton.copyDiagramUrl",
+    "onCommand:triton.showServerUrl",
     "onCommand:triton.showOutput",
     "onUri"
   ],
@@ -35,6 +44,46 @@
         "category": "Triton"
       },
       {
+        "command": "triton.startServer",
+        "title": "Triton: Start Local Server",
+        "category": "Triton"
+      },
+      {
+        "command": "triton.stopServer",
+        "title": "Triton: Stop Local Server",
+        "category": "Triton"
+      },
+      {
+        "command": "triton.startRuntime",
+        "title": "Triton: Start Runtime",
+        "category": "Triton"
+      },
+      {
+        "command": "triton.stopRuntime",
+        "title": "Triton: Stop Runtime",
+        "category": "Triton"
+      },
+      {
+        "command": "triton.refreshDiagram",
+        "title": "Triton: Refresh Diagram",
+        "category": "Triton"
+      },
+      {
+        "command": "triton.runSbtTest",
+        "title": "Triton: Run sbt test",
+        "category": "Triton"
+      },
+      {
+        "command": "triton.runCoverageReport",
+        "title": "Triton: Run coverageReport",
+        "category": "Triton"
+      },
+      {
+        "command": "triton.showServerUrl",
+        "title": "Triton: Show Server URL",
+        "category": "Triton"
+      },
+      {
         "command": "triton.showOutput",
         "title": "Triton: Show Output",
         "category": "Triton"
@@ -48,19 +97,71 @@
           "default": "http://127.0.0.1:5173",
           "description": "Base URL of the local Triton browser app."
         },
+        "triton.localRepoPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional local path to a Triton repo checkout. When set, the extension can start the editor dev server from <repo>/editor."
+        },
+        "triton.runtimeUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:4317",
+          "description": "Base URL of the local Triton runtime service."
+        },
+        "triton.autoStartServer": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, Triton will try to start the local editor dev server if the configured server URL is not reachable."
+        },
+        "triton.autoStartRuntime": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, Triton will try to start the local runtime service if the configured runtime URL is not reachable."
+        },
+        "triton.refreshAction": {
+          "type": "string",
+          "enum": [
+            "reopen",
+            "sbt-test",
+            "sbt-coverage"
+          ],
+          "default": "reopen",
+          "description": "What `Triton: Refresh Diagram` should do before reopening Triton."
+        },
         "triton.openMode": {
           "type": "string",
           "enum": [
             "external",
-            "copy"
+            "copy",
+            "simple-browser",
+            "auto"
           ],
-          "default": "external",
+          "default": "auto",
           "description": "How Triton opens the browser-based diagram."
         },
         "triton.logLinksInOutput": {
           "type": "boolean",
           "default": true,
           "description": "Print the generated Triton URL and IDE callback URL in the Triton output channel."
+        },
+        "triton.refreshOnCommit": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, refresh Triton after Git HEAD changes in the workspace."
+        },
+        "triton.sbtExecutable": {
+          "type": "string",
+          "default": "sbt",
+          "description": "Executable used for sbt commands."
+        },
+        "triton.sbtTestCommand": {
+          "type": "string",
+          "default": "test",
+          "description": "Command text passed to sbt when running `Triton: Run sbt test`."
+        },
+        "triton.sbtCoverageCommand": {
+          "type": "string",
+          "default": "coverage; test; coverageReport",
+          "description": "Command text passed to sbt when running `Triton: Run coverageReport`."
         }
       }
     }
