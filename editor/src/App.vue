@@ -3,6 +3,7 @@ import { Position, type NodeTypesObject } from '@vue-flow/core'
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import FlowProjectNode from './components/diagram/FlowProjectNode.vue'
 import FlowPackageNode from './components/diagram/FlowPackageNode.vue'
+import FlowArtifactNode from './components/diagram/FlowArtifactNode.vue'
 import GroupNode from './components/GroupNode.vue'
 import GraphWorkspace from './components/GraphWorkspace.vue'
 import DiagramTopBar from './components/common/DiagramTopBar.vue'
@@ -351,7 +352,7 @@ provide('tritonMetricVisibility', metricVisibility)
 const nodeTypes = {
   module: FlowProjectNode,
   package: FlowPackageNode,
-  artefact: FlowPackageNode,
+  artefact: FlowArtifactNode,
   group: GroupNode,
 } as NodeTypesObject
 

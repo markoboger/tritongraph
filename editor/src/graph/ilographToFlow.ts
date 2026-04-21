@@ -10,7 +10,7 @@ import type { BoxCompartment, BoxCompartmentRow } from '../diagram/boxCompartmen
 import { resourceKey, splitRefs } from '../ilograph/refs'
 import { boxColorForId, isNamedBoxColor } from './boxColors'
 import { languageIconForId } from './languages'
-import { dependencyEdgeLabelStyle, dependencyEdgeStyle, markersForAggregateEdge, markersForRelation } from './edgeTheme'
+import { dependencyEdgeLabelStyle, dependencyEdgeStyle, dependencyMarker, DEP_EDGE_STROKE, markersForAggregateEdge, markersForRelation } from './edgeTheme'
 import { isAggregateEdge, strokeForIlographRelation } from './relationKinds'
 import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE } from './handles'
 import { drillNoteForModuleId } from './sbtStyleDrillNotes'
@@ -68,8 +68,8 @@ function normalizeInnerPackageSpec(raw: unknown): TritonInnerPackageSpec | null 
   const innerNested =
     Array.isArray(nestedRaw) && nestedRaw.length
       ? nestedRaw
-          .map(normalizeInnerPackageSpec)
-          .filter((x): x is TritonInnerPackageSpec => x !== null)
+        .map(normalizeInnerPackageSpec)
+        .filter((x): x is TritonInnerPackageSpec => x !== null)
       : []
   return {
     id: o.id,
@@ -189,7 +189,11 @@ export function ilographDocumentToFlow(
   const pinnedIds = new Set(editor?.pinnedModuleIds ?? [])
 
   const moduleType = options.moduleNodeType ?? 'module'
-  const nodes: any[] = flat.map(({ res, parentId }, i) => {
+  const packageNodes: any[] = []
+  const artifactNodes: any[] = []
+  const innerArtifactEdges: any[] = []
+
+  flat.forEach(({ res, parentId }, i) => {
     const id = resourceKey(res)
     const pos = saved?.[id] ?? defaultPosition(i)
     const isGroup = flat.some((x) => x.parentId === id)
@@ -218,22 +222,22 @@ export function ilographDocumentToFlow(
     const innerArtefactRelations =
       Array.isArray(innerRelsRaw) && innerRelsRaw.length
         ? innerRelsRaw
-            .map(normalizeInnerArtefactRelationSpec)
-            .filter((x): x is TritonInnerArtefactRelationSpec => x !== null)
+          .map(normalizeInnerArtefactRelationSpec)
+          .filter((x): x is TritonInnerArtefactRelationSpec => x !== null)
         : undefined
     const crossRelsRaw = res['x-triton-cross-artefact-relations']
     const crossArtefactRelations =
       Array.isArray(crossRelsRaw) && crossRelsRaw.length
         ? crossRelsRaw
-            .map(normalizeInnerArtefactRelationSpec)
-            .filter((x): x is TritonInnerArtefactRelationSpec => x !== null)
+          .map(normalizeInnerArtefactRelationSpec)
+          .filter((x): x is TritonInnerArtefactRelationSpec => x !== null)
         : undefined
     const projectCompartmentsRaw = res['x-triton-project-compartments']
     const projectCompartments =
       Array.isArray(projectCompartmentsRaw) && projectCompartmentsRaw.length
         ? projectCompartmentsRaw
-            .map(normalizeBoxCompartment)
-            .filter((x): x is BoxCompartment => x !== null)
+          .map(normalizeBoxCompartment)
+          .filter((x): x is BoxCompartment => x !== null)
         : undefined
     const preferredFocusWidth =
       projectCompartments?.length
@@ -244,8 +248,10 @@ export function ilographDocumentToFlow(
             ? 560
             : innerPackages?.length
               ? 460
-            : undefined
-    return {
+              : undefined
+
+    // Create package node
+    const packageNode = {
       id,
       type: isGroup ? 'group' : leafType,
       position: pos,
@@ -259,7 +265,7 @@ export function ilographDocumentToFlow(
           ? { declaration: String(res['x-triton-declaration']) }
           : {}),
         ...(typeof res['x-triton-constructor-params'] === 'string' &&
-        res['x-triton-constructor-params'].trim()
+          res['x-triton-constructor-params'].trim()
           ? { constructorParams: String(res['x-triton-constructor-params']) }
           : {}),
         ...(() => {
@@ -296,10 +302,66 @@ export function ilographDocumentToFlow(
       extent: parentId ? ('parent' as const) : undefined,
       expandParent: !!parentId,
     }
+    packageNodes.push(packageNode)
+
+    // Create artifact nodes for inner artefacts (if this is a package node)
+    if (innerArtefacts && innerArtefacts.length && !isGroup) {
+      innerArtefacts.forEach((art, artIndex) => {
+        const artifactId = `${id}:${art.id}`
+        const artifactColor = boxColorForId(artifactId)
+        artifactNodes.push({
+          id: artifactId,
+          type: 'artefact',
+          position: { x: 20, y: 60 + artIndex * 40 },
+          sourcePosition: Position.Left,
+          targetPosition: Position.Right,
+          data: {
+            id: artifactId,
+            name: art.name,
+            subtitle: art.subtitle,
+            accent: artifactColor,
+            pinned: false,
+            showPinTool: true,
+            showColorTool: true,
+            canOpenInEditor: !!art.sourceFile,
+            focused: false,
+            innerArtefactFocusActive: false,
+            coveragePercent: null,
+            technicalDebtPercent: 0,
+            issueCount: 0,
+            issueLevel: 'none',
+            declaration: art.declaration,
+            constructorParams: art.constructorParams,
+            methodSignatures: art.methodSignatures,
+          },
+          parentNode: id,
+          extent: 'parent' as const,
+          expandParent: true,
+        })
+      })
+    }
+
+    // Create edges for inner artefact relations
+    if (innerArtefactRelations && innerArtefactRelations.length && innerArtefacts) {
+      innerArtefactRelations.forEach((rel, relIndex) => {
+        const fromId = `${id}:${rel.from}`
+        const toId = `${id}:${rel.to}`
+        const edgeId = `inner-art-${id}-${relIndex}`
+        innerArtifactEdges.push({
+          id: edgeId,
+          source: fromId,
+          target: toId,
+          label: rel.label,
+          type: 'smoothstep',
+          style: dependencyEdgeStyle(DEP_EDGE_STROKE),
+          markerEnd: dependencyMarker(DEP_EDGE_STROKE),
+        })
+      })
+    }
   })
 
   const perspective = pickDependencyPerspective(doc)
-  const edges: any[] = []
+  const edges: any[] = [...innerArtifactEdges]
   let e = 0
   if (perspective?.relations) {
     for (const rel of perspective.relations) {
@@ -330,6 +392,34 @@ export function ilographDocumentToFlow(
       }
     }
   }
+
+  // Create cross-package artifact edges
+  packageNodes.forEach((pkgNode) => {
+    const crossRels = pkgNode.data.crossArtefactRelations
+    if (crossRels && crossRels.length) {
+      crossRels.forEach((rel: TritonInnerArtefactRelationSpec, relIndex: number) => {
+        const fromId = `${pkgNode.id}:${rel.from}`
+        const toId = `${pkgNode.id}:${rel.to}`
+        // Check if both endpoints are artifact nodes
+        const fromArtifact = artifactNodes.find((n) => n.id === fromId)
+        const toArtifact = artifactNodes.find((n) => n.id === toId)
+        if (fromArtifact && toArtifact) {
+          const edgeId = `cross-art-${pkgNode.id}-${relIndex}`
+          edges.push({
+            id: edgeId,
+            source: fromId,
+            target: toId,
+            label: rel.label,
+            type: 'smoothstep',
+            style: dependencyEdgeStyle(DEP_EDGE_STROKE),
+            markerEnd: dependencyMarker(DEP_EDGE_STROKE),
+          })
+        }
+      })
+    }
+  })
+
+  const nodes = [...packageNodes, ...artifactNodes]
 
   return { nodes, edges, perspectiveName: perspective?.name }
 }
