@@ -306,13 +306,20 @@ export function ilographDocumentToFlow(
 
     // Create artifact nodes for inner artefacts (if this is a package node)
     if (innerArtefacts && innerArtefacts.length && !isGroup) {
+      const ARTIFACT_HEIGHT = 40
+      const PADDING = 20
+      const HEADER_HEIGHT = 60
+
       innerArtefacts.forEach((art, artIndex) => {
         const artifactId = `${id}:${art.id}`
         const artifactColor = boxColorForId(artifactId)
         artifactNodes.push({
           id: artifactId,
           type: 'artefact',
-          position: { x: 20, y: 60 + artIndex * 40 },
+          position: {
+            x: PADDING,
+            y: HEADER_HEIGHT + artIndex * (ARTIFACT_HEIGHT + PADDING),
+          },
           sourcePosition: Position.Left,
           targetPosition: Position.Right,
           data: {
@@ -339,6 +346,22 @@ export function ilographDocumentToFlow(
           expandParent: true,
         })
       })
+
+      // Update package node height to accommodate artifacts
+      const totalArtifactHeight = innerArtefacts.length * (ARTIFACT_HEIGHT + PADDING)
+      const requiredHeight = HEADER_HEIGHT + totalArtifactHeight + PADDING
+      if (packageNode.style && typeof packageNode.style === 'object') {
+        packageNode.style = {
+          ...packageNode.style,
+          height: requiredHeight,
+        }
+      } else {
+        packageNode.style = {
+          height: requiredHeight,
+          width: 520,
+          backgroundColor: 'rgba(240,248,255,0.35)',
+        }
+      }
     }
 
     // Create edges for inner artefact relations
