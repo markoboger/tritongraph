@@ -45,3 +45,23 @@ final class GreenIguana(
   def commonLabel: String = "green iguana"
   def canDropTail: Boolean = true
 }
+
+/**
+ * Demo residents for the lizard package.
+ */
+object LizardShowcase {
+  val baskingCrew: Seq[Reptile] =
+    Seq(
+      new LeopardGecko(
+        pattern = "spotted",
+        morphName = "bell albino",
+        hatchYear = 2021,
+        offeredFruit = Some(Fruit.Banana(0.61)),
+      ),
+      new GreenIguana(
+        snoutVentLengthCm = 38.0,
+        nickname = "canopy",
+        stolenSnack = Some(Fruit.Banana(0.48)),
+      ),
+    )
+}

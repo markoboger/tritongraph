@@ -1,6 +1,6 @@
 package com.example.animalsfruit.mammals.herbivores
 
-import com.example.animalsfruit.mammals.Mammal
+import com.example.animalsfruit.mammals.{Mammal, Nursing}
 import com.example.animalsfruit.fruit.Fruit
 
 import scala.util.Try
@@ -24,9 +24,11 @@ final class Bison(
     val trackerBatteryPct: Try[Int] = Try(100),
     val favorite: Option[Fruit.Apple] = None, // cross-package artefact
 ) extends Mammal("Artiodactyla")
-    with Grazer {
+    with Grazer
+    with Nursing {
   def commonLabel: String = "american bison"
   def minHerdSize: Int = 8
+  def nursingMonths: Int = 10
 }
 
 /**
@@ -41,7 +43,29 @@ final class Zebra(
     val lastVetVisitDaysAgo: Try[Int] = Try(30),
     val offeredFruit: Option[Fruit] = None, // cross-package artefact
 ) extends Mammal("Perissodactyla")
-    with Grazer {
+    with Grazer
+    with Nursing {
   def commonLabel: String = "plains zebra"
   def minHerdSize: Int = 12
+  def nursingMonths: Int = 11
+}
+
+/**
+ * Companion-style sample data for the herbivore branch of the demo.
+ * This gives the diagram a second package with obvious constructor traffic.
+ */
+object GrazerShowcase {
+  val plainsHerd: Seq[Mammal] =
+    Seq(
+      new Bison(
+        rangeHa = 980.0,
+        herdName = "north meadow",
+        favorite = Some(Fruit.Apple("Empire", com.example.animalsfruit.fruit.Ripeness.Green)),
+      ),
+      new Zebra(
+        stripeParity = "odd",
+        individualId = "z-14",
+        offeredFruit = Some(Fruit.Grape("moon drop")),
+      ),
+    )
 }

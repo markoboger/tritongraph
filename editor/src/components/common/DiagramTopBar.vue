@@ -14,6 +14,10 @@ const emit = defineEmits<{
   'update:metric-visible': [metricKey: 'coverage' | 'debt' | 'issues', visible: boolean]
 }>()
 
+function displayRelationLabel(relationKey: string): string {
+  return relationKey === 'with' ? 'has trait' : relationKey
+}
+
 function onToggle(relationKey: string, ev: Event) {
   const target = ev.target as HTMLInputElement | null
   emit('update:relation-type-visible', relationKey, !!target?.checked)
@@ -52,14 +56,14 @@ function onMetricToggle(metricKey: 'coverage' | 'debt' | 'issues', ev: Event) {
         v-for="rel in relationTypes"
         :key="rel"
         class="diagram-top-bar__check"
-        :title="`Show ${rel} relations`"
+        :title="`Show ${displayRelationLabel(rel)} relations`"
       >
         <input
           type="checkbox"
           :checked="relationTypeVisibility[rel] !== false"
           @change="onToggle(rel, $event)"
         />
-        <span class="diagram-top-bar__check-text">{{ rel }}</span>
+        <span class="diagram-top-bar__check-text">{{ displayRelationLabel(rel) }}</span>
       </label>
       <span v-if="relationTypes.length" class="diagram-top-bar__sep" aria-hidden="true" />
       <label

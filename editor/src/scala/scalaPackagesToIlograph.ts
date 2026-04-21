@@ -463,6 +463,14 @@ function innerArtefactSpecsForNode(n: PackageTreeNode): TritonInnerArtefactSpec[
  * set de-duplicates an artefact pair to its *structural* relation when both exist — a class
  * that both `extends Animal` and takes `Animal` as a constructor parameter renders as `extends`
  * only; drawing both would be visual noise.
+ *
+ * Direction is flipped for inheritance-like relations in the rendered diagram:
+ *   - inheritance: child -> parent / trait
+ *   - gets: user -> dependency
+ *   - creates: creator -> created artefact
+ *
+ * This matches the import/dependency reading direction the user prefers: concrete artefact on
+ * the left, dependency / parent on the right (`Sparrow -> Winged`, `Bear -> Vertebrate`).
  */
 function innerArtefactRelationSpecsForNode(
   n: PackageTreeNode,
@@ -480,9 +488,6 @@ function innerArtefactRelationSpecsForNode(
     if (seenPair.has(pairKey)) continue
     seenPair.add(pairKey)
     const label: TritonInnerArtefactRelationSpec['label'] = e.kind === 'with' ? 'with' : 'extends'
-    // UML convention: child (subtype) is the source, parent (supertype) is the target.
-    // fromArtefactId is the parent, toArtefactId is the child — swap so the arrow points
-    // from child toward parent (child LEFT, parent RIGHT in the LR column layout).
     out.push({ from: e.toArtefactId, to: e.fromArtefactId, label })
   }
   for (const e of graph.gets) {
@@ -526,7 +531,7 @@ function crossPackageArtefactRelationSpecsForNode(
     if (seenPair.has(pairKey)) continue
     seenPair.add(pairKey)
     const label: TritonInnerArtefactRelationSpec['label'] = e.kind === 'with' ? 'with' : 'extends'
-    out.push({ from: e.fromArtefactId, to: e.toArtefactId, label })
+    out.push({ from: e.toArtefactId, to: e.fromArtefactId, label })
   }
 
   for (const e of graph.gets) {

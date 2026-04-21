@@ -43,3 +43,24 @@ final class PeregrineFalcon(
   def commonLabel: String = "peregrine falcon"
   def talonGripKg: Double = 5.5
 }
+
+/**
+ * Short showcase collection for the raptor package.
+ * Separate package-local samples make the `creates` relationship easier to inspect than one giant catalog.
+ */
+object RaptorShowcase {
+  val residentBirds: Seq[Raptor] =
+    Seq(
+      new GoldenEagle(
+        talonGripKg = 11.5,
+        wingspanCm = 205.0,
+        cachedSnack = Some(Fruit.Cherry(9)),
+      ),
+      new PeregrineFalcon(
+        diveSpeedKmh = 320.0,
+        wingspanCm = 110.0,
+        nickname = "needle",
+        giftedFruit = Some(Fruit.Orange),
+      ),
+    )
+}

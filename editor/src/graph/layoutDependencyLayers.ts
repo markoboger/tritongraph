@@ -1184,13 +1184,15 @@ export function layoutDepthInViewport(
 ): any[] {
   const hiddenById = computeModuleHiddenForDependencyLayout(nodes, edges)
   const out = nodes.map((n) => {
+    const baseHidden = Boolean((n as { hidden?: boolean }).hidden)
     const base = {
       ...n,
       position: { x: n.position?.x ?? 0, y: n.position?.y ?? 0 },
       style: n.style ? { ...n.style } : undefined,
+      hidden: baseHidden,
     }
     if (isLeafBoxNode(n)) {
-      return { ...base, hidden: hiddenById.get(n.id) ?? false }
+      return { ...base, hidden: baseHidden || (hiddenById.get(n.id) ?? false) }
     }
     return base
   })

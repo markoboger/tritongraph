@@ -188,7 +188,13 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   box-shadow:
     inset 6px 0 0 0 #64748b,
     0 1px 3px rgb(15 23 42 / 0.08);
-  background: rgb(255 255 255 / 0.94);
+  /**
+   * Package-import diagrams use the outermost package as a full-viewport group node.
+   * Vue Flow paints edges below nodes, so an opaque package-scope fill would wash over
+   * most relations. Keep the frame chrome, but let the body stay transparent so imports
+   * remain readable through the outer scope.
+   */
+  background: transparent;
 }
 .group-node__metrics {
   position: absolute;

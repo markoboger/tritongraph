@@ -60,6 +60,7 @@ const drillRef = ref<InstanceType<typeof GraphDrillIn> | null>(null)
 const hoveredNodeId = ref<string | null>(null)
 /** When set, only this edge is stroke-emphasized (takes precedence over node-hover). */
 const hoveredEdgeId = ref<string | null>(null)
+const packageFocusRelayoutQueued = ref(false)
 
 /** After connect-start from a **source** handle: if pointer up does not complete @connect, create a module on the pane. */
 const pendingPaneConnect = ref<{ nodeId: string; handleId: string | null } | null>(null)
@@ -87,6 +88,113 @@ function edgeVisualSignature(arr: typeof edges.value): string {
         `${String(e.id)}:${(e as { hidden?: boolean }).hidden === true ? 1 : 0}:${(e as { class?: string }).class ?? ''}`,
     )
     .join('\n')
+}
+
+function packageFocusState() {
+  for (const n of nodes.value) {
+    const data = (n.data ?? {}) as Record<string, unknown>
+    const focusedInnerArtefactId = typeof data.innerArtefactFocusId === 'string' ? data.innerArtefactFocusId : ''
+    if (!focusedInnerArtefactId) continue
+    const innerArtefacts = Array.isArray(data.innerArtefacts) ? data.innerArtefacts : []
+    const containerArtefactIds = new Set<string>()
+    for (const art of innerArtefacts) {
+      const id = art && typeof art === 'object' ? (art as Record<string, unknown>).id : undefined
+      if (typeof id === 'string' && id) containerArtefactIds.add(id)
+    }
+    if (!containerArtefactIds.size) containerArtefactIds.add(focusedInnerArtefactId)
+    return {
+      focusedNodeId: String(n.id),
+      focusedInnerArtefactId,
+      containerArtefactIds,
+    }
+  }
+  return null
+}
+
+function computePackageRelationVisibleNodeIds(): Set<string> | null {
+  const state = packageFocusState()
+  if (!state) return null
+
+  const visible = new Set<string>([state.focusedNodeId])
+  for (const n of nodes.value) {
+    const data = (n.data ?? {}) as Record<string, unknown>
+    const cross = Array.isArray(data.crossArtefactRelations) ? data.crossArtefactRelations : []
+    const inner = Array.isArray(data.innerArtefactRelations) ? data.innerArtefactRelations : []
+    const rels = [...cross, ...inner]
+    const touchesFocusedContainer = rels.some((rel) => {
+      if (!rel || typeof rel !== 'object') return false
+      const from = typeof (rel as Record<string, unknown>).from === 'string' ? String((rel as Record<string, unknown>).from) : ''
+      const to = typeof (rel as Record<string, unknown>).to === 'string' ? String((rel as Record<string, unknown>).to) : ''
+      return state.containerArtefactIds.has(from) || state.containerArtefactIds.has(to)
+    })
+    if (touchesFocusedContainer) visible.add(String(n.id))
+  }
+
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const n of nodes.value) {
+      const id = String(n.id)
+      const parentId = n.parentNode != null ? String(n.parentNode) : ''
+      if (visible.has(id) && parentId && !visible.has(parentId)) {
+        visible.add(parentId)
+        changed = true
+      }
+    }
+  }
+  return visible
+}
+
+function applyPackageRelationFocusVisibility(): boolean {
+  const visibleIds = computePackageRelationVisibleNodeIds()
+  const nextNodes = nodes.value.map((n) => {
+    const data = { ...((n.data ?? {}) as Record<string, unknown>) }
+    const managed = data.__packageRelationFocusManaged === true
+    const baseHidden =
+      managed && typeof data.__packageRelationFocusBaseHidden === 'boolean'
+        ? Boolean(data.__packageRelationFocusBaseHidden)
+        : Boolean((n as { hidden?: boolean }).hidden)
+
+    if (!visibleIds) {
+      if (!managed) return n
+      delete data.__packageRelationFocusManaged
+      delete data.__packageRelationFocusBaseHidden
+      return {
+        ...n,
+        hidden: baseHidden,
+        data,
+      }
+    }
+
+    const shouldHide = !visibleIds.has(String(n.id))
+    return {
+      ...n,
+      hidden: baseHidden || shouldHide,
+      data: {
+        ...data,
+        __packageRelationFocusManaged: true,
+        __packageRelationFocusBaseHidden: baseHidden,
+      },
+    }
+  })
+
+  const prevSig = nodes.value.map((n) => `${String(n.id)}:${Boolean(n.hidden) ? 1 : 0}`).join('|')
+  const nextSig = nextNodes.map((n) => `${String(n.id)}:${Boolean(n.hidden) ? 1 : 0}`).join('|')
+  if (prevSig === nextSig) return false
+  nodes.value = nextNodes
+  return true
+}
+
+async function applyPackageRelationFocusVisibilityAndRelayout() {
+  const changed = applyPackageRelationFocusVisibility()
+  if (!changed || packageFocusRelayoutQueued.value) return
+  packageFocusRelayoutQueued.value = true
+  try {
+    await nextTick()
+    await relayoutViewport({ skipDrillReapply: true })
+  } finally {
+    packageFocusRelayoutQueued.value = false
+  }
 }
 
 /**
@@ -146,6 +254,21 @@ watch(
 )
 
 watch(
+  () =>
+    nodes.value
+      .map((n) => {
+        const d = (n.data ?? {}) as Record<string, unknown>
+        const focus = typeof d.innerArtefactFocusId === 'string' ? d.innerArtefactFocusId : ''
+        const innerArts = Array.isArray(d.innerArtefacts) ? d.innerArtefacts.length : 0
+        const cross = Array.isArray(d.crossArtefactRelations) ? d.crossArtefactRelations.length : 0
+        const inner = Array.isArray(d.innerArtefactRelations) ? d.innerArtefactRelations.length : 0
+        return `${String(n.id)}:${focus}:${innerArts}:${cross}:${inner}`
+      })
+      .join('|'),
+  () => void nextTick(() => applyPackageRelationFocusVisibilityAndRelayout()),
+)
+
+watch(
   () => edges.value,
   () => void nextTick(() => syncEdgeVisualState()),
   { flush: 'post' },
@@ -173,7 +296,7 @@ const diagramModel = computed(() => {
   return buildDiagramRootModel(nodes.value, edges.value, { x: 0, y: 0, width: vp.width, height: vp.height })
 })
 
-async function relayoutViewport() {
+async function relayoutViewport(opts?: { skipDrillReapply?: boolean }) {
   if (!nodes.value.length) return
   await nextTick()
   await doubleRaf()
@@ -194,7 +317,7 @@ async function relayoutViewport() {
    * so toggling the panel leaves the focused container overflowing the canvas. The drill itself
    * runs its FLIP animation and fits the camera to the new bounds.
    */
-  const reapplied = (await drillRef.value?.reapplyLayerDrill?.()) ?? false
+  const reapplied = opts?.skipDrillReapply ? false : ((await drillRef.value?.reapplyLayerDrill?.()) ?? false)
   if (reapplied) return
   /** Keep the full graph in view after geometry changes; skip while layer drill owns the camera. */
   const layerDrill = drillRef.value && 'layerDrillId' in drillRef.value ? (drillRef.value as any).layerDrillId : null

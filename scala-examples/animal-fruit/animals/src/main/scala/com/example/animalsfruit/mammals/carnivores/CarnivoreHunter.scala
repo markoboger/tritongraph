@@ -1,6 +1,6 @@
 package com.example.animalsfruit.mammals.carnivores
 
-import com.example.animalsfruit.mammals.Mammal
+import com.example.animalsfruit.mammals.{Mammal, Nursing}
 import com.example.animalsfruit.fruit.Fruit
 
 import scala.util.Try
@@ -25,9 +25,11 @@ final class Lion(
     val favoriteFruit: Option[Fruit] = None, // cross-package artefact
     val rival: Option[Tiger] = None, // same-package artefact
 ) extends Mammal("Carnivora")
-    with CarnivoreHunter {
+    with CarnivoreHunter
+    with Nursing {
   def commonLabel: String = "lion"
   def clawSharpness: Int = 9
+  def nursingMonths: Int = 7
 }
 
 /**
@@ -41,7 +43,32 @@ final class Tiger(
     val knownAs: Option[String] = Some("shadow"),
     val snack: Option[Fruit.Banana] = None, // cross-package + nested artefact
 ) extends Mammal("Carnivora")
-    with CarnivoreHunter {
+    with CarnivoreHunter
+    with Nursing {
   def commonLabel: String = "tiger"
   def clawSharpness: Int = 9
+  def nursingMonths: Int = 8
+}
+
+/**
+ * Small in-package sample registry.
+ * Keeping constructor calls near the concrete classes makes `creates` edges easy to spot in the demo graph.
+ */
+object CarnivoreShowcase {
+  val alphaTiger: Tiger =
+    new Tiger(
+      stripeCount = 87,
+      subspecies = "siberian",
+      knownAs = Some("ember"),
+    )
+
+  val prideLeader: Lion =
+    new Lion(
+      prideSize = 7,
+      nickname = "suncrest",
+      favoriteFruit = Some(Fruit.Apple("Braeburn", com.example.animalsfruit.fruit.Ripeness.Ripe)),
+      rival = Some(alphaTiger),
+    )
+
+  val residents: Seq[Mammal] = Seq(prideLeader, alphaTiger)
 }

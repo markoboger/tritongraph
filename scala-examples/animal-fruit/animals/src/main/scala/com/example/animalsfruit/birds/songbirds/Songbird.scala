@@ -42,3 +42,22 @@ final class IndigoBunting(
   def commonLabel: String = "indigo bunting"
   def songComplexity: Int = 7
 }
+
+/**
+ * Small package-local flock used to advertise constructor calls in the diagram.
+ */
+object SongbirdShowcase {
+  val flock: Seq[Songbird] =
+    Seq(
+      new WinterWren(
+        wingspanCm = 16.0,
+        territoryName = "fern hollow",
+        berrySnack = Some(Fruit.Cherry(5)),
+      ),
+      new IndigoBunting(
+        wingspanCm = 24.0,
+        observer = "field lab",
+        acceptedGift = Some(Fruit.Apple("Elstar", com.example.animalsfruit.fruit.Ripeness.Ripe)),
+      ),
+    )
+}

@@ -9,3 +9,12 @@ abstract class Mammal(val taxonOrder: String) {
 
   def commonLabel: String
 }
+
+/**
+ * Cross-package mixin that subpackages can attach with `with`.
+ * This gives the package diagram an unmistakable `has trait` edge from e.g. `Lion` back into
+ * the parent `mammals` package.
+ */
+trait Nursing {
+  def nursingMonths: Int
+}

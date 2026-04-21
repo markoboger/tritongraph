@@ -295,10 +295,27 @@ const activeInnerSpec = computed((): TritonInnerPackageSpec | null => {
   return findSpecAtPath(props.innerPackages, path)
 })
 
+const topLevelInnerPackages = computed((): readonly InnerPackageSummary[] => {
+  return Array.isArray(props.innerPackages) ? props.innerPackages : []
+})
+
+/**
+ * Structural relations as produced by the graph builder, regardless of visibility toggles.
+ *
+ * Important: relation checkboxes are a rendering concern only. Layout, focus neighbourhoods,
+ * and drill context should remain stable when a relation type is hidden, otherwise simply
+ * unchecking a box causes nodes to jump around.
+ */
+const allInnerArtefactRelations = computed((): readonly TritonInnerArtefactRelationSpec[] => {
+  return Array.isArray(props.innerArtefactRelations) ? props.innerArtefactRelations : []
+})
+
+/** Relations currently visible in the UI after applying the relation-type checkboxes. */
 const innerArtefactRelationList = computed((): readonly TritonInnerArtefactRelationSpec[] => {
-  const raw = Array.isArray(props.innerArtefactRelations) ? props.innerArtefactRelations : []
   const visibility = relationTypeVisibilityRef.value
-  return raw.filter((rel) => !shouldHideEdgeForRelationFilter({ label: rel.label }, visibility))
+  return allInnerArtefactRelations.value.filter(
+    (rel) => !shouldHideEdgeForRelationFilter({ label: rel.label }, visibility),
+  )
 })
 
 function innerSimulatedMetrics(id: string) {
@@ -323,7 +340,7 @@ const innerArtefactById = computed(() => {
  * Returns `null` when no focus is active (show everything).
  */
 const focusFilteredIds = computed((): Set<string> | null => {
-  const rels = innerArtefactRelationList.value
+  const rels = allInnerArtefactRelations.value
   const localIds = new Set(props.innerArtefacts.map((a) => a.id))
 
   // --- local focus: the focused artefact is in this package ---
@@ -368,9 +385,10 @@ const focusFilteredIds = computed((): Set<string> | null => {
 /**
  * LR columns: abstract parents left → concrete subtypes right (see {@link assignInnerArtefactLayers}).
  *
- * Only inheritance shapes the column layout:
+ * All directional structural relations shape the column layout:
  *   - `extends` / `with`: parent (from) left → child (to) right.
- * `gets` and `creates` are drawn as overlays on top of that inheritance-driven structure.
+ *   - `gets`: consumer (from) left → dependency (to) right.
+ *   - `creates`: creator (from) left → created artefact (to) right.
  *
  * When focus is active only the filtered subset of artefacts and their connecting
  * edges are passed to the layout algorithm.
@@ -380,7 +398,7 @@ const innerArtefactLayerColumns = computed((): string[][] => {
   const allIds = props.innerArtefacts.map((a) => a.id)
   const ids = filter ? allIds.filter((id) => filter.has(id)) : allIds
   if (!ids.length) return []
-  const rels = innerArtefactRelationList.value
+  const rels = allInnerArtefactRelations.value
   const filteredRels = filter ? rels.filter((r) => filter.has(r.from) && filter.has(r.to)) : rels
   if (!filteredRels.length) return [ids]
   return assignInnerArtefactLayers(ids, filteredRels)
@@ -502,9 +520,155 @@ function bindInnerArtefactSlotEl(artId: string, el: unknown) {
   else innerArtefactSlotEls.delete(artId)
 }
 
+function artefactPackageId(artefactId: string): string {
+  const sep = artefactId.indexOf('::')
+  return sep >= 0 ? artefactId.slice(0, sep) : ''
+}
+
+function artefactSimpleName(artefactId: string): string {
+  const sep = artefactId.lastIndexOf(':')
+  return sep >= 0 ? artefactId.slice(sep + 1) : artefactId
+}
+
+type BridgeRelation = {
+  from: string
+  to: string
+  label: string
+  wrapperName?: string
+}
+
+type BoundaryStubRelation = {
+  externalId: string
+  externalLabel: string
+  foreignArtefactId: string
+  localId: string
+  side: 'left' | 'right'
+  label: string
+  wrapperName?: string
+}
+
+/**
+ * Cross-package relations whose foreign endpoint lives in one of this package's visible child
+ * package boxes. We render them as package-box -> local-artefact bridges in the focused root
+ * view so parent-package artefacts like `Mammal` / `Nursing` can show incoming edges from
+ * `carnivores` / `herbivores` even though those child packages are not expanded to their
+ * individual artefacts yet.
+ */
+const crossPackageBridgeRelations = computed((): readonly BridgeRelation[] => {
+  if (innerDrillPathArr.value.length > 0) return []
+  if (!props.focused) return []
+  if (!props.innerPackages.length || !props.innerArtefacts.length) return []
+
+  const localArtefactIds = new Set(props.innerArtefacts.map((a) => a.id))
+  const childPackageIds = props.innerPackages.map((p) => p.id)
+  const mapForeignArtefactToChildPackage = (artefactId: string): string | null => {
+    const pkgId = artefactPackageId(artefactId)
+    if (!pkgId) return null
+    for (const childId of childPackageIds) {
+      if (pkgId === childId || pkgId.startsWith(`${childId}.`)) return childId
+    }
+    return null
+  }
+
+  const out: BridgeRelation[] = []
+  const seen = new Set<string>()
+  for (const rel of props.crossArtefactRelations ?? []) {
+    const fromLocal = localArtefactIds.has(rel.from)
+    const toLocal = localArtefactIds.has(rel.to)
+    if (fromLocal === toLocal) continue
+    const localId = fromLocal ? rel.from : rel.to
+    const foreignId = fromLocal ? rel.to : rel.from
+    const childPackageId = mapForeignArtefactToChildPackage(foreignId)
+    if (!childPackageId) continue
+    const from = fromLocal ? localId : childPackageId
+    const to = fromLocal ? childPackageId : localId
+    const key = `${from}\u0001${to}\u0001${rel.label}\u0001${rel.wrapperName ?? ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ from, to, label: rel.label, ...(rel.wrapperName ? { wrapperName: rel.wrapperName } : {}) })
+  }
+  return out
+})
+
+/**
+ * Cross-package relations whose far endpoint is NOT visible as an inner child package box.
+ * Rendered as boundary stubs in the focused package view so local artefacts can still show
+ * incoming/outgoing dependencies from foreign packages.
+ */
+const crossPackageBoundaryStubRelations = computed((): readonly BoundaryStubRelation[] => {
+  if (innerDrillPathArr.value.length > 0) return []
+  if (!props.focused) return []
+  if (!props.innerArtefacts.length) return []
+
+  const localArtefactIds = new Set(props.innerArtefacts.map((a) => a.id))
+  const focusedLocalId = props.focusedInnerArtefactId ?? null
+  const childPackageIds = props.innerPackages.map((p) => p.id)
+  const foreignIsVisibleChildPackage = (artefactId: string): boolean => {
+    const pkgId = artefactPackageId(artefactId)
+    if (!pkgId) return false
+    return childPackageIds.some((childId) => pkgId === childId || pkgId.startsWith(`${childId}.`))
+  }
+
+  const out: BoundaryStubRelation[] = []
+  const seen = new Set<string>()
+  for (const rel of props.crossArtefactRelations ?? []) {
+    const fromLocal = localArtefactIds.has(rel.from)
+    const toLocal = localArtefactIds.has(rel.to)
+    if (fromLocal === toLocal) continue
+    const localId = fromLocal ? rel.from : rel.to
+    const foreignId = fromLocal ? rel.to : rel.from
+    if (foreignIsVisibleChildPackage(foreignId)) continue
+    if (focusedLocalId && localId !== focusedLocalId) continue
+    const side: 'left' | 'right' = fromLocal ? 'right' : 'left'
+    const foreignPkgId = artefactPackageId(foreignId)
+    const externalLabel = focusedLocalId
+      ? artefactSimpleName(foreignId)
+      : (foreignPkgId.split('.').pop() || foreignPkgId || 'external')
+    const externalId = focusedLocalId
+      ? `__ext-${side}:art:${foreignId}`
+      : `__ext-${side}:pkg:${foreignPkgId || foreignId}`
+    const key = `${externalId}\u0001${localId}\u0001${rel.label}\u0001${rel.wrapperName ?? ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({
+      externalId,
+      externalLabel,
+      foreignArtefactId: foreignId,
+      localId,
+      side,
+      label: rel.label,
+      ...(rel.wrapperName ? { wrapperName: rel.wrapperName } : {}),
+    })
+  }
+  return out
+})
+
+const crossPackageExternalEndpoints = computed(() => {
+  const byId = new Map<string, { id: string; label: string; side: 'left' | 'right' }>()
+  for (const rel of crossPackageBoundaryStubRelations.value) {
+    if (!byId.has(rel.externalId)) {
+      byId.set(rel.externalId, { id: rel.externalId, label: rel.externalLabel, side: rel.side })
+    }
+  }
+  const all = [...byId.values()].sort((a, b) => a.label.localeCompare(b.label))
+  return {
+    left: all.filter((x) => x.side === 'left'),
+    right: all.filter((x) => x.side === 'right'),
+  }
+})
+
 function refreshInnerArtefactEdges() {
   const root = innerArtefactDiagramRef.value
-  const rels = innerArtefactRelationList.value
+  const rels = [
+    ...crossPackageBridgeRelations.value,
+    ...crossPackageBoundaryStubRelations.value.map((rel) => ({
+      from: rel.side === 'left' ? rel.externalId : rel.localId,
+      to: rel.side === 'left' ? rel.localId : rel.externalId,
+      label: rel.label,
+      wrapperName: rel.wrapperName,
+    })),
+    ...innerArtefactRelationList.value,
+  ]
   if (!root || !rels.length) {
     innerEdgeDraws.value = []
     return
@@ -808,6 +972,8 @@ watch(
   () => [
     props.innerArtefacts,
     props.innerArtefactRelations,
+    props.crossArtefactRelations,
+    props.innerPackages,
     innerDrillPathArr.value,
     props.focused,
   ],
@@ -1015,24 +1181,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 
         <template v-if="!innerDrillPathArr.length">
           <div
-            v-for="child in innerPackages"
-            :key="child.id"
-            class="package-box__inner-slot package-box__inner-slot--clickable"
-            @click.stop="onInnerCardClick(child.id)"
-          >
-            <PackageBox
-              embedded
-              :box-id="child.id"
-              :label="child.name"
-              :subtitle="child.subtitle ?? ''"
-              :focused="false"
-              :pinned="false"
-              :show-pin-tool="false"
-              :show-color-tool="false"
-            />
-          </div>
-          <div
-            v-if="innerArtefactLayerColumns.length"
+            v-if="innerArtefactLayerColumns.length || topLevelInnerPackages.length"
             ref="innerArtefactDiagramRef"
             class="package-box__inner-artefact-diagram"
             :class="{ 'package-box__inner-artefact-diagram--artefact-focus': innerArtefactFocusActive }"
@@ -1141,8 +1290,48 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
             -->
             <div
               class="package-box__inner-artefact-cols"
-              :class="{ 'package-box__inner-artefact-cols--artefact-focus': innerArtefactFocusActive }"
+              :class="{
+                'package-box__inner-artefact-cols--artefact-focus': innerArtefactFocusActive,
+                'package-box__inner-artefact-cols--with-packages': topLevelInnerPackages.length > 0,
+              }"
             >
+              <div
+                v-if="topLevelInnerPackages.length"
+                class="package-box__inner-package-stack"
+              >
+                <div
+                  v-for="child in topLevelInnerPackages"
+                  :key="child.id"
+                  :ref="(el) => bindInnerArtefactSlotEl(child.id, el)"
+                  class="package-box__inner-slot package-box__inner-slot--clickable package-box__inner-slot--inner-package"
+                  @click.stop="onInnerCardClick(child.id)"
+                >
+                  <PackageBox
+                    embedded
+                    :box-id="child.id"
+                    :label="child.name"
+                    :subtitle="child.subtitle ?? ''"
+                    :focused="false"
+                    :pinned="false"
+                    :show-pin-tool="false"
+                    :show-color-tool="false"
+                  />
+                </div>
+              </div>
+              <div
+                v-if="crossPackageExternalEndpoints.left.length"
+                class="package-box__external-endpoints package-box__external-endpoints--left"
+              >
+                <div
+                  v-for="ep in crossPackageExternalEndpoints.left"
+                  :key="ep.id"
+                  :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
+                  class="package-box__external-endpoint"
+                >
+                  <span class="package-box__artefact-anchor package-box__artefact-anchor--out" aria-hidden="true" />
+                  <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
+                </div>
+              </div>
               <div
                 v-for="(col, ci) in innerArtefactLayerColumns"
                 :key="'col-' + ci"
@@ -1254,6 +1443,20 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                     </div>
                   </div>
                 </template>
+              </div>
+              <div
+                v-if="crossPackageExternalEndpoints.right.length"
+                class="package-box__external-endpoints package-box__external-endpoints--right"
+              >
+                <div
+                  v-for="ep in crossPackageExternalEndpoints.right"
+                  :key="ep.id"
+                  :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
+                  class="package-box__external-endpoint package-box__external-endpoint--right"
+                >
+                  <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
+                  <span class="package-box__artefact-anchor package-box__artefact-anchor--in" aria-hidden="true" />
+                </div>
               </div>
             </div>
             <svg class="package-box__inner-artefact-edges package-box__inner-artefact-edges--overlay" aria-hidden="true">
@@ -2122,6 +2325,10 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .package-box__inner-edge-marker-shape--hastrait {
   fill: #9333ea;
 }
+.package-box__inner-edge-path--hastrait {
+  stroke-dasharray: 8 3 2 3;
+  stroke-width: 2.35;
+}
 .package-box__inner-edge-marker-shape--gets {
   fill: #d97706;
 }
@@ -2185,6 +2392,67 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   min-height: 0;
   align-items: stretch;
   gap: clamp(32px, 7cqw, 64px);
+}
+.package-box__inner-artefact-cols--with-packages {
+  flex: 1 1 0;
+  min-height: 0;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+.package-box__inner-package-stack {
+  flex: 0 0 clamp(156px, 22cqw, 232px);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: stretch;
+  gap: 10px;
+}
+.package-box__inner-slot--inner-package {
+  flex: 1 1 0;
+  min-height: clamp(132px, 24cqh, 240px);
+  height: 100%;
+}
+.package-box__inner-slot--inner-package > .package-box.package-box--embedded {
+  min-height: 100%;
+}
+.package-box__external-endpoints {
+  flex: 0 0 96px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  align-self: stretch;
+  min-width: 0;
+}
+.package-box__external-endpoints--left {
+  align-items: flex-end;
+}
+.package-box__external-endpoints--right {
+  align-items: flex-start;
+}
+.package-box__external-endpoint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.package-box__external-endpoint-chip {
+  max-width: 88px;
+  padding: 3px 8px;
+  border: 1px dashed color-mix(in srgb, var(--box-accent) 24%, rgb(148 163 184));
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.92);
+  color: #475569;
+  font-size: 10px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .package-box__inner-artefact-col {
   display: flex;

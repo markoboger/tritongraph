@@ -141,6 +141,7 @@ const innerDrillPathForBox = computed(() => {
 
 const { updateNodeData, getNodes, updateNodeDimensions } = useVueFlow()
 const rootEl = ref<HTMLDivElement | null>(null)
+let nodeDimensionSettleTimer: ReturnType<typeof setTimeout> | null = null
 
 /**
  * The inner artefact ID that is currently focused in ANY package node. When non-null and
@@ -335,9 +336,31 @@ function onInnerArtefactColors(map: Record<string, string>) {
   setInnerArtefactColorsMap(ws(), props.id, map)
 }
 
+function refreshOwnNodeDimensions() {
+  const el = rootEl.value?.parentElement as HTMLDivElement | null
+  if (el) updateNodeDimensions([{ id: props.id, nodeElement: el, forceUpdate: true }])
+}
+
+async function refreshOwnNodeDimensionsSettled() {
+  await nextTick()
+  refreshOwnNodeDimensions()
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  refreshOwnNodeDimensions()
+  await new Promise<void>((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+  )
+  refreshOwnNodeDimensions()
+  if (nodeDimensionSettleTimer != null) clearTimeout(nodeDimensionSettleTimer)
+  nodeDimensionSettleTimer = setTimeout(() => {
+    nodeDimensionSettleTimer = null
+    refreshOwnNodeDimensions()
+  }, 520)
+}
+
 watch(
   () => props.data.layerDrillFocus,
-  () => {
+  (next, prev) => {
+    if (!(prev === true && next !== true)) return
     patchNodeData?.(props.id, { innerDrillPath: [], innerArtefactFocusId: undefined })
     updateNodeData(props.id, { innerDrillPath: [], innerArtefactFocusId: undefined })
   },
@@ -347,9 +370,15 @@ watch(
   globalFocusedArtefactId,
   async () => {
     if (!crossArtefactRelationsForBox.value.length) return
-    await nextTick()
-    const el = rootEl.value?.parentElement as HTMLDivElement | null
-    if (el) updateNodeDimensions([{ id: props.id, nodeElement: el, forceUpdate: true }])
+    await refreshOwnNodeDimensionsSettled()
+  },
+)
+
+watch(
+  () => props.data.innerArtefactFocusId,
+  async () => {
+    if (!crossArtefactRelationsForBox.value.length) return
+    await refreshOwnNodeDimensionsSettled()
   },
 )
 </script>

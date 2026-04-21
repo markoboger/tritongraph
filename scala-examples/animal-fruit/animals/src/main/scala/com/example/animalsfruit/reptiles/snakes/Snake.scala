@@ -43,3 +43,23 @@ final class EasternRacer(
 ) extends Reptile("smooth scales") {
   def commonLabel: String = "eastern racer"
 }
+
+/**
+ * Demo residents for the snake package.
+ */
+object SnakeShowcase {
+  val terrarium: Seq[Reptile] =
+    Seq(
+      new BallPython(
+        lengthM = 1.2,
+        morph = "banana pastel",
+        enrichmentFruit = Some(Fruit.Orange),
+      ),
+      new EasternRacer(
+        maxSpeedKmh = 12.0,
+        nickname = "flash",
+        sightings = List((46.95, 7.44), (46.96, 7.45)),
+        lastSnack = Some(Fruit.Grape("crimson")),
+      ),
+    )
+}
