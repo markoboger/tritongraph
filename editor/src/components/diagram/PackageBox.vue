@@ -488,6 +488,14 @@ const innerArtefactFocusActive = computed(
 const crossPackagePreviewActive = computed(() => {
   if (props.focused) return false
   const ids = focusFilteredIds.value
+
+  // Debug: Log globalFocusedArtefactId and focusFilteredIds
+  console.log(`Package ${props.boxId} crossPackagePreviewActive check:`, {
+    globalFocusedArtefactId: props.globalFocusedArtefactId,
+    focusFilteredIds: ids,
+    crossPackagePreviewActive: ids !== null && ids.size > 0,
+  })
+
   return ids !== null && ids.size > 0
 })
 
