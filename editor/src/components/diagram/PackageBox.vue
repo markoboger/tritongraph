@@ -649,6 +649,9 @@ const crossPackageBoundaryStubRelations = computed((): readonly BoundaryStubRela
     const externalLabel = focusedLocalId
       ? artefactSimpleName(foreignId)
       : (foreignPkgId.split('.').pop() || foreignPkgId || 'external')
+
+    // Debug: Log boundary stub relations
+    console.log('Boundary stub relation:', { localId, foreignId, side, focusedLocalId, props: props.boxId })
     const externalId = focusedLocalId
       ? `__ext-${side}:art:${foreignId}`
       : `__ext-${side}:pkg:${foreignPkgId || foreignId}`
