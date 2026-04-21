@@ -157,6 +157,9 @@ function onOpenInEditor(line?: number) {
   min-width: 120px;
   cursor: pointer;
   transition: box-shadow 0.2s ease;
+  height: 32px;
+  display: flex;
+  align-items: center;
 }
 
 .flow-artefact-node:hover {
@@ -167,6 +170,7 @@ function onOpenInEditor(line?: number) {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
 }
 
 .flow-artefact-node__metrics {
@@ -230,5 +234,10 @@ function onOpenInEditor(line?: number) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.flow-artefact-node__focus-card {
+  width: 100%;
+  height: 100%;
 }
 </style>
