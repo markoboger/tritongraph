@@ -148,6 +148,11 @@ const props = withDefaults(
      * ({@link FlowPackageNode} when flow `type` is `artefact` and the box is not layer-drill focused).
      */
     leafVisual?: 'package' | 'artefact'
+    /**
+     * True when this package is focused due to cross-package relations (not user-initiated layer drill).
+     * Used to hide the focused chrome (pin tools, color tools) to avoid confusion.
+     */
+    crossPackageFocused?: boolean
   }>(),
   {
     innerPackages: () => [],
@@ -158,6 +163,7 @@ const props = withDefaults(
     innerDrillPath: () => [],
     embedded: false,
     leafVisual: 'package',
+    crossPackageFocused: false,
   },
 )
 
@@ -168,10 +174,14 @@ const emit = defineEmits<{
   'description-change': [string]
   'update-inner-drill-path': [string[]]
   /** Toggle or clear inner artefact focus (`null` = clear only). */
-  'update-inner-artefact-focus': [id: string | null]
-  /** Replace the full inner-artefact pinned map (id → boolean). Caller stores into flow data. */
+  'update-inner-artefact-focus': [string | null]
+  /** Toggle inner artefact pin. */
+  'update-inner-artefact-pin': [string, boolean]
+  /** Update inner drill path to a specific package ID (drill in one level). */
+  'update-inner-drill-path-to': [string]
+  /** Update inner artefact pinned state. */
   'update-inner-artefact-pinned': [Record<string, boolean>]
-  /** Replace the full inner-artefact accent-color map (id → color). Caller stores into flow data. */
+  /** Update inner artefact colors. */
   'update-inner-artefact-colors': [Record<string, string>]
   /**
    * Fired when the user clicks the Scala declaration line in the focused header. Parent
@@ -180,6 +190,8 @@ const emit = defineEmits<{
    * event, the template only renders a clickable wrapper when `isScalaLeaf` is true.
    */
   'declaration-click': []
+  /** Request a layout update from the parent (e.g., when cross-package preview expands). */
+  'layout-update-request': []
 }>()
 
 const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
@@ -369,7 +381,7 @@ const focusFilteredIds = computed((): Set<string> | null => {
       if (rel.from === globalId && localIds.has(rel.to)) locallyConnected.add(rel.to)
       if (rel.to === globalId && localIds.has(rel.from)) locallyConnected.add(rel.from)
     }
-    if (!locallyConnected.size) return new Set() // hide all artefacts — no cross-connection
+    if (!locallyConnected.size) return null // no cross-connection, don't filter
     // Expand by 1 hop within this package
     const visible = new Set(locallyConnected)
     for (const rel of rels) {
@@ -482,6 +494,17 @@ const crossPackagePreviewActive = computed(() => {
 const emphasizedInnerEdgeDraws = computed(() => innerEdgeDraws.value.filter((draw) => innerEdgeEmphasized(draw)))
 const normalInnerEdgeDraws = computed(() => innerEdgeDraws.value.filter((draw) => !innerEdgeEmphasized(draw)))
 
+// Trigger Vue Flow layout recalculation when cross-package preview becomes active
+watch(crossPackagePreviewActive, async (newValue, oldValue) => {
+  if (newValue && !oldValue) {
+    // Wait for DOM to update with expanded size
+    await nextTick()
+    await nextTick()
+    // Trigger a layout update by emitting an event to the parent
+    emit('layout-update-request')
+  }
+})
+
 
 function innerEdgeEmphasized(draw: InnerEdgeDraw): boolean {
   const hid = innerHoverEdgeId.value
@@ -556,7 +579,7 @@ type BoundaryStubRelation = {
  */
 const crossPackageBridgeRelations = computed((): readonly BridgeRelation[] => {
   if (innerDrillPathArr.value.length > 0) return []
-  if (!props.focused) return []
+  if (!props.focused && !crossPackagePreviewActive) return []
   if (!props.innerPackages.length || !props.innerArtefacts.length) return []
 
   const localArtefactIds = new Set(props.innerArtefacts.map((a) => a.id))
@@ -597,7 +620,7 @@ const crossPackageBridgeRelations = computed((): readonly BridgeRelation[] => {
  */
 const crossPackageBoundaryStubRelations = computed((): readonly BoundaryStubRelation[] => {
   if (innerDrillPathArr.value.length > 0) return []
-  if (!props.focused) return []
+  if (!props.focused && !crossPackagePreviewActive) return []
   if (!props.innerArtefacts.length) return []
 
   const localArtefactIds = new Set(props.innerArtefacts.map((a) => a.id))
@@ -618,8 +641,10 @@ const crossPackageBoundaryStubRelations = computed((): readonly BoundaryStubRela
     const localId = fromLocal ? rel.from : rel.to
     const foreignId = fromLocal ? rel.to : rel.from
     if (foreignIsVisibleChildPackage(foreignId)) continue
-    if (focusedLocalId && localId !== focusedLocalId) continue
-    const side: 'left' | 'right' = fromLocal ? 'right' : 'left'
+    // In preview mode, show all cross-package relations (not filtered by focusedLocalId)
+    if (props.focused && focusedLocalId && localId !== focusedLocalId) continue
+    // For cross-package preview, anchor on left when local is target, right when local is source
+    const side: 'left' | 'right' = toLocal ? 'left' : 'right'
     const foreignPkgId = artefactPackageId(foreignId)
     const externalLabel = focusedLocalId
       ? artefactSimpleName(foreignId)
@@ -1001,6 +1026,8 @@ watch(innerDrillPathArr, (p, prev) => {
   }
 })
 
+watch(crossPackagePreviewActive, () => void nextTick(() => scheduleInnerEdgeRefreshSettled()))
+
 const editing = ref(false)
 const draftLabel = ref('')
 const draftDescription = ref('')
@@ -1095,7 +1122,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     Artefact-specific content is injected via slots so {@link ScalaArtefactBox} can reuse this shell
     without duplicating chrome — see `focused-tools-prefix`, `focused-header-icon`, `focused-body`.
   -->
-  <div v-else-if="focused" class="package-box-host">
+  <div v-else-if="focused && !crossPackageFocused" class="package-box-host">
     <GeneralFocusedBox
       :accent="accent"
       :title="label"
@@ -1728,11 +1755,11 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       </div>
     </div>
 
-    <!-- Cross-package focus preview: compact artefact rows when a connected artefact elsewhere is focused -->
+    <!-- Cross-package focus preview: show full inner diagram when a connected artefact elsewhere is focused -->
     <div
       v-if="crossPackagePreviewActive && innerArtefactLayerColumns.length"
       ref="innerArtefactDiagramRef"
-      class="package-box__inner-artefact-diagram package-box__inner-artefact-diagram--cross-preview nodrag nopan"
+      class="package-box__inner-artefact-diagram nodrag nopan"
       @pointerdown.stop
       @wheel.stop
     >
@@ -1744,38 +1771,102 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
         xmlns="http://www.w3.org/2000/svg"
       >
         <defs>
-          <marker :id="`${innerEdgeMarkerId}-xp-extends`" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+          <marker
+            :id="`${innerEdgeMarkerId}-extends`"
+            class="package-box__inner-edge-marker"
+            markerWidth="14"
+            markerHeight="14"
+            refX="12"
+            refY="6"
+            orient="auto"
+            markerUnits="userSpaceOnUse"
+          >
             <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--extends" />
           </marker>
-          <marker :id="`${innerEdgeMarkerId}-xp-hastrait`" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+          <marker
+            :id="`${innerEdgeMarkerId}-hastrait`"
+            class="package-box__inner-edge-marker"
+            markerWidth="14"
+            markerHeight="14"
+            refX="12"
+            refY="6"
+            orient="auto"
+            markerUnits="userSpaceOnUse"
+          >
             <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--hastrait" />
           </marker>
-          <marker :id="`${innerEdgeMarkerId}-xp-gets`" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+          <marker
+            :id="`${innerEdgeMarkerId}-gets`"
+            class="package-box__inner-edge-marker"
+            markerWidth="14"
+            markerHeight="14"
+            refX="12"
+            refY="6"
+            orient="auto"
+            markerUnits="userSpaceOnUse"
+          >
             <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--gets" />
           </marker>
-          <marker :id="`${innerEdgeMarkerId}-xp-creates`" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+          <marker
+            :id="`${innerEdgeMarkerId}-creates`"
+            class="package-box__inner-edge-marker"
+            markerWidth="14"
+            markerHeight="14"
+            refX="12"
+            refY="6"
+            orient="auto"
+            markerUnits="userSpaceOnUse"
+          >
             <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--creates" />
           </marker>
         </defs>
-        <g v-for="e in innerEdgeDraws" :key="e.id">
+        <g v-for="e in normalInnerEdgeDraws" :key="e.id" class="package-box__inner-edge-group">
           <path
             :d="e.path"
-            class="package-box__inner-edge-path"
+            class="package-box__inner-edge-hit"
+            fill="none"
+            @mouseenter="onInnerEdgeEnter(e)"
+            @mouseleave="onInnerEdgeLeave(e)"
+          />
+          <path
+            :d="e.path"
+            :class="[
+              'package-box__inner-edge-path',
+              { 'package-box__inner-edge-path--emph': innerEdgeEmphasized(e) },
+              e.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
+              e.kind === 'creates' ? 'package-box__inner-edge-path--creates' : null,
+            ]"
             fill="none"
             :style="{ stroke: e.stroke }"
-            :marker-end="`url(#${innerEdgeMarkerId}-xp-${innerEdgeMarkerSuffix(e.kind)})`"
+            :marker-end="`url(#${innerEdgeMarkerId}-${innerEdgeMarkerSuffix(e.kind)})`"
           />
           <text
+            v-if="e.displayLabel"
             :x="e.labelX"
             :y="e.labelY - 15"
             class="package-box__inner-edge-label"
             :style="innerEdgeLabelSvgStyleFor(e)"
             text-anchor="middle"
             dominant-baseline="middle"
-          >{{ e.displayLabel }}</text>
+            >{{ e.displayLabel }}</text
+          >
         </g>
       </svg>
       <div class="package-box__inner-artefact-cols">
+        <div
+          v-if="crossPackageExternalEndpoints.left.length"
+          class="package-box__external-endpoints package-box__external-endpoints--left"
+        >
+          <div
+            v-for="ep in crossPackageExternalEndpoints.left"
+            :key="ep.id"
+            :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
+            class="package-box__external-endpoint"
+          >
+            <span class="package-box__artefact-anchor package-box__artefact-anchor--out" aria-hidden="true" />
+            <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
+          </div>
+        </div>
         <div
           v-for="(col, ci) in innerArtefactLayerColumns"
           :key="'col-' + ci"
@@ -1815,6 +1906,20 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
               </div>
             </div>
           </template>
+        </div>
+        <div
+          v-if="crossPackageExternalEndpoints.right.length"
+          class="package-box__external-endpoints package-box__external-endpoints--right"
+        >
+          <div
+            v-for="ep in crossPackageExternalEndpoints.right"
+            :key="ep.id"
+            :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
+            class="package-box__external-endpoint package-box__external-endpoint--right"
+          >
+            <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
+            <span class="package-box__artefact-anchor package-box__artefact-anchor--in" aria-hidden="true" />
+          </div>
         </div>
       </div>
     </div>
@@ -1922,10 +2027,12 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .package-box--cross-preview {
   height: auto;
   overflow: visible;
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
 }
 .package-box__inner-artefact-diagram--cross-preview {
   margin-top: 8px;
-  flex: 0 0 auto;
 }
 
 /**

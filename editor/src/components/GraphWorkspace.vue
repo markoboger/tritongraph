@@ -191,7 +191,8 @@ async function applyPackageRelationFocusVisibilityAndRelayout() {
   packageFocusRelayoutQueued.value = true
   try {
     await nextTick()
-    await relayoutViewport({ skipDrillReapply: true })
+    // Trigger Vue Flow layout recalculation to ensure packages stack properly
+    await fitView({ padding: 0.1, duration: 300 })
   } finally {
     packageFocusRelayoutQueued.value = false
   }

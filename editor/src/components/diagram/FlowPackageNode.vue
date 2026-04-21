@@ -111,6 +111,8 @@ const props = defineProps<{
     innerArtefactPinned?: Record<string, boolean>
     /** id → accent color map for inner Scala artefacts (lifted from local state, same reasons). */
     innerArtefactColors?: Record<string, string>
+    /** Internal flag: true when layerDrillFocus is set due to cross-package relations (not user drill). */
+    __crossPackageFocus?: boolean
   }
 }>()
 
@@ -336,6 +338,14 @@ function onInnerArtefactColors(map: Record<string, string>) {
   setInnerArtefactColorsMap(ws(), props.id, map)
 }
 
+/** Trigger a Vue Flow layout recalculation (e.g., when cross-package preview expands). */
+function onLayoutUpdateRequest() {
+  refreshOwnNodeDimensions()
+  // Trigger a window resize event to simulate the user's window resize action
+  // This triggers the ResizeObservers which then trigger the proper layout recalculation
+  window.dispatchEvent(new Event('resize'))
+}
+
 function refreshOwnNodeDimensions() {
   const el = rootEl.value?.parentElement as HTMLDivElement | null
   if (el) updateNodeDimensions([{ id: props.id, nodeElement: el, forceUpdate: true }])
@@ -434,6 +444,7 @@ watch(
             :focused="!!data.layerDrillFocus"
             :show-pin-tool="showPinTool"
             :show-color-tool="!!data.layerDrillFocus"
+            :cross-package-focused="!!data.__crossPackageFocus"
             :inner-packages="innerPackagesForBox"
             :inner-artefacts="innerArtefactsForBox"
             :inner-artefact-relations="innerArtefactRelationsForBox"
@@ -451,6 +462,7 @@ watch(
             @update-inner-artefact-focus="onInnerArtefactFocus"
             @update-inner-artefact-pinned="onInnerArtefactPinned"
             @update-inner-artefact-colors="onInnerArtefactColors"
+            @layout-update-request="onLayoutUpdateRequest"
           />
         </DiagramSection>
       </div>
