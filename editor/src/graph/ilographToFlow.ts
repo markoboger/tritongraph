@@ -232,6 +232,12 @@ export function ilographDocumentToFlow(
           .map(normalizeInnerArtefactRelationSpec)
           .filter((x): x is TritonInnerArtefactRelationSpec => x !== null)
         : undefined
+
+    // Debug: Log cross-package relations for this package
+    if (crossArtefactRelations && crossArtefactRelations.length) {
+      console.log(`Package ${id} has ${crossArtefactRelations.length} cross-package relations:`, crossArtefactRelations)
+    }
+
     const projectCompartmentsRaw = res['x-triton-project-compartments']
     const projectCompartments =
       Array.isArray(projectCompartmentsRaw) && projectCompartmentsRaw.length
