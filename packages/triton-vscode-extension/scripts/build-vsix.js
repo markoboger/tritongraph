@@ -33,7 +33,7 @@ function copyIntoStage(stageDir, relPath) {
 
 function manifestXml() {
   const readme = 'extension/README.md'
-  const installGuide = 'extension/INSTALL.md'
+  const changelog = 'extension/CHANGELOG.md'
   return `<?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
   <Metadata>
@@ -48,7 +48,7 @@ function manifestXml() {
     </Properties>
     <Assets>
       <Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="${readme}" Addressable="true" />
-      <Asset Type="Microsoft.VisualStudio.Services.Content.Changelog" Path="${installGuide}" Addressable="true" />
+      <Asset Type="Microsoft.VisualStudio.Services.Content.Changelog" Path="${changelog}" Addressable="true" />
       <Asset Type="Microsoft.VisualStudio.Services.VSIXPackage" Path="extension.vsixmanifest" Addressable="true" />
       <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />
     </Assets>
@@ -70,6 +70,8 @@ function contentTypesXml() {
   <Default Extension="json" ContentType="application/json" />
   <Default Extension="js" ContentType="application/javascript" />
   <Default Extension="md" ContentType="text/markdown" />
+  <Default Extension="png" ContentType="image/png" />
+  <Default Extension="svg" ContentType="image/svg+xml" />
   <Default Extension="xml" ContentType="application/xml" />
   <Override PartName="/extension.vsixmanifest" ContentType="text/xml" />
 </Types>
@@ -87,7 +89,15 @@ function main() {
   ensureDir(path.join(stageDir, 'extension'))
   ensureDir(outDir)
 
-  for (const relPath of ['package.json', 'README.md', 'INSTALL.md', path.join('src', 'extension.js')]) {
+  for (const relPath of [
+    'package.json',
+    'README.md',
+    'INSTALL.md',
+    'CHANGELOG.md',
+    path.join('src', 'extension.js'),
+    path.join('media', 'triton-architecture-explorer-icon.png'),
+    path.join('media', 'triton-architecture-explorer-icon.svg'),
+  ]) {
     copyIntoStage(stageDir, relPath)
   }
 

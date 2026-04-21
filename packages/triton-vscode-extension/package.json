@@ -1,19 +1,42 @@
 {
-  "name": "triton-vscode-extension",
-  "displayName": "Triton Graph",
-  "description": "Open Triton's browser-based Scala architecture diagram from VS Code or Cursor, print the local diagram URL, and handle deep links back into the IDE.",
-  "version": "0.1.0",
-  "private": true,
+  "name": "triton-architecture-explorer",
+  "displayName": "Triton Architecture Explorer",
+  "description": "Preview Triton's browser-based architecture explorer for Scala and sbt workspaces, navigate diagrams, and jump back into source from VS Code-compatible IDEs.",
+  "version": "0.3.0",
   "publisher": "triton",
+  "icon": "media/triton-architecture-explorer-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/markoboger/tritongraph.git"
+  },
+  "homepage": "https://github.com/markoboger/tritongraph",
+  "bugs": {
+    "url": "https://github.com/markoboger/tritongraph/issues"
+  },
+  "keywords": [
+    "architecture",
+    "scala",
+    "sbt",
+    "diagram",
+    "visualization",
+    "software-architecture"
+  ],
+  "galleryBanner": {
+    "color": "#145A73",
+    "theme": "dark"
+  },
   "scripts": {
-    "package:vsix": "node ./scripts/build-vsix.js"
+    "package:vsix": "node ./scripts/build-vsix.js",
+    "package:marketplace": "npx @vscode/vsce package --pre-release",
+    "publish:marketplace": "npx @vscode/vsce publish --pre-release"
   },
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
     "Visualization",
-    "Other"
+    "Other",
+    "Testing"
   ],
   "activationEvents": [
     "onUri",
@@ -27,8 +50,7 @@
     "onCommand:triton.runCoverageReport",
     "onCommand:triton.copyDiagramUrl",
     "onCommand:triton.showServerUrl",
-    "onCommand:triton.showOutput",
-    "onUri"
+    "onCommand:triton.showOutput"
   ],
   "main": "./src/extension.js",
   "contributes": {
@@ -86,6 +108,11 @@
       {
         "command": "triton.showOutput",
         "title": "Triton: Show Output",
+        "category": "Triton"
+      },
+      {
+        "command": "triton.checkForUpdates",
+        "title": "Triton: Check For Updates",
         "category": "Triton"
       }
     ],
@@ -162,6 +189,16 @@
           "type": "string",
           "default": "coverage; test; coverageReport",
           "description": "Command text passed to sbt when running `Triton: Run coverageReport`."
+        },
+        "triton.autoCheckUpdates": {
+          "type": "boolean",
+          "default": true,
+          "description": "When enabled, Triton periodically checks GitHub Releases for newer beta VSIX builds."
+        },
+        "triton.updateFeedUrl": {
+          "type": "string",
+          "default": "https://api.github.com/repos/markoboger/tritongraph/releases/latest",
+          "description": "Release feed URL used by `Triton: Check For Updates`. The default points at the latest GitHub release for this repo."
         }
       }
     }

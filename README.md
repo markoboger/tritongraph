@@ -1,16 +1,51 @@
-# tritongraph
+# Triton Architecture Explorer
 
-Vue Flow editor for **sbt-style modules** (nested projects) and **compile dependencies**, using an [Ilograph](https://ilograph.com/docs/spec)-compatible YAML document (`resources` + `perspectives` with `relations`).
+Browser-first architecture analysis for Scala and sbt projects, with a local web UI, a VS Code-compatible extension, runtime-backed workspace loading, and deep links back into the IDE.
 
-## Run the web UI (localhost)
+## Quick links
+
+- [Open Triton in the browser](http://127.0.0.1:5173)
+- [Start Triton Server from the extension](command:triton.startServer)
+- [Start Triton Runtime from the extension](command:triton.startRuntime)
+- [Open the diagram from the extension](command:triton.openDiagram)
+- [Student plugin install guide](docs/student-plugin-install.md)
+
+Command links work from a trusted README inside VS Code, Cursor, and similar editors after the Triton extension is installed. On GitHub or in a plain browser they show as normal links but will not launch local IDE commands.
+
+## Start Triton locally
+
+### Browser app only
 
 ```bash
-cd editor
+cd /Users/markoboger/workspace/tritongraph/editor
 npm install
 npm run dev
 ```
 
-Open the URL Vite prints (by default `http://127.0.0.1:5173`) in Cursor’s **Simple Browser** or your browser.
+This starts the local Triton web UI, usually at [http://127.0.0.1:5173](http://127.0.0.1:5173).
+
+### Runtime service
+
+```bash
+cd /Users/markoboger/workspace/tritongraph/packages/triton-runtime
+npm install
+npm start
+```
+
+This starts the local Triton runtime, usually at `http://127.0.0.1:4317`.
+
+### IDE-managed startup
+
+If you have the Triton extension installed in VS Code, Cursor, or Windsurf, you can let the extension start both services for you:
+
+1. Set `triton.localRepoPath` to `/Users/markoboger/workspace/tritongraph`.
+2. Enable `triton.autoStartServer=true`.
+3. Enable `triton.autoStartRuntime=true`.
+4. Run `Triton: Open Diagram`, or use the command links above from this README.
+
+## Current web UI behavior
+
+Open the URL above in Cursor’s internal browser, VS Code Simple Browser, or your normal browser.
 
 - **Load example** — loads `public/example.ilograph.yaml`.
 - **Open YAML** — import any compatible file.
@@ -20,7 +55,7 @@ Open the URL Vite prints (by default `http://127.0.0.1:5173`) in Cursor’s **Si
 
 Auto-layout uses **from** dependent **to** dependency in YAML. The canvas places **columns by dependency depth** (consumers on the **left**, classpath foundations on the **right**). Each column gets an **equal share of viewport width**; nodes in a column split **viewport height** (margins + stack gaps). Every box gets explicit **width/height** from that allocation so modules **scale with the pane**. Nested groups use the same rules inside the parent frame.
 
-## Editor plugin roadmap
+## Extension direction
 
 The current direction is a browser-first Triton integration for VS Code and Cursor, with a local service now and cloud/webhook support later. The working product and architecture plan lives in [docs/vscode-plugin-roadmap.md](/Users/markoboger/workspace/tritongraph/docs/vscode-plugin-roadmap.md).
 

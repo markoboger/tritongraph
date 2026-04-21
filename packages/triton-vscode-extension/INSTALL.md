@@ -10,21 +10,44 @@ npm run package:vsix
 
 That writes:
 
-- `dist/triton-vscode-extension-0.1.0.vsix`
+- `dist/triton-architecture-explorer-0.3.0.vsix`
+
+## Build the Marketplace beta package
+
+From this package:
+
+```bash
+npm run package:marketplace
+```
+
+That creates a pre-release Marketplace-ready VSIX using `vsce`.
 
 ## Install in VS Code
 
 1. Open Extensions.
 2. Open the `...` menu.
 3. Choose `Install from VSIX...`.
-4. Pick `dist/triton-vscode-extension-0.1.0.vsix`.
+4. Pick `dist/triton-architecture-explorer-0.3.0.vsix`.
 
 ## Install in Cursor
 
 1. Open Extensions.
 2. Open the extension actions menu.
 3. Choose the VSIX install action.
-4. Pick `dist/triton-vscode-extension-0.1.0.vsix`.
+4. Pick `dist/triton-architecture-explorer-0.3.0.vsix`.
+
+## Publish the Marketplace beta
+
+1. Create or sign in to your Visual Studio Marketplace publisher account.
+2. Make sure the publisher id matches the `publisher` field in `package.json`.
+3. Create a Personal Access Token for the Marketplace / Azure DevOps publisher account.
+4. From this package, run:
+
+```bash
+npm run publish:marketplace
+```
+
+This uses `vsce publish --pre-release`, which publishes the extension as a Marketplace pre-release / beta.
 
 ## Configure
 
@@ -68,6 +91,7 @@ Optional settings:
 9. Run `Triton: Show Server URL` and confirm the base server URL is copied and logged.
 10. If using managed startup, run `Triton: Stop Local Server` and confirm the dev server stops.
 11. Run `Triton: Run sbt test` and `Triton: Run coverageReport` in an sbt workspace and confirm the runtime or fallback task completes.
+12. Run `Triton: Check For Updates` and confirm Triton either reports that it is up to date or offers a newer beta `.vsix`.
 
 ## Current MVP limitations
 

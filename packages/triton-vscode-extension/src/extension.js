@@ -3,8 +3,9 @@ const fs = require('fs')
 const path = require('path')
 const cp = require('child_process')
 
-const EXTENSION_ID = 'triton.triton-vscode-extension'
+const EXTENSION_ID = 'triton.triton-architecture-explorer'
 const OUTPUT_CHANNEL_NAME = 'Triton'
+const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000
 const commitRefreshTimers = new Map()
 let serverProcess = null
 let runtimeProcess = null
@@ -27,8 +28,35 @@ function normalizeServerUrl(raw) {
   }
 }
 
+function normalizeOptionalUrl(raw) {
+  const value = typeof raw === 'string' ? raw.trim() : ''
+  if (!value) return ''
+  try {
+    return new URL(value).toString()
+  } catch {
+    return ''
+  }
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function compareSemver(a, b) {
+  const parse = (value) =>
+    String(value || '')
+      .trim()
+      .split('.')
+      .map((part) => Number.parseInt(part, 10))
+      .map((part) => (Number.isFinite(part) ? part : 0))
+  const av = parse(a)
+  const bv = parse(b)
+  const len = Math.max(av.length, bv.length, 3)
+  for (let i = 0; i < len; i++) {
+    const diff = (av[i] || 0) - (bv[i] || 0)
+    if (diff !== 0) return diff
+  }
+  return 0
 }
 
 function npmExecutable() {
@@ -238,6 +266,113 @@ async function stopRuntime() {
   runtimeProcess = null
   outputChannel().appendLine(`[${new Date().toISOString()}] Requested Triton runtime shutdown.`)
   vscode.window.showInformationMessage('Triton runtime stop requested.')
+}
+
+function configuredUpdateFeedUrl() {
+  const config = vscode.workspace.getConfiguration('triton')
+  const explicit = normalizeOptionalUrl(config.get('updateFeedUrl', ''))
+  if (explicit) return explicit
+  return 'https://api.github.com/repos/markoboger/tritongraph/releases/latest'
+}
+
+async function fetchLatestReleaseInfo() {
+  const url = configuredUpdateFeedUrl()
+  if (!url) return null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 4000)
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'triton-architecture-explorer',
+      },
+      signal: controller.signal,
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const body = await res.json()
+    const version = String(body.tag_name || body.name || '')
+      .trim()
+      .replace(/^v/i, '')
+    if (!version) return null
+    const vsixAsset = Array.isArray(body.assets)
+      ? body.assets.find((asset) => String(asset?.name || '').endsWith('.vsix'))
+      : null
+    return {
+      version,
+      htmlUrl: normalizeOptionalUrl(body.html_url || body.url || ''),
+      downloadUrl: normalizeOptionalUrl(vsixAsset?.browser_download_url || ''),
+      assetName: String(vsixAsset?.name || ''),
+      publishedAt: String(body.published_at || ''),
+      body: String(body.body || ''),
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function versionLabel(version) {
+  return `v${String(version || '').replace(/^v/i, '')}`
+}
+
+async function checkForUpdates(context, options = {}) {
+  const silent = options.silent === true
+  const out = outputChannel()
+  const extension = vscode.extensions.getExtension('triton.triton-architecture-explorer')
+  const currentVersion = extension?.packageJSON?.version || '0.0.0'
+  const state = context.globalState
+  const skippedVersion = String(state.get('triton.skippedUpdateVersion', '') || '')
+
+  try {
+    if (!silent) {
+      out.appendLine(`[${new Date().toISOString()}] Checking for Triton beta updates...`)
+    }
+    const latest = await fetchLatestReleaseInfo()
+    await state.update('triton.lastUpdateCheckAt', Date.now())
+    if (!latest) {
+      if (!silent) vscode.window.showInformationMessage('Triton could not find any published beta updates yet.')
+      return null
+    }
+    out.appendLine(
+      `[${new Date().toISOString()}] Update feed version=${latest.version} current=${currentVersion} asset=${latest.assetName || 'n/a'}`,
+    )
+    if (compareSemver(latest.version, currentVersion) <= 0) {
+      if (!silent) vscode.window.showInformationMessage(`Triton is up to date (${versionLabel(currentVersion)}).`)
+      return null
+    }
+    if (silent && skippedVersion === latest.version) return latest
+
+    const buttons = []
+    if (latest.downloadUrl) buttons.push('Download VSIX')
+    if (latest.htmlUrl) buttons.push('Open Release Notes')
+    buttons.push('Skip This Version', 'Later')
+    const selection = await vscode.window.showInformationMessage(
+      `Triton update available: ${versionLabel(currentVersion)} -> ${versionLabel(latest.version)}`,
+      ...buttons,
+    )
+    if (selection === 'Download VSIX' && latest.downloadUrl) {
+      await vscode.env.openExternal(vscode.Uri.parse(latest.downloadUrl))
+    } else if (selection === 'Open Release Notes' && latest.htmlUrl) {
+      await vscode.env.openExternal(vscode.Uri.parse(latest.htmlUrl))
+    } else if (selection === 'Skip This Version') {
+      await state.update('triton.skippedUpdateVersion', latest.version)
+    }
+    return latest
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    out.appendLine(`[${new Date().toISOString()}] Update check failed: ${message}`)
+    if (!silent) {
+      vscode.window.showWarningMessage(`Triton could not check for updates: ${message}`)
+    }
+    return null
+  }
+}
+
+function shouldAutoCheckForUpdates(context) {
+  const config = vscode.workspace.getConfiguration('triton')
+  if (!config.get('autoCheckUpdates', true)) return false
+  const lastCheckAt = Number(context.globalState.get('triton.lastUpdateCheckAt', 0) || 0)
+  return !lastCheckAt || Date.now() - lastCheckAt >= UPDATE_CHECK_INTERVAL_MS
 }
 
 function probeWorkspace(folder) {
@@ -645,6 +780,7 @@ function activate(context) {
     vscode.commands.registerCommand('triton.copyDiagramUrl', copyDiagramUrl),
     vscode.commands.registerCommand('triton.showServerUrl', showServerUrl),
     vscode.commands.registerCommand('triton.showOutput', () => out.show(true)),
+    vscode.commands.registerCommand('triton.checkForUpdates', () => checkForUpdates(context, { silent: false })),
     vscode.window.registerUriHandler({
       handleUri: async (uri) => {
         out.appendLine(`[${new Date().toISOString()}] Received Triton URI: ${uri.toString()}`)
@@ -659,6 +795,10 @@ function activate(context) {
       },
     }),
   )
+
+  if (shouldAutoCheckForUpdates(context)) {
+    void checkForUpdates(context, { silent: true })
+  }
 }
 
 function deactivate() {}

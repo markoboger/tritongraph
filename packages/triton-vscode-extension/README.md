@@ -1,6 +1,17 @@
-# triton-vscode-extension
+# Triton Architecture Explorer
 
-Browser-first VS Code / Cursor extension scaffold for Triton.
+Browser-first VS Code-compatible extension for Triton.
+
+`Triton Architecture Explorer` opens Triton's browser-based architecture views for Scala and sbt projects, lets students and developers inspect project/package structure, and follows links back into code inside VS Code, Cursor, and similar editors.
+
+## Quick actions
+
+- [Start Triton Server](command:triton.startServer)
+- [Start Triton Runtime](command:triton.startRuntime)
+- [Open Diagram](command:triton.openDiagram)
+- [Open local browser UI](http://127.0.0.1:5173)
+
+The `command:` links work from a trusted README inside VS Code-compatible editors after the extension is installed. The localhost link works whenever the local server is already running.
 
 Current MVP scaffold:
 
@@ -15,8 +26,11 @@ Current MVP scaffold:
 - `Triton: Copy Diagram URL` copies that URL for README/plugin-description/manual sharing
 - `Triton: Show Server URL` copies the base Triton server URL and reveals it in the output channel
 - `Triton: Show Output` opens an output channel that logs the Triton URL and IDE callback URL
+- `Triton: Check For Updates` checks the configured GitHub release feed for a newer beta `.vsix`
 - registers an IDE URI handler so the browser app can deep-link back into source files
 - `npm run package:vsix` produces a local `.vsix` in `dist/`
+- `npm run package:marketplace` builds a pre-release Marketplace package with `vsce`
+- `npm run publish:marketplace` publishes the Marketplace pre-release once publisher credentials are configured
 - [`INSTALL.md`](./INSTALL.md) documents install and smoke-test steps for VS Code and Cursor
 
 Current assumptions:
@@ -30,6 +44,8 @@ Current assumptions:
 - `triton.autoStartServer` + `triton.localRepoPath` let the extension start the current repo's Vite app if Triton is offline
 - `triton.runtimeUrl` + `triton.autoStartRuntime` let the extension call and optionally start `triton-runtime`
 - `triton.refreshAction` lets refresh either reopen Triton, run `sbt test`, or run the configured coverage command before reopening
+- `triton.autoCheckUpdates` periodically checks GitHub Releases for newer beta builds
+- `triton.updateFeedUrl` can override the default GitHub Releases API endpoint if you move updates elsewhere
 
 Current status:
 
