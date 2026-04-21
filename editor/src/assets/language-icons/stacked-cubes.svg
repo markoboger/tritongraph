@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Four visible isometric cubes arranged as a 2x2 pile, with the missing back-right cube
+  implied but not drawn. Geometry reuses the face proportions and styling of `cube.svg`.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 280" width="320" height="280">
+  <g
+    fill="#ffffff"
+    stroke="#0f172a"
+    stroke-width="6"
+    stroke-linejoin="round"
+    stroke-linecap="round"
+  >
+    <g transform="translate(0 80)">
+      <polygon points="100,20 169.28,60 100,100 30.72,60" fill="#f8fafc" />
+      <polygon points="169.28,60 169.28,140 100,180 100,100" fill="#cbd5e1" />
+      <polygon points="30.72,60 100,100 100,180 30.72,140" fill="#94a3b8" />
+    </g>
+    <g transform="translate(100 80)">
+      <polygon points="100,20 169.28,60 100,100 30.72,60" fill="#f8fafc" />
+      <polygon points="169.28,60 169.28,140 100,180 100,100" fill="#cbd5e1" />
+      <polygon points="30.72,60 100,100 100,180 30.72,140" fill="#94a3b8" />
+    </g>
+    <g transform="translate(50 0)">
+      <polygon points="100,20 169.28,60 100,100 30.72,60" fill="#f8fafc" />
+      <polygon points="169.28,60 169.28,140 100,180 100,100" fill="#cbd5e1" />
+      <polygon points="30.72,60 100,100 100,180 30.72,140" fill="#94a3b8" />
+    </g>
+    <g transform="translate(150 0)">
+      <polygon points="100,20 169.28,60 100,100 30.72,60" fill="#f8fafc" />
+      <polygon points="169.28,60 169.28,140 100,180 100,100" fill="#cbd5e1" />
+      <polygon points="30.72,60 100,100 100,180 30.72,140" fill="#94a3b8" />
+    </g>
+  </g>
+</svg>

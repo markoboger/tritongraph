@@ -1,4 +1,9 @@
-import type { IlographDocument, IlographRelation, IlographResource } from './ilographTypes'
+import type {
+  IlographDocument,
+  IlographRelation,
+  IlographResource,
+  TritonProjectCompartment,
+} from './ilographTypes'
 import type { SbtSubproject } from './parseBuildSbt'
 
 export interface SbtToIlographMeta {
@@ -13,6 +18,21 @@ export interface SbtToIlographMeta {
   projectsWithScalaSources?: ReadonlySet<string>
 }
 
+function pickRootProjectId(projects: ReadonlyArray<SbtSubproject>): string | undefined {
+  if (!projects.length) return undefined
+  const dotRoots = projects.filter((p) => (p.baseDir ?? '').trim() === '.')
+  if (dotRoots.length === 1) return dotRoots[0]?.id
+  if (projects.length === 1) return projects[0]?.id
+
+  const incoming = new Set<string>()
+  for (const p of projects) {
+    for (const id of p.aggregate) incoming.add(id)
+  }
+  const aggregateRoots = projects.filter((p) => p.aggregate.length > 0 && !incoming.has(p.id))
+  if (aggregateRoots.length === 1) return aggregateRoots[0]?.id
+  return projects[0]?.id
+}
+
 function packagesLinkMarkdown(projectId: string): string {
   return `[packages](triton://diagram/packages?project=${encodeURIComponent(projectId)})`
 }
@@ -24,16 +44,60 @@ function makeSubtitle(p: SbtSubproject, meta: SbtToIlographMeta): string | undef
   return parts.length ? parts.join(' · ') : undefined
 }
 
+function buildProjectCompartments(
+  p: SbtSubproject,
+  kind: 'project' | 'module',
+): TritonProjectCompartment[] {
+  const versionsRows = [
+    ...(p.scalaVersion ? [{ label: 'Scala', value: p.scalaVersion }] : []),
+    ...(p.version ? [{ label: 'Version', value: p.version }] : []),
+  ]
+  const libraryRows = p.libraryDependencies.map((value) => ({ value }))
+  const settingsRows = [
+    { label: 'Kind', value: kind === 'project' ? 'Project' : 'Module' },
+    { label: kind === 'project' ? 'Project id' : 'Module id', value: p.id },
+    ...(p.name ? [{ label: 'Name', value: p.name }] : []),
+    ...(p.organization ? [{ label: 'Organization', value: p.organization }] : []),
+    { label: 'Base dir', value: p.baseDir && p.baseDir.trim() ? p.baseDir : '.' },
+    ...(p.dependsOn.length ? [{ label: 'Depends on', value: p.dependsOn.join(', ') }] : []),
+    ...(p.aggregate.length ? [{ label: 'Aggregates', value: p.aggregate.join(', ') }] : []),
+  ]
+  return [
+    {
+      id: 'versions',
+      title: 'Versions',
+      rows: versionsRows,
+      emptyText: 'No version metadata',
+    },
+    {
+      id: 'libraries',
+      title: 'Libraries',
+      rows: libraryRows,
+      emptyText: 'No library dependencies',
+    },
+    {
+      id: 'settings',
+      title: 'Settings',
+      rows: settingsRows,
+      emptyText: 'No settings',
+    },
+  ]
+}
+
 export function sbtProjectsToIlographDocument(
   projects: SbtSubproject[],
   meta: SbtToIlographMeta = {},
 ): IlographDocument {
   const ids = new Set(projects.map((p) => p.id))
+  const rootProjectId = pickRootProjectId(projects)
   const resources: IlographResource[] = projects.map((p) => {
     const subtitle = makeSubtitle(p, meta)
+    const kind: 'project' | 'module' = p.id === rootProjectId ? 'project' : 'module'
     return {
       name: p.id,
       ...(subtitle ? { subtitle } : {}),
+      'x-triton-project-kind': kind,
+      'x-triton-project-compartments': buildProjectCompartments(p, kind),
     }
   })
 

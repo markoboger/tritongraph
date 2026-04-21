@@ -23,6 +23,7 @@ export interface ParsedScalaDefinition {
   modifiers: string[]
   parents: ParsedScalaParent[]
   paramTypeRefs: Array<{ name: string; wrapper?: string }>
+  createdTypeRefs: string[]
   constructorParams: string
   methodSignatures: ParsedScalaMethodSignature[]
   doc: string
@@ -47,6 +48,7 @@ export interface ScalaArtefact {
   packageName: string
   parents: ParsedScalaParent[]
   paramTypeRefs: Array<{ name: string; wrapper?: string }>
+  createdTypeRefs: string[]
   constructorParams: string
   modifiers: string[]
   methodSignatures: ParsedScalaMethodSignature[]
@@ -67,6 +69,12 @@ export interface ScalaGetsEdge {
   wrapperName?: string
 }
 
+export interface ScalaCreatesEdge {
+  fromArtefactId: string
+  toArtefactId: string
+  kind: 'creates'
+}
+
 export interface ScalaPackageNode {
   name: string
   files: string[]
@@ -84,6 +92,7 @@ export interface ScalaPackageGraph {
   edges: ScalaPackageEdge[]
   inheritance: ScalaInheritanceEdge[]
   gets: ScalaGetsEdge[]
+  creates: ScalaCreatesEdge[]
   testArtefacts: ScalaArtefact[]
 }
 
@@ -119,13 +128,12 @@ function packageIsStrictAncestor(ancestor: string, maybeDesc: string): boolean {
 
 function resolveImportToPackage(prefix: string, knownPackages: Set<string>): string | undefined {
   if (!prefix) return undefined
-  if (knownPackages.has(prefix)) return prefix
-  const dot = prefix.lastIndexOf('.')
-  if (dot > 0) {
-    const parent = prefix.slice(0, dot)
-    if (knownPackages.has(parent)) return parent
-  }
-  return undefined
+  /**
+   * Import parsing already splits `import a.b.C` into `prefix = a.b`, `selectors = [C]`.
+   * For package relationships we only want that rightmost package, never an ancestor fallback:
+   * if `a.b` is not a known package, we should not invent an edge to `a`.
+   */
+  return knownPackages.has(prefix) ? prefix : undefined
 }
 
 function artefactFromDefinition(file: SourceTextFile, pkg: string, def: ParsedScalaDefinition): ScalaArtefact {
@@ -138,6 +146,7 @@ function artefactFromDefinition(file: SourceTextFile, pkg: string, def: ParsedSc
     packageName: pkg,
     parents: def.parents,
     paramTypeRefs: def.paramTypeRefs ?? [],
+    createdTypeRefs: def.createdTypeRefs ?? [],
     constructorParams: def.constructorParams ?? '',
     modifiers,
     methodSignatures: def.methodSignatures ?? [],
@@ -195,6 +204,7 @@ export function buildScalaPackageGraphFromSummaries(
 
   const inheritance = resolveInheritanceEdges(packages, mainSummaries)
   const gets = resolveGetsEdges(packages, mainSummaries)
+  const creates = resolveCreatesEdges(packages, mainSummaries)
 
   const testArtefacts: ScalaArtefact[] = []
   for (const { file, summary } of testSummaries) {
@@ -205,7 +215,7 @@ export function buildScalaPackageGraphFromSummaries(
     }
   }
 
-  return { packages, edges, inheritance, gets, testArtefacts }
+  return { packages, edges, inheritance, gets, creates, testArtefacts }
 }
 
 function resolveInheritanceEdges(
@@ -301,6 +311,58 @@ function resolveGetsEdges(
         if (seen.has(key)) continue
         seen.add(key)
         out.push({ fromArtefactId: userId, toArtefactId: usedId, kind: 'gets', wrapperName: ref.wrapper })
+      }
+    }
+  }
+  out.sort((a, b) =>
+    a.toArtefactId === b.toArtefactId
+      ? a.fromArtefactId.localeCompare(b.fromArtefactId)
+      : a.toArtefactId.localeCompare(b.toArtefactId),
+  )
+  return out
+}
+
+function resolveCreatesEdges(
+  packages: readonly ScalaPackageNode[],
+  summaries: readonly { file: SourceTextFile; summary: ScalaFileSummary }[],
+): ScalaCreatesEdge[] {
+  const artefactById = new Map<string, ScalaArtefact>()
+  const bySimpleName = new Map<string, ScalaArtefact[]>()
+  const byPackage = new Map<string, ScalaArtefact[]>()
+  for (const p of packages) {
+    byPackage.set(p.name, p.artefacts)
+    for (const a of p.artefacts) {
+      artefactById.set(artefactResourceId(a.packageName, a), a)
+      const bucket = bySimpleName.get(a.name) ?? []
+      bucket.push(a)
+      bySimpleName.set(a.name, bucket)
+    }
+  }
+  const summaryByFile = new Map<string, ScalaFileSummary>()
+  for (const s of summaries) summaryByFile.set(s.file.relPath, s.summary)
+
+  const out: ScalaCreatesEdge[] = []
+  const seen = new Set<string>()
+  for (const p of packages) {
+    const samePackageArtefacts = byPackage.get(p.name) ?? []
+    for (const creator of p.artefacts) {
+      const creatorId = artefactResourceId(creator.packageName, creator)
+      const summary = summaryByFile.get(creator.file)
+      const imports = summary?.imports ?? []
+      for (const rawName of creator.createdTypeRefs) {
+        const createdArt = resolveParentName(rawName, {
+          samePackageArtefacts,
+          imports,
+          bySimpleName,
+          artefactById,
+        })
+        if (!createdArt) continue
+        const createdId = artefactResourceId(createdArt.packageName, createdArt)
+        if (createdId === creatorId) continue
+        const key = `${creatorId}\u0001${createdId}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push({ fromArtefactId: creatorId, toArtefactId: createdId, kind: 'creates' })
       }
     }
   }

@@ -5,11 +5,13 @@ import FlowProjectNode from './components/diagram/FlowProjectNode.vue'
 import FlowPackageNode from './components/diagram/FlowPackageNode.vue'
 import GroupNode from './components/GroupNode.vue'
 import GraphWorkspace from './components/GraphWorkspace.vue'
+import DiagramTopBar from './components/common/DiagramTopBar.vue'
 import YamlDiffEditor from './components/YamlDiffEditor.vue'
 import { parseIlographYaml, stringifyIlographYaml } from './ilograph/parse'
 import type { IlographDocument } from './ilograph/types'
 import sbtLogoUrl from './assets/language-icons/sbt.svg'
 import cubeIconUrl from './assets/language-icons/cube.svg'
+import stackedCubesIconUrl from './assets/language-icons/stacked-cubes.svg'
 import folderIconUrl from './assets/language-icons/folder.svg'
 import { ilographDocumentToFlow } from './graph/ilographToFlow'
 import { flowToIlographDocument } from './graph/flowToIlograph'
@@ -24,12 +26,13 @@ import {
   routeSmoothstepEdgesInViewport,
 } from './graph/layoutDependencyLayers'
 import {
+  normalizeRelationTypeKey,
   relationTypeKeysSignature,
   relationTypesFromSignature,
   shouldHideEdgeForRelationFilter,
 } from './graph/relationVisibility'
 import { drillNoteForModuleId } from './graph/sbtStyleDrillNotes'
-import { listSbtExamples, sbtExampleSourceToYaml } from './sbt/sbtExampleBuilds'
+import { listSbtExamples } from './sbt/sbtExampleBuilds'
 import { parseBuildSbt } from './sbt/parseBuildSbt'
 import { sbtProjectsToIlographDocument } from './sbt/sbtProjectsToIlographDocument'
 import { getSbtTestLogFor } from './sbt/sbtTestLogLoader'
@@ -63,6 +66,11 @@ const perspectiveName = ref<string | undefined>('dependencies')
 const fileName = ref('diagram.ilograph.yaml')
 /** Repo-relative source path the diagram was generated from (sbt build, YAML file, …). Shown top-left on the canvas and embedded in the AI prompt for context. */
 const sourcePath = ref('')
+const sourcePathLogoUrl = computed(() => {
+  const src = sourcePath.value.trim()
+  if (src.endsWith('/build.sbt') || src.endsWith('\\build.sbt')) return sbtLogoUrl
+  return cubeIconUrl
+})
 const runtimeQuery = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
 const runtimeWorkspaceSession = computed(() => {
   const workspacePath = runtimeQuery?.get('workspaceFolder')?.trim() ?? ''
@@ -106,8 +114,31 @@ const graphRef = ref<InstanceType<typeof GraphWorkspace> | null>(null)
 const examplesMenu = ref<HTMLDetailsElement | null>(null)
 /** Checked relation types are visible (`false` means hidden). Synced from current edges’ labels. */
 const relationTypeVisibility = ref<Record<string, boolean>>({})
+const metricTooltipsEnabled = ref(false)
+const metricVisibility = ref<Record<'coverage' | 'debt' | 'issues', boolean>>({
+  coverage: true,
+  debt: false,
+  issues: false,
+})
 
-const relationTypesMenuSig = computed(() => relationTypeKeysSignature(edges.value))
+function collectInnerRelationTypeKeys(nodeList: readonly any[]): string[] {
+  const out = new Set<string>()
+  for (const node of nodeList) {
+    const raw = (node?.data as Record<string, unknown> | undefined)?.innerArtefactRelations
+    if (!Array.isArray(raw)) continue
+    for (const rel of raw) {
+      const label = (rel as Record<string, unknown> | undefined)?.label
+      out.add(normalizeRelationTypeKey(label))
+    }
+  }
+  return [...out]
+}
+
+const relationTypesMenuSig = computed(() => {
+  const keys = new Set(relationTypesFromSignature(relationTypeKeysSignature(edges.value)))
+  for (const key of collectInnerRelationTypeKeys(nodes.value)) keys.add(key)
+  return [...keys].sort().join('\n')
+})
 
 watch(relationTypesMenuSig, (sig) => {
   const keys = relationTypesFromSignature(sig)
@@ -313,6 +344,9 @@ const activeExample = computed<{ root: string; dir: string } | null>(() => {
  * (packages tab → sbt tab → packages tab) are picked up without component re-creation.
  */
 provide('tritonActiveExample', activeExample)
+provide('tritonRelationTypeVisibility', relationTypeVisibility)
+provide('tritonMetricTooltipsEnabled', metricTooltipsEnabled)
+provide('tritonMetricVisibility', metricVisibility)
 
 const nodeTypes = {
   module: FlowProjectNode,
@@ -657,7 +691,7 @@ function runtimeTabKey(prefix: 'runtime-sbt' | 'runtime-packages', workspacePath
 
 async function openSbtExampleTab(root: string, dir: string): Promise<void> {
   await openOrActivateTab(
-    { key: `sbt:${root}/${dir}`, title: dir, iconUrl: sbtLogoUrl },
+    { key: `sbt:${root}/${dir}`, title: dir, iconUrl: stackedCubesIconUrl },
     () => loadSbtBuildForExample(root, dir),
   )
 }
@@ -679,7 +713,7 @@ async function openRuntimeSbtTab(workspacePath: string, workspaceName: string): 
     {
       key: runtimeTabKey('runtime-sbt', workspacePath, workspaceName),
       title: workspaceName,
-      iconUrl: sbtLogoUrl,
+      iconUrl: stackedCubesIconUrl,
     },
     () => loadSbtBuildForRuntimeWorkspace(workspacePath, workspaceName),
   )
@@ -718,7 +752,31 @@ async function loadSbtBuildForExample(root: string, dir: string) {
   }
   const projects = parseBuildSbt(hit.source)
   const projectsWithScalaSources = computeProjectsWithScalaSources(hit.root, hit.dir, projects)
-  const yaml = sbtExampleSourceToYaml(hit.root, hit.dir, hit.source, { projectsWithScalaSources })
+  const doc = sbtProjectsToIlographDocument(projects, {
+    title: `sbt build: ${dir}`,
+    sourcePath: `${hit.root}/${hit.dir}/build.sbt`,
+    projectsWithScalaSources,
+  })
+  const allFiles = listScalaSourcesIn(hit.root, hit.dir)
+  const rep = getScoverageReportFor(hit.root, hit.dir)
+  if (allFiles.length && rep?.xml) {
+    const graph = await buildScalaPackageGraph(allFiles)
+    const parsedCoverage = parseScoverageXml(rep.xml)
+    const payload = buildScalaWorkspacePayload({
+      sourcePath: `${hit.root}/${hit.dir}/build.sbt`,
+      title: `sbt build: ${dir}`,
+      graph,
+      ilographDocument: doc,
+      parsedCoverage,
+    })
+    await whenOverlayStoreReady()
+    const ws = activeWorkspaceKey.value
+    if (ws) {
+      clearScalaCoverageForWorkspace(ws)
+      for (const entry of payload.coverage) setScalaCoverage(ws, entry.id, entry.stmtPct)
+    }
+  }
+  const yaml = stringifyIlographYaml(doc)
   sourcePath.value = `${hit.root}/${hit.dir}/build.sbt`
   await applyDoc(yaml, `${hit.root}/${hit.dir}/diagram.ilograph.yaml`, false)
   const linkable = projectsWithScalaSources.size
@@ -900,6 +958,28 @@ async function loadSbtBuildForRuntimeWorkspace(workspacePath: string, workspaceN
       sourcePath: `${workspacePath}/build.sbt`,
       projectsWithScalaSources,
     })
+    if (bundle.scalaFiles.length && bundle.coverageReport?.xml) {
+      const graph = await buildScalaPackageGraph(bundle.scalaFiles.map((f) => ({
+        root: '',
+        exampleDir: '',
+        relPath: f.relPath,
+        source: f.source,
+      })))
+      const parsedCoverage = parseScoverageXml(bundle.coverageReport.xml)
+      const payload = buildScalaWorkspacePayload({
+        sourcePath: `${workspacePath}/build.sbt`,
+        title: `sbt build: ${workspaceName}`,
+        graph,
+        ilographDocument: doc,
+        parsedCoverage,
+      })
+      await whenOverlayStoreReady()
+      const ws = activeWorkspaceKey.value
+      if (ws) {
+        clearScalaCoverageForWorkspace(ws)
+        for (const entry of payload.coverage) setScalaCoverage(ws, entry.id, entry.stmtPct)
+      }
+    }
     sourcePath.value = `${workspacePath}/build.sbt`
     await applyDoc(stringifyIlographYaml(doc), `${workspaceName}.runtime.ilograph.yaml`, false)
     const linkable = projectsWithScalaSources.size
@@ -1580,28 +1660,6 @@ onUnmounted(() => {
           </template>
         </div>
       </details>
-      <details class="examples-menu relations-menu">
-        <summary class="btn menu-summary">Relations</summary>
-        <div class="menu-panel" role="menu" aria-label="Relation types visible in the diagram">
-          <template v-if="relationTypesList.length">
-            <label
-              v-for="rel in relationTypesList"
-              :key="rel"
-              class="menu-check"
-            >
-              <input
-                type="checkbox"
-                :checked="relationTypeVisibility[rel] !== false"
-                @change="
-                  setRelationTypeVisible(rel, ($event.target as HTMLInputElement).checked)
-                "
-              />
-              <span class="menu-check__text">{{ rel }}</span>
-            </label>
-          </template>
-          <div v-else class="menu-empty">No relations in this diagram.</div>
-        </div>
-      </details>
       <label class="btn file">
         Open YAML
         <input type="file" accept=".yaml,.yml,text/yaml" hidden @change="onFilePick" />
@@ -1646,10 +1704,19 @@ onUnmounted(() => {
 
     <div class="main" :class="{ 'main--no-side': !showYamlEditor }">
       <div class="flow-wrap">
-        <div v-if="sourcePath" class="source-path-overlay" :title="sourcePath">
-          <img class="source-path-overlay__logo" :src="cubeIconUrl" alt="" aria-hidden="true" />
-          <span class="source-path-overlay__text">{{ sourcePath }}</span>
-        </div>
+        <DiagramTopBar
+          :source-path="sourcePath"
+          :source-path-logo-url="sourcePathLogoUrl"
+          :relation-types="relationTypesList"
+          :relation-type-visibility="relationTypeVisibility"
+          :metric-tooltips-enabled="metricTooltipsEnabled"
+          :metric-visibility="metricVisibility"
+          @update:relation-type-visible="setRelationTypeVisible"
+          @update:metric-tooltips-enabled="(v) => (metricTooltipsEnabled = v)"
+          @update:metric-visible="
+            (metricKey, visible) => (metricVisibility = { ...metricVisibility, [metricKey]: visible })
+          "
+        />
         <div
           v-if="ideSession"
           class="ide-session-overlay"
@@ -2093,38 +2160,6 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.source-path-overlay {
-  position: absolute;
-  top: 8px;
-  left: 12px;
-  z-index: 10;
-  pointer-events: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-  color: #475569;
-  background: rgba(255, 255, 255, 0.85);
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 4px;
-  padding: 3px 8px 3px 6px;
-  max-width: calc(100% - 24px);
-  user-select: text;
-}
-.source-path-overlay__logo {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  display: block;
-  object-fit: contain;
-}
-.source-path-overlay__text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
 }
 .side {
   border-left: 1px solid #e2e8f0;

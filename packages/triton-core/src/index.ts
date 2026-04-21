@@ -15,6 +15,8 @@ export type {
   IlographPerspective,
   IlographRelation,
   IlographResource,
+  TritonProjectCompartment,
+  TritonProjectCompartmentRow,
 } from './ilographTypes'
 export {
   artefactResourceId,

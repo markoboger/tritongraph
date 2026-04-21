@@ -8,19 +8,15 @@
  * `GraphDrillIn.vue`. Without this, clicking a package container would change geometry but would
  * skip the animation, making "expand to fill the layer" feel like a discontinuous jump.
  */
-import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { computed, inject, ref, type Ref } from 'vue'
 import folderIconUrl from '../assets/language-icons/folder.svg'
 import LanguageIcon from './LanguageIcon.vue'
 import { isLanguageIconId } from '../graph/languages'
 import { useScalaCoverageKeyed } from '../store/useOverlay'
-import {
-  AGG_TARGET_HANDLE,
-  aggregateFanTopPctForUsedSlots,
-  aggregateSourceHandleId,
-} from '../graph/handles'
-import { edgeContributesToClasspathDepth, strokeColorForFlowEdge } from '../graph/relationKinds'
-import { usedHandlesForNode } from '../graph/usedFlowHandles'
+import type { ModuleAnchorTops } from '../graph/layoutDependencyLayers'
+import DepthRelationHandles from './common/DepthRelationHandles.vue'
+import BoxMetricStrip from './common/BoxMetricStrip.vue'
+import { simulatedMetricsForBox } from './common/boxMetricDemo'
 
 type LayerFlipPayload = {
   tx: number
@@ -37,6 +33,7 @@ const props = defineProps<{
     subtitle?: string
     layerFlip?: LayerFlipPayload
     layerDrillFocus?: boolean
+    anchorTops?: ModuleAnchorTops
     /** Scala outer package scope: show folder + titles like {@link PackageBox}. */
     packageScope?: boolean
     /**
@@ -57,40 +54,6 @@ const props = defineProps<{
  */
 const hasLanguageLogo = computed(() => !!(props.data.packageScope && props.data.language && isLanguageIconId(props.data.language)))
 
-const { getEdges } = useVueFlow()
-const used = computed(() => usedHandlesForNode(props.id, getEdges.value))
-
-function edgeVisible(e: { hidden?: boolean }): boolean {
-  return !(e as { hidden?: boolean }).hidden
-}
-
-const strokeAggIn = computed(() => {
-  const hit = getEdges.value.find(
-    (e) =>
-      edgeVisible(e) &&
-      edgeContributesToClasspathDepth(e) &&
-      String(e.target) === props.id &&
-      String(e.targetHandle ?? AGG_TARGET_HANDLE) === AGG_TARGET_HANDLE,
-  )
-  return hit ? strokeColorForFlowEdge(hit) : '#64748b'
-})
-
-const strokeAggOutBySlot = computed(() => {
-  const out: Record<number, string> = {}
-  for (const slot of used.value.aggOutSlots) {
-    const hid = aggregateSourceHandleId(slot)
-    const hit = getEdges.value.find(
-      (e) =>
-        edgeVisible(e) &&
-        edgeContributesToClasspathDepth(e) &&
-        String(e.source) === props.id &&
-        String(e.sourceHandle ?? '') === hid,
-    )
-    out[slot] = hit ? strokeColorForFlowEdge(hit) : '#64748b'
-  }
-  return out
-})
-
 /**
  * Outer FLIP transform: at the start of the animation the focused group sits at its `first`
  * (pre-drill) rect via this translate+scale; `playLayerFlip` then sets sx/sy back to 1 with a
@@ -100,7 +63,7 @@ const layerFlipStyle = computed((): Record<string, string> => {
   const f = props.data.layerFlip
   if (!f) return {}
   return {
-    transform: `translate(${f.tx}px, ${f.ty}px) scale(${f.sx}, ${f.sy})`,
+    transform: `translate(${f.tx}px, ${f.ty}px)`,
     transformOrigin: '0 0',
     transition: f.transition ?? 'none',
   }
@@ -124,19 +87,10 @@ const coveragePercent = computed((): number | null => {
 })
 const hasCoverage = computed(() => typeof coveragePercent.value === 'number')
 const coveragePercentValue = computed(() => coveragePercent.value ?? 0)
+const simulatedMetrics = computed(() => simulatedMetricsForBox(props.id))
 
 const layerFlipCounterStyle = computed((): Record<string, string> => {
-  const f = props.data.layerFlip
-  if (!f) return {}
-  const { sx, sy } = f
-  if (Math.abs(sx - 1) < 1e-5 && Math.abs(sy - 1) < 1e-5) return {}
-  const safeSx = Math.abs(sx) < 1e-6 ? 1 : sx
-  const safeSy = Math.abs(sy) < 1e-6 ? 1 : sy
-  return {
-    transform: `scale(${1 / safeSx}, ${1 / safeSy})`,
-    transformOrigin: '0 0',
-    transition: f.transition ?? 'none',
-  }
+  return {}
 })
 </script>
 
@@ -149,9 +103,17 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
           :class="{
             'group-node__frame--package-scope': data.packageScope,
             'group-node__frame--has-language': hasLanguageLogo,
-            'group-node__frame--has-coverage': hasCoverage,
+            'group-node__frame--has-metrics': true,
           }"
         >
+          <div class="group-node__metrics">
+            <BoxMetricStrip
+              :coverage-percent="hasCoverage ? coveragePercentValue : null"
+              :technical-debt-percent="simulatedMetrics.technicalDebtPercent"
+              :issue-count="simulatedMetrics.issueCount"
+              :issue-level="simulatedMetrics.issueLevel"
+            />
+          </div>
           <span
             v-if="hasLanguageLogo"
             class="group-node__language"
@@ -160,29 +122,6 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
             :aria-label="`Language ${data.language}`"
           >
             <LanguageIcon :name="(data.language as any)" />
-          </span>
-          <span
-            v-if="hasCoverage"
-            class="group-node__coverage"
-            :title="`Code coverage: ${coveragePercentValue}%`"
-            role="img"
-            :aria-label="`Code coverage ${coveragePercentValue} percent`"
-          >
-            <svg
-              viewBox="0 0 100 20"
-              preserveAspectRatio="none"
-              aria-hidden="true"
-              class="group-node__coverage-svg"
-            >
-              <rect x="0" y="0" :width="coveragePercentValue" height="20" class="group-node__coverage-fill--covered" />
-              <rect
-                :x="coveragePercentValue"
-                y="0"
-                :width="100 - coveragePercentValue"
-                height="20"
-                class="group-node__coverage-fill--uncovered"
-              />
-            </svg>
           </span>
           <template v-if="data.packageScope">
             <div class="group-node__pkg-header">
@@ -206,24 +145,11 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
         </div>
       </div>
     </div>
-    <Handle
-      :id="AGG_TARGET_HANDLE"
-      class="gh gh-agg-in-target tg-handle-anchor"
-      type="target"
-      :position="Position.Left"
-      :style="{ '--tg-handle-stroke': strokeAggIn }"
-    />
-    <Handle
-      v-for="slot in used.aggOutSlots"
-      :key="aggregateSourceHandleId(slot)"
-      :id="aggregateSourceHandleId(slot)"
-      class="gh gh-agg-fan-out tg-handle-anchor"
-      type="source"
-      :position="Position.Right"
-      :style="{
-        top: `${aggregateFanTopPctForUsedSlots(slot, used.aggOutSlots)}%`,
-        '--tg-handle-stroke': strokeAggOutBySlot[slot] ?? '#64748b',
-      }"
+    <DepthRelationHandles
+      :node-id="id"
+      :anchor-tops="data.anchorTops"
+      target-class="gh gh-agg-in-target"
+      source-class="gh gh-agg-fan-out"
     />
   </div>
 </template>
@@ -264,38 +190,16 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     0 1px 3px rgb(15 23 42 / 0.08);
   background: rgb(255 255 255 / 0.94);
 }
-/**
- * Coverage indicator: slim split bar (green = covered, red = uncovered) anchored to the
- * frame's top-right corner. Mirrors `.package-box__coverage` so packages at every level —
- * outer scope group, nested group, and inner package box — share one visual language.
- * Right-padding on the package-scope header (below) reserves horizontal room for it.
- */
-.group-node__coverage {
+.group-node__metrics {
   position: absolute;
   top: 6px;
   right: 8px;
-  width: 36px;
-  height: 10px;
-  border-radius: 3px;
-  border: 1px solid rgb(15 23 42 / 0.22);
-  background: rgb(255 255 255 / 0.85);
-  overflow: hidden;
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.08);
-  pointer-events: auto;
+  width: min(124px, calc(100% - 16px));
   z-index: 5;
-}
-/**
- * When the topmost package carries a detected language, the logo sits in the top-right corner
- * (`right: 8px`) and the coverage bar slides to its left (`right: 52px`: 36px logo + 8px gap +
- * 8px outer padding). The `.group-node__pkg-header` right padding grows accordingly so the
- * package title never overlaps either affordance.
- */
-.group-node__frame--has-language .group-node__coverage {
-  right: 52px;
 }
 .group-node__language {
   position: absolute;
-  top: 6px;
+  top: 22px;
   right: 8px;
   width: 36px;
   height: 36px;
@@ -305,23 +209,16 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   pointer-events: auto;
   z-index: 5;
 }
+@container (max-width: 150px) {
+  .group-node__language {
+    top: 42px;
+  }
+}
 .group-node__language :deep(.lang-svg) {
   width: 32px;
   height: 32px;
   max-width: 32px;
 }
-.group-node__coverage-svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-.group-node__coverage-fill--covered {
-  fill: #22c55e;
-}
-.group-node__coverage-fill--uncovered {
-  fill: #ef4444;
-}
-
 .group-node__pkg-header {
   position: absolute;
   top: 8px;
@@ -334,12 +231,18 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   gap: 10px;
   pointer-events: none;
 }
-/** Coverage bar only (36px + 8px right + 8px gap). */
-.group-node__frame--has-coverage .group-node__pkg-header {
+/** Metrics strip only. */
+.group-node__frame--has-metrics .group-node__pkg-header {
   right: 56px;
+  padding-top: 18px;
 }
-/** Coverage bar + language logo (36 + 8 + 36 + 8 + 8 ≈ 96px). */
-.group-node__frame--has-language.group-node__frame--has-coverage .group-node__pkg-header {
+@container (max-width: 150px) {
+  .group-node__frame--has-metrics .group-node__pkg-header {
+    padding-top: 40px;
+  }
+}
+/** Metrics strip + language logo. */
+.group-node__frame--has-language.group-node__frame--has-metrics .group-node__pkg-header {
   right: 100px;
 }
 .group-node__folder-icon {

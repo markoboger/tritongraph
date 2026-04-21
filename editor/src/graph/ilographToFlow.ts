@@ -6,6 +6,7 @@ import type {
   TritonInnerArtefactSpec,
   TritonInnerPackageSpec,
 } from '../ilograph/types'
+import type { BoxCompartment, BoxCompartmentRow } from '../diagram/boxCompartments'
 import { resourceKey, splitRefs } from '../ilograph/refs'
 import { boxColorForId, isNamedBoxColor } from './boxColors'
 import { languageIconForId } from './languages'
@@ -148,6 +149,32 @@ function normalizeInnerArtefactRelationSpec(raw: unknown): TritonInnerArtefactRe
   return { from: o.from, to: o.to, label, ...(wrapperName ? { wrapperName } : {}) }
 }
 
+function normalizeBoxCompartmentRow(raw: unknown): BoxCompartmentRow | null {
+  if (!raw || typeof raw !== "object") return null
+  const o = raw as Record<string, unknown>
+  if (typeof o.value !== 'string' || !o.value.trim()) return null
+  const label = typeof o.label === 'string' && o.label.trim() ? String(o.label) : undefined
+  return { ...(label ? { label } : {}), value: String(o.value) }
+}
+
+function normalizeBoxCompartment(raw: unknown): BoxCompartment | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  if (typeof o.id !== 'string' || !o.id) return null
+  if (typeof o.title !== 'string' || !o.title.trim()) return null
+  const rows = Array.isArray(o.rows)
+    ? o.rows.map(normalizeBoxCompartmentRow).filter((x): x is BoxCompartmentRow => x !== null)
+    : []
+  const emptyText =
+    typeof o.emptyText === 'string' && o.emptyText.trim() ? String(o.emptyText) : undefined
+  return {
+    id: o.id,
+    title: String(o.title),
+    rows,
+    ...(emptyText ? { emptyText } : {}),
+  }
+}
+
 export function ilographDocumentToFlow(
   doc: IlographDocument,
   options: FlowFromIlographOptions = {},
@@ -201,6 +228,23 @@ export function ilographDocumentToFlow(
             .map(normalizeInnerArtefactRelationSpec)
             .filter((x): x is TritonInnerArtefactRelationSpec => x !== null)
         : undefined
+    const projectCompartmentsRaw = res['x-triton-project-compartments']
+    const projectCompartments =
+      Array.isArray(projectCompartmentsRaw) && projectCompartmentsRaw.length
+        ? projectCompartmentsRaw
+            .map(normalizeBoxCompartment)
+            .filter((x): x is BoxCompartment => x !== null)
+        : undefined
+    const preferredFocusWidth =
+      projectCompartments?.length
+        ? 460
+        : leafType === 'artefact'
+          ? 520
+          : innerArtefacts?.length
+            ? 560
+            : innerPackages?.length
+              ? 460
+            : undefined
     return {
       id,
       type: isGroup ? 'group' : leafType,
@@ -235,6 +279,11 @@ export function ilographDocumentToFlow(
         ...(innerArtefacts?.length ? { innerArtefacts } : {}),
         ...(innerArtefactRelations?.length ? { innerArtefactRelations } : {}),
         ...(crossArtefactRelations?.length ? { crossArtefactRelations } : {}),
+        ...(projectCompartments?.length ? { projectCompartments } : {}),
+        ...(typeof preferredFocusWidth === 'number' ? { preferredFocusWidth } : {}),
+        ...(res['x-triton-project-kind'] === 'project' || res['x-triton-project-kind'] === 'module'
+          ? { projectKind: res['x-triton-project-kind'] }
+          : {}),
         ...(isGroup && res['x-triton-package-scope'] === true ? { packageScope: true } : {}),
         ...(isGroup && res['x-triton-package-scope'] === true && typeof res['x-triton-package-language'] === 'string'
           ? { language: res['x-triton-package-language'] }
@@ -273,7 +322,7 @@ export function ilographDocumentToFlow(
             sourceHandle: AGG_SOURCE_HANDLE,
             targetHandle: AGG_TARGET_HANDLE,
             label: rel.label ?? 'depends on',
-            labelStyle: dependencyEdgeLabelStyle(),
+            labelStyle: dependencyEdgeLabelStyle(stroke),
             ...markers,
             style: dependencyEdgeStyle(stroke),
           })

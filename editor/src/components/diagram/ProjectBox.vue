@@ -1,7 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
 import cubeIconUrl from '../../assets/language-icons/cube.svg'
+import stackedCubesIconUrl from '../../assets/language-icons/stacked-cubes.svg'
+import type { BoxCompartment } from '../../diagram/boxCompartments'
+import BoxCompartments from '../common/BoxCompartments.vue'
+import GeneralFocusedBox from '../common/GeneralFocusedBox.vue'
+import BoxMetricStrip from '../common/BoxMetricStrip.vue'
+import { simulatedMetricsForBox } from '../common/boxMetricDemo'
+import { useScalaCoverageKeyed } from '../../store/useOverlay'
 
 const props = defineProps<{
   boxId: string
@@ -11,8 +18,10 @@ const props = defineProps<{
   notes?: string
   /** Free-text "what does this module do" — surfaced in the AI prompt. */
   description?: string
+  kind?: 'project' | 'module'
   /** Kept for YAML round-trip; not used for the icon (all project boxes show the cube). */
   language?: string
+  compartments?: readonly BoxCompartment[]
   boxColor?: NamedBoxColor | string
   pinned: boolean
   focused: boolean
@@ -65,6 +74,38 @@ function onSubtitleLinkClick(href: string | undefined) {
 }
 
 const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
+const workspaceKeyRef = inject<Ref<string>>('tritonWorkspaceKey', ref(''))
+const scalaCoverageRef = useScalaCoverageKeyed(workspaceKeyRef, String(props.boxId ?? ''))
+const coveragePercent = computed((): number | null => {
+  const v = scalaCoverageRef.value?.stmtPct
+  return typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null
+})
+const hasCoverage = computed(() => coveragePercent.value !== null)
+const coveragePercentValue = computed(() => coveragePercent.value ?? 0)
+const simulatedMetrics = computed(() => simulatedMetricsForBox(props.boxId))
+const projectKind = computed<'project' | 'module'>(() => (props.kind === 'project' ? 'project' : 'module'))
+const projectIconUrl = computed(() => (projectKind.value === 'project' ? stackedCubesIconUrl : cubeIconUrl))
+const displayNoun = computed(() => (projectKind.value === 'project' ? 'project' : 'module'))
+
+const focusedCompartments = computed<readonly BoxCompartment[]>(() => {
+  const out: BoxCompartment[] = []
+  if ((props.description ?? '').trim()) {
+    out.push({
+      id: 'purpose',
+      title: 'Purpose',
+      rows: [{ value: String(props.description ?? '') }],
+    })
+  }
+  if ((props.notes ?? '').trim()) {
+    out.push({
+      id: 'notes',
+      title: 'Notes',
+      rows: [{ value: String(props.notes ?? '') }],
+    })
+  }
+  for (const compartment of props.compartments ?? []) out.push(compartment)
+  return out
+})
 
 const rootEl = ref<HTMLElement | null>(null)
 const titleEl = ref<HTMLElement | null>(null)
@@ -185,62 +226,33 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 </script>
 
 <template>
-  <div
-    ref="rootEl"
-    class="project-box"
-    :class="{
-      'project-box--tight': tightLayout,
-      'project-box--focused': focused,
-      'project-box--pinned': pinned,
-      'project-box--tools-wide': showColorTool,
-      'project-box--pin-only': showPinTool && !showColorTool,
-      'project-box--editing': editing,
-    }"
-    :style="{ '--box-accent': accent }"
-  >
-    <div v-if="showPinTool || showColorTool" class="project-box__tools" @pointerdown.stop>
-      <button
-        v-if="showPinTool"
-        type="button"
-        class="tool-btn tool-btn--pin"
-        :class="{ 'tool-btn--active': pinned }"
-        title="Pin — keep this module highlighted when another box is zoomed"
-        :aria-pressed="pinned ? 'true' : 'false'"
-        aria-label="Pin module (stays focused when zooming elsewhere)"
-        @click.stop="emit('toggle-pin', $event)"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true" class="tool-btn__icon tool-btn__icon--pin">
-          <path
-            fill="currentColor"
-            d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z"
-          />
-        </svg>
-      </button>
-      <button
-        v-if="showColorTool"
-        type="button"
-        class="tool-btn tool-btn--color"
-        :title="`Accent: ${accent}. Click for next color.`"
-        aria-label="Change box accent color"
-        @click.stop="emit('cycle-color')"
-      >
-        <svg viewBox="0 0 16 16" aria-hidden="true" class="tool-btn__icon tool-btn__icon--color">
-          <circle cx="6" cy="8" r="4.25" />
-          <circle cx="11" cy="8" r="3" opacity="0.45" />
-        </svg>
-      </button>
-    </div>
-
-    <div class="lang-icon-slot">
-      <img class="lang-svg cube-icon" :src="cubeIconUrl" alt="" aria-hidden="true" decoding="async" />
-    </div>
-
-    <div
-      class="project-box__body"
-      @dblclick.stop="startEditing"
+  <div class="project-box-host">
+    <GeneralFocusedBox
+      v-if="focused"
+      :accent="accent"
+      :title="label"
+      :subtitle="subtitle"
+      :pinned="pinned"
+      :show-pin-tool="showPinTool"
+      :show-color-tool="showColorTool"
+      :has-coverage="hasCoverage"
+      :coverage-percent="coveragePercentValue"
+      :technical-debt-percent="simulatedMetrics.technicalDebtPercent"
+      :issue-count="simulatedMetrics.issueCount"
+      :issue-level="simulatedMetrics.issueLevel"
+      :pin-title="`Pin — keep this ${displayNoun} highlighted when another box is zoomed`"
+      :pin-aria-label="`Pin ${displayNoun} (stays focused when zooming elsewhere)`"
+      :title-tooltip="`Double-click to rename / edit ${displayNoun} description`"
+      @toggle-pin="emit('toggle-pin', $event)"
+      @cycle-color="emit('cycle-color')"
+      @header-dblclick="startEditing"
     >
-      <div ref="titleEl" class="title" :title="'Double-click to rename / edit description'">{{ label }}</div>
-      <div v-if="subtitle && !tightLayout" class="subtitle">
+      <template #header-icon>
+        <div class="lang-icon-slot lang-icon-slot--header">
+          <img class="lang-svg cube-icon" :src="projectIconUrl" alt="" aria-hidden="true" decoding="async" />
+        </div>
+      </template>
+      <template #subtitle>
         <template v-for="(seg, i) in subtitleSegments" :key="i">
           <button
             v-if="seg.kind === 'link'"
@@ -254,29 +266,108 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
           >{{ seg.value }}</button>
           <span v-else>{{ seg.value }}</span>
         </template>
+      </template>
+      <div class="project-box__focus-body">
+        <BoxCompartments :compartments="focusedCompartments" variant="dense" />
       </div>
+    </GeneralFocusedBox>
+
+    <div
+      v-else
+      ref="rootEl"
+      class="project-box"
+      :class="{
+        'project-box--tight': tightLayout,
+        'project-box--pinned': pinned,
+        'project-box--tools-wide': showColorTool,
+        'project-box--pin-only': showPinTool && !showColorTool,
+        'project-box--editing': editing,
+        'project-box--has-metrics': hasCoverage || simulatedMetrics.issueCount >= 0,
+      }"
+      :style="{ '--box-accent': accent }"
+    >
+      <div class="project-box__metrics">
+        <BoxMetricStrip
+          :coverage-percent="hasCoverage ? coveragePercentValue : null"
+          :technical-debt-percent="simulatedMetrics.technicalDebtPercent"
+          :issue-count="simulatedMetrics.issueCount"
+          :issue-level="simulatedMetrics.issueLevel"
+        />
+      </div>
+      <div v-if="showPinTool || showColorTool" class="project-box__tools" @pointerdown.stop>
+        <button
+          v-if="showPinTool"
+          type="button"
+          class="tool-btn tool-btn--pin"
+          :class="{ 'tool-btn--active': pinned }"
+          :title="`Pin — keep this ${displayNoun} highlighted when another box is zoomed`"
+          :aria-pressed="pinned ? 'true' : 'false'"
+          :aria-label="`Pin ${displayNoun} (stays focused when zooming elsewhere)`"
+          @click.stop="emit('toggle-pin', $event)"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" class="tool-btn__icon tool-btn__icon--pin">
+            <path
+              fill="currentColor"
+              d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z"
+            />
+          </svg>
+        </button>
+        <button
+          v-if="showColorTool"
+          type="button"
+          class="tool-btn tool-btn--color"
+          :title="`Accent: ${accent}. Click for next color.`"
+          aria-label="Change box accent color"
+          @click.stop="emit('cycle-color')"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true" class="tool-btn__icon tool-btn__icon--color">
+            <circle cx="6" cy="8" r="4.25" />
+            <circle cx="11" cy="8" r="3" opacity="0.45" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="lang-icon-slot">
+        <img class="lang-svg cube-icon" :src="projectIconUrl" alt="" aria-hidden="true" decoding="async" />
+      </div>
+
       <div
-        v-if="description && !tightLayout && !focused"
-        class="description-preview"
-        :title="description"
+        class="project-box__body"
+        @dblclick.stop="startEditing"
       >
-        {{ description }}
-      </div>
-      <div v-if="focused && notes" class="drill-note">{{ notes }}</div>
-      <div v-if="focused && description" class="description-full" :title="description">
-        {{ description }}
+        <div class="project-box__header">
+          <div
+            ref="titleEl"
+            class="title"
+            :title="`Double-click to rename / edit ${displayNoun} description`"
+          >{{ label }}</div>
+          <div v-if="subtitle && !tightLayout" class="subtitle">
+            <template v-for="(seg, i) in subtitleSegments" :key="i">
+              <button
+                v-if="seg.kind === 'link'"
+                type="button"
+                class="subtitle-link nodrag nopan"
+                :title="seg.href"
+                @click.stop="onSubtitleLinkClick(seg.href)"
+                @pointerdown.stop
+                @mousedown.stop
+                @dblclick.stop
+              >{{ seg.value }}</button>
+              <span v-else>{{ seg.value }}</span>
+            </template>
+          </div>
+        </div>
+        <div v-if="description && !tightLayout" class="description-preview" :title="description">
+          {{ description }}
+        </div>
       </div>
     </div>
 
-    <!--
-      Editor lives outside the box flow so it can grow vertically beyond the small (200×72) node
-      bounds. Pointer events are stopped so Vue Flow doesn't drag/zoom while typing.
-    -->
     <div
       v-if="editing"
       class="project-box__editor nodrag nopan"
       role="dialog"
-      aria-label="Edit module"
+      :aria-label="`Edit ${displayNoun}`"
       @pointerdown.stop
       @mousedown.stop
       @click.stop
@@ -300,7 +391,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
           class="description-input"
           rows="5"
           spellcheck="false"
-          placeholder="Describe what this module should do (included in the generated AI prompt)…"
+          :placeholder="`Describe what this ${displayNoun} should do (included in the generated AI prompt)…`"
           @keydown="onDescriptionKeydown"
         />
       </label>
@@ -314,6 +405,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 </template>
 
 <style scoped>
+.project-box-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
 .project-box {
   --box-accent: steelblue;
   /**
@@ -357,6 +455,25 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   padding-right: clamp(72px, 12cqw, 108px);
 }
 
+.project-box--has-metrics {
+  padding-top: clamp(20px, 4vmin, 26px);
+  padding-right: clamp(46px, 8cqw, 56px);
+}
+
+@container (max-width: 150px) {
+  .project-box--has-metrics {
+    padding-top: clamp(38px, 8vmin, 54px);
+  }
+}
+
+.project-box__metrics {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 4;
+  width: min(124px, calc(100% - 12px));
+}
+
 .lang-icon-slot {
   display: flex;
   justify-content: center;
@@ -365,6 +482,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   flex-shrink: 0;
   width: 100%;
   height: clamp(40px, min(30cqw, 28cqh), 160px);
+  min-height: 36px;
   margin-bottom: clamp(6px, 1.5cqh, 16px);
   transform: none;
   pointer-events: none;
@@ -377,8 +495,17 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   max-height: 100%;
   max-width: min(92cqw, 240px);
 }
-.project-box--focused .lang-icon-slot {
-  height: clamp(44px, min(34cqw, 30cqh), 180px);
+.lang-icon-slot--header {
+  width: 40px;
+  height: 40px;
+  margin: 0;
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+.lang-icon-slot--header :deep(.lang-svg) {
+  max-height: 34px;
+  height: auto;
+  max-width: 34px;
 }
 .project-box--tight .lang-icon-slot {
   transform: none;
@@ -391,21 +518,42 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   justify-content: center;
   align-items: stretch;
 }
-.project-box--focused .project-box__body {
-  justify-content: flex-start;
+.project-box__header {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.project-box__focus-body {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow: hidden;
+}
+.project-box__focus-panel {
+  border: 1px solid rgb(15 23 42 / 0.12);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.55);
+  overflow: hidden;
+}
+.project-box__focus-panel-label {
+  padding: 6px 9px;
+  background: rgb(248 250 252 / 0.95);
+  color: #475569;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 .drill-note {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgb(15 23 42 / 0.12);
+  padding: 8px 9px 9px;
   font-size: 10px;
   line-height: 1.45;
   color: #334155;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   white-space: pre-wrap;
   overflow: auto;
-  flex: 1;
-  min-height: 0;
   text-align: left;
 }
 .project-box__tools {
@@ -420,6 +568,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   flex-wrap: wrap;
   gap: 5px;
   max-width: calc(100% - 10px);
+}
+.project-box--has-metrics .project-box__tools {
+  top: 22px;
+}
+@container (max-width: 150px) {
+  .project-box--has-metrics .project-box__tools {
+    top: 42px;
+  }
 }
 .project-box--pinned:not(.project-box--focused) {
   box-shadow:
@@ -492,16 +648,6 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     max-height 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     transform 0.4s ease;
 }
-.project-box--focused {
-  box-shadow:
-    inset 8px 0 0 0 var(--box-accent),
-    0 4px 22px rgb(15 23 42 / 0.14);
-  outline: 2px solid var(--box-accent);
-  outline-offset: 0;
-}
-.project-box--focused .title {
-  font-size: clamp(0.82rem, min(2.4vmin, 3.8cqh), 1.45rem);
-}
 .project-box--tight .title {
   white-space: nowrap;
   overflow: visible;
@@ -551,18 +697,17 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   max-height: 2.6em;
 }
 .description-full {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgb(15 23 42 / 0.12);
-  font-size: 11px;
+  padding: 8px 9px 9px;
+  font-size: 10.5px;
   line-height: 1.45;
   color: #334155;
   white-space: pre-wrap;
   overflow: auto;
-  flex: 0 1 auto;
-  min-height: 0;
   text-align: left;
   font-style: italic;
+}
+.project-box__compartments {
+  margin-top: 0;
 }
 /* Allow the floating editor to render above/around the small (200×72) box without being clipped. */
 .project-box--editing {

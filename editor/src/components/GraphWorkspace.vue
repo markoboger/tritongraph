@@ -24,6 +24,7 @@ import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE } from '../graph/handles'
 import { boxColorForId } from '../graph/boxColors'
 import { isLeafBoxNode } from '../graph/nodeKinds'
 import { languageIconForId } from '../graph/languages'
+import { strokeColorForFlowEdge } from '../graph/relationKinds'
 import { drillNoteForModuleId } from '../graph/sbtStyleDrillNotes'
 
 const MODULE_LAYOUT_W = 200
@@ -101,6 +102,9 @@ function syncEdgeVisualState() {
     const id = String(e.id)
     const emph = heid ? id === heid : !!(hid && (e.source === hid || e.target === hid))
     const newClass = mergeEdgeEmphClass((e as { class?: string }).class, emph)
+    const stroke = strokeColorForFlowEdge(e)
+    const newLabelStyle = dependencyEdgeLabelStyle(stroke, emph)
+    const newZIndex = emph ? 1200 : 0
 
     const endHidden = hiddenIds.has(String(e.source)) || hiddenIds.has(String(e.target))
     const relHidden = shouldHideEdgeForRelationFilter(e, props.relationTypeVisibility)
@@ -109,8 +113,17 @@ function syncEdgeVisualState() {
 
     const prevH = (e as { hidden?: boolean }).hidden === true
     const prevC = (e as { class?: string }).class
-    if (newClass === prevC && newHidden === prevH) return e
-    return { ...e, class: newClass, hidden: newHidden }
+    const prevZ = typeof (e as { zIndex?: unknown }).zIndex === 'number' ? (e as { zIndex: number }).zIndex : 0
+    const prevLabelStyle =
+      (e as { labelStyle?: Record<string, unknown> | undefined }).labelStyle ?? {}
+    const sameLabelStyle =
+      prevLabelStyle.fill === newLabelStyle.fill &&
+      prevLabelStyle.opacity === newLabelStyle.opacity &&
+      prevLabelStyle.fontWeight === newLabelStyle.fontWeight &&
+      prevLabelStyle.fontSize === newLabelStyle.fontSize &&
+      prevLabelStyle.transform === newLabelStyle.transform
+    if (newClass === prevC && newHidden === prevH && prevZ === newZIndex && sameLabelStyle) return e
+    return { ...e, class: newClass, hidden: newHidden, zIndex: newZIndex, labelStyle: newLabelStyle }
   })
   if (edgeVisualSignature(next) === edgeVisualSignature(edges.value)) return
   edges.value = next
@@ -215,16 +228,17 @@ provide('tritonEmitLinkAction', tritonEmitLinkAction)
 const defaultEdgeOptions = {
   type: 'smoothstep' as const,
   /**
-   * Vue Flow draws the edge layer before nodes; default z 0 leaves arrowheads tucked under boxes.
-   * Keep edges above node chrome so classpath / imports markers stay visible at the target.
+   * Keep default relations below node chrome; hover/focus emphasis lifts the active edge above
+   * boxes in `syncEdgeVisualState()` so the important relation reads clearly without keeping the
+   * full wiring layer on top all the time.
    */
-  zIndex: 1000,
+  zIndex: 0,
   style: dependencyEdgeStyle(DEP_EDGE_STROKE),
   markerStart: undefined,
   markerEnd: dependencyMarker(DEP_EDGE_STROKE),
   sourceHandle: AGG_SOURCE_HANDLE,
   targetHandle: AGG_TARGET_HANDLE,
-  labelStyle: dependencyEdgeLabelStyle(),
+  labelStyle: dependencyEdgeLabelStyle(DEP_EDGE_STROKE),
 }
 
 function uid(): string {
@@ -391,7 +405,7 @@ async function createModuleFromSourceHandle(
     sourceHandle: sh,
     targetHandle: AGG_TARGET_HANDLE,
     label: 'depends on',
-    labelStyle: dependencyEdgeLabelStyle(),
+    labelStyle: dependencyEdgeLabelStyle(DEP_EDGE_STROKE),
     markerStart: undefined,
     markerEnd: dependencyMarker(DEP_EDGE_STROKE),
     style: dependencyEdgeStyle(DEP_EDGE_STROKE),
@@ -449,7 +463,7 @@ async function handleConnect(conn: Connection) {
     sourceHandle: conn.sourceHandle ?? AGG_SOURCE_HANDLE,
     targetHandle: conn.targetHandle ?? AGG_TARGET_HANDLE,
     label: 'depends on',
-    labelStyle: dependencyEdgeLabelStyle(),
+    labelStyle: dependencyEdgeLabelStyle(DEP_EDGE_STROKE),
     markerStart: undefined,
     markerEnd: dependencyMarker(DEP_EDGE_STROKE),
     style: dependencyEdgeStyle(DEP_EDGE_STROKE),
@@ -574,9 +588,12 @@ defineExpose({
     opacity 0.35s ease;
 }
 
-/* During FLIP, inner graph node owns transform; suppress outer w/h tween to avoid double motion. */
+/* During FLIP, inner shell owns translation; outer node still animates width/height for real reflow. */
 .flow.tg-layer-flip-animate .vue-flow__node {
-  transition: opacity 0.35s ease;
+  transition:
+    width 0.48s cubic-bezier(0.4, 0, 0.2, 1),
+    height 0.48s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.35s ease;
 }
 
 /* New dependency edge: animate nodes into updated depth columns (transform is viewport space in Vue Flow). */
@@ -607,6 +624,7 @@ defineExpose({
 
 .flow.vue-flow .vue-flow__edge.tg-edge-emph .vue-flow__edge-text {
   opacity: 1;
+  font-weight: 600;
 }
 
 /* Core marks edges `.inactive` unless selectable or @edge-click; re-enable hits so @edge-mouse-* runs (pan is off). */

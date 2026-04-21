@@ -127,6 +127,15 @@ export interface ParsedScalaDefinition {
    */
   paramTypeRefs: Array<{ name: string; wrapper?: string }>
   /**
+   * Capital-case type names that appear as constructor-style calls in this definition's body,
+   * e.g. `new Bear(...)`, `Bear(...)`, `diet.Profile(...)` (stored as written, sans args).
+   *
+   * This is intentionally source-derived and conservative: we only keep capital-case callee
+   * names, then downstream graph resolution filters to project-local artefacts. Stdlib and
+   * third-party constructors (`String(...)`, `Future(...)`, …) therefore fall away naturally.
+   */
+  createdTypeRefs: string[]
+  /**
    * Source text of the primary constructor parameter clauses for a `class` / `case class`,
    * preserving the author's parentheses — e.g. `"(variety: String, ripeness: Ripeness.Value)"`,
    * `"(a: A)(implicit b: B)"`. Empty string for traits / objects / defs / vals and for classes
@@ -353,6 +362,7 @@ function collectTopLevel(packageNode: TSNode | null, rootNode: TSNode): ParsedSc
       endRow: c.endPosition.row,
       parents: extractParents(c),
       paramTypeRefs: extractConstructorParamTypeRefs(c),
+      createdTypeRefs: extractCreatedTypeRefs(c),
       constructorParams: extractConstructorParamsSource(c),
       modifiers: extractModifiers(c, kind),
       methodSignatures: extractMethodSignatures(c),
@@ -506,6 +516,40 @@ function extractConstructorParamTypeRefs(defNode: TSNode): Array<{ name: string;
     seen.add(name)
     out.push({ name, wrapper: findImmediateWrapper(paramsText, m.index) })
   }
+  return out
+}
+
+/**
+ * Collect constructor-style calls that create project artefacts:
+ *   - `new Foo(...)`
+ *   - `Foo(...)`
+ *   - `pkg.Foo(...)`
+ *
+ * We only record capital-case callees and leave actual artefact resolution to the graph layer,
+ * which already knows the local artefact index and imports.
+ */
+function extractCreatedTypeRefs(defNode: TSNode): string[] {
+  const body = defNode.childForFieldName('body')
+  if (!body) return []
+  const text = body.text
+  if (!text) return []
+  const seen = new Set<string>()
+  const out: string[] = []
+
+  const push = (raw: string | undefined) => {
+    const name = (raw ?? '').trim()
+    if (!name || seen.has(name)) return
+    seen.add(name)
+    out.push(name)
+  }
+
+  let m: RegExpExecArray | null
+  const explicitNew = /\bnew\s+([A-Z][\w.]*)\b/g
+  while ((m = explicitNew.exec(text)) !== null) push(m[1])
+
+  const directCtor = /(^|[^\w.])([A-Z][\w.]*)\s*(?:\[[^\]]*\])?\s*\(/g
+  while ((m = directCtor.exec(text)) !== null) push(m[2])
+
   return out
 }
 

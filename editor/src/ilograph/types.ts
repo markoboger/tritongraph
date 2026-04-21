@@ -2,6 +2,7 @@
  * Subset of https://ilograph.com/docs/spec used for sbt-style modules + dependencies.
  * Extra keys (e.g. editor) are ignored by Ilograph and may be stripped on export.
  */
+import type { BoxCompartment } from '../diagram/boxCompartments'
 
 export interface IlographRelation {
   from?: string
@@ -102,11 +103,13 @@ export type TritonInnerArtefactSpec = {
  *                 {@link ScalaGetsEdge} in `scalaPackagesToIlograph.ts` for the full resolution
  *                 rules. Does NOT contribute to column layering (parents still left, children
  *                 still right); it's an overlay on the inheritance layout.
+ *   - `creates` — the `from` artefact body constructs the `to` artefact via `new X(...)` or
+ *                 a constructor-style call `X(...)`, filtered down to project-local artefacts.
  */
 export type TritonInnerArtefactRelationSpec = {
   from: string
   to: string
-  label: 'extends' | 'with' | 'gets'
+  label: 'extends' | 'with' | 'gets' | 'creates'
   wrapperName?: string
 }
 
@@ -115,6 +118,7 @@ export interface IlographResource {
   id?: string
   subtitle?: string
   description?: string
+  'x-triton-project-kind'?: 'project' | 'module'
   color?: string
   backgroundColor?: string
   style?: 'default' | 'plural' | 'dashed' | 'outline' | 'flat'
@@ -187,6 +191,8 @@ export interface IlographResource {
   /** Non-standard: 0-indexed start row of the declaration. See {@link TritonInnerArtefactSpec.sourceRow}. */
   'x-triton-source-row'?: number
   /** Non-standard: coordinates last saved by this editor (Ilograph ignores unknown top-level keys on resources if nested — we keep under a namespace key at doc level instead). */
+  /** Non-standard: focused project-box panels for sbt module metadata (versions, libraries, settings). */
+  'x-triton-project-compartments'?: readonly BoxCompartment[]
 }
 
 /** Document-level extension block (not in Ilograph spec). Safe: Ilograph only documents known top-level keys; unknown keys may be preserved or dropped depending on product version — we keep minimal and prefer layout inside description or omit for strict compatibility). */

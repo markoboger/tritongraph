@@ -44,6 +44,11 @@ export interface ScalaArtefact {
    */
   paramTypeRefs: Array<{ name: string; wrapper?: string }>
   /**
+   * Capital-case constructor-style calls found in this artefact's body (`new Foo(...)`,
+   * `Foo(...)`, `pkg.Foo(...)`), before local-artefact resolution is applied.
+   */
+  createdTypeRefs: string[]
+  /**
    * Source text of the primary constructor parameter clauses (with parens preserved, whitespace
    * collapsed). See {@link ParsedScalaDefinition.constructorParams}. Empty for objects / traits
    * without a ctor / defs / vals.
@@ -115,6 +120,12 @@ export interface ScalaGetsEdge {
   wrapperName?: string
 }
 
+export interface ScalaCreatesEdge {
+  fromArtefactId: string
+  toArtefactId: string
+  kind: 'creates'
+}
+
 export interface ScalaPackageNode {
   /** Fully-qualified package name (`com.example.core`). Files without a package land in `<root>`. */
   name: string
@@ -144,6 +155,8 @@ export interface ScalaPackageGraph {
    * land in the column right of their parents); they are purely overlays on the same layout.
    */
   gets: ScalaGetsEdge[]
+  /** Constructor-style calls in bodies that resolve to local artefacts. */
+  creates: ScalaCreatesEdge[]
   /**
    * Top-level Scala artefacts discovered under `src/test/scala`.
    *
@@ -443,10 +456,10 @@ function innerArtefactSpecsForNode(n: PackageTreeNode): TritonInnerArtefactSpec[
 }
 
 /**
- * `extends` / `with` / `uses` between inner-list members only (both ends must live in this
+ * `extends` / `with` / `gets` / `creates` between inner-list members only (both ends must live in this
  * package's artefact set, otherwise we'd draw an edge to a box the viewer can't see).
  *
- * The edges are emitted in label-priority order (`extends` → `with` → `uses`) so the `seen`
+ * The edges are emitted in label-priority order (`extends` → `with` → `gets` → `creates`) so the `seen`
  * set de-duplicates an artefact pair to its *structural* relation when both exist — a class
  * that both `extends Animal` and takes `Animal` as a constructor parameter renders as `extends`
  * only; drawing both would be visual noise.
@@ -475,6 +488,13 @@ function innerArtefactRelationSpecsForNode(
     if (seenPair.has(pairKey)) continue
     seenPair.add(pairKey)
     out.push({ from: e.fromArtefactId, to: e.toArtefactId, label: 'gets', wrapperName: e.wrapperName })
+  }
+  for (const e of graph.creates) {
+    if (!idSet.has(e.fromArtefactId) || !idSet.has(e.toArtefactId)) continue
+    const pairKey = `${e.fromArtefactId}\u0001${e.toArtefactId}`
+    if (seenPair.has(pairKey)) continue
+    seenPair.add(pairKey)
+    out.push({ from: e.fromArtefactId, to: e.toArtefactId, label: 'creates' })
   }
   out.sort((a, b) => (a.to === b.to ? a.from.localeCompare(b.from) : a.to.localeCompare(b.to)))
   return out
@@ -514,6 +534,16 @@ function crossPackageArtefactRelationSpecsForNode(
     if (seenPair.has(pairKey)) continue
     seenPair.add(pairKey)
     out.push({ from: e.fromArtefactId, to: e.toArtefactId, label: 'gets', wrapperName: e.wrapperName })
+  }
+
+  for (const e of graph.creates) {
+    const fromLocal = idSet.has(e.fromArtefactId)
+    const toLocal = idSet.has(e.toArtefactId)
+    if (fromLocal === toLocal) continue
+    const pairKey = `${e.fromArtefactId}\u0001${e.toArtefactId}`
+    if (seenPair.has(pairKey)) continue
+    seenPair.add(pairKey)
+    out.push({ from: e.fromArtefactId, to: e.toArtefactId, label: 'creates' })
   }
 
   out.sort((a, b) => (a.to === b.to ? a.from.localeCompare(b.from) : a.to.localeCompare(b.to)))

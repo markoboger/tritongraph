@@ -20,7 +20,6 @@ import {
   type LayerFlipRect,
 } from '../graph/layerDrillFlip'
 import { isLayerDrillBoxNode, isLeafBoxNode } from '../graph/nodeKinds'
-import { edgeContributesToClasspathDepth, isAggregateEdge } from '../graph/relationKinds'
 
 const {
   getNodes,
@@ -79,45 +78,21 @@ const FIT_DURATION_MS = 480
 const FLIP_EASING = 'cubic-bezier(0.4, 0, 0.2, 1)'
 const FLIP_FLOW_CLASS = 'tg-layer-flip-animate'
 
-/** Hide non-aggregate depth edges while module FLIP runs; aggregate-style relations stay visible. */
-function isDependencyEdge(e: GraphEdge): boolean {
-  return edgeContributesToClasspathDepth(e) && !isAggregateEdge(e)
-}
-
-/** Hide classpath-style depth edges while module FLIP runs; aggregate edges stay visible. */
-function withDependencyEdgesHiddenDuringFlip(es: GraphEdge[]): GraphEdge[] {
+/** Hide all relations while focus/camera animations run so stale geometry does not smear across the motion. */
+function withAllEdgesHidden(es: GraphEdge[]): GraphEdge[] {
   return es.map((e) => ({
     ...e,
-    hidden: !!(e as { hidden?: boolean }).hidden || isDependencyEdge(e),
+    hidden: true,
   }))
 }
 
 /**
- * Vue Flow often keeps stale edge geometry after `hidden` toggles + node FLIP.
- * Drop dependency edges for one frame, then restore plain copies and refresh handle bounds.
+ * Vue Flow often keeps stale edge geometry after animation + hidden toggles.
+ * Drop all edges for one frame, then restore plain copies and refresh handle bounds.
  */
-async function remountDependencyEdgesAfterFlip(finalEdges: GraphEdge[]): Promise<void> {
+async function remountEdgesAfterAnimation(finalEdges: GraphEdge[]): Promise<void> {
   const plain = finalEdges.map((e) => ({ ...e })) as GraphEdge[]
-  const dep = plain.filter((e) => isDependencyEdge(e))
-  const keep = plain.filter((e) => !isDependencyEdge(e))
-
-  if (!dep.length) {
-    setEdges(plain)
-    await nextTick()
-    await doubleRaf()
-    updateNodeInternals()
-    return
-  }
-
-  if (!keep.length) {
-    setEdges(plain)
-    await nextTick()
-    await doubleRaf()
-    updateNodeInternals()
-    return
-  }
-
-  setEdges(keep)
+  setEdges([])
   await nextTick()
   await doubleRaf()
   updateNodeInternals()
@@ -126,6 +101,106 @@ async function remountDependencyEdgesAfterFlip(finalEdges: GraphEdge[]): Promise
   await nextTick()
   await doubleRaf()
   updateNodeInternals()
+}
+
+async function waitForAnimationDuration(durationMs: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, durationMs))
+}
+
+function isFocusAnimatedElement(el: EventTarget | null): el is HTMLElement {
+  return (
+    el instanceof HTMLElement &&
+    !!el.closest('.vue-flow__node, .flow-graph-node__flip-outer, .group-node__flip-outer')
+  )
+}
+
+function isFocusAnimatedProperty(propertyName: string): boolean {
+  return propertyName === 'transform' || propertyName === 'width' || propertyName === 'height'
+}
+
+async function waitForFocusAnimationEnd(durationMs: number): Promise<void> {
+  const rootEl = flowRootEl()
+  if (!rootEl) {
+    await waitForAnimationDuration(durationMs + 80)
+    return
+  }
+  const root = rootEl
+
+  await new Promise<void>((resolve) => {
+    let active = 0
+    let finished = false
+    let settleTimer: ReturnType<typeof setTimeout> | null = null
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null
+
+    function clearTimers() {
+      if (settleTimer) clearTimeout(settleTimer)
+      if (fallbackTimer) clearTimeout(fallbackTimer)
+      settleTimer = null
+      fallbackTimer = null
+    }
+
+    function cleanup() {
+      clearTimers()
+      root.removeEventListener('transitionrun', onTransitionRun, true)
+      root.removeEventListener('transitionstart', onTransitionRun, true)
+      root.removeEventListener('transitionend', onTransitionDone, true)
+      root.removeEventListener('transitioncancel', onTransitionDone, true)
+    }
+
+    function finish() {
+      if (finished) return
+      finished = true
+      cleanup()
+      resolve()
+    }
+
+    function scheduleSettle() {
+      if (settleTimer) clearTimeout(settleTimer)
+      settleTimer = setTimeout(() => {
+        if (active <= 0) finish()
+      }, 40)
+    }
+
+    function onTransitionRun(ev: Event) {
+      const te = ev as TransitionEvent
+      if (!isFocusAnimatedElement(te.target)) return
+      if (!isFocusAnimatedProperty(te.propertyName)) return
+      active += 1
+      if (settleTimer) {
+        clearTimeout(settleTimer)
+        settleTimer = null
+      }
+    }
+
+    function onTransitionDone(ev: Event) {
+      const te = ev as TransitionEvent
+      if (!isFocusAnimatedElement(te.target)) return
+      if (!isFocusAnimatedProperty(te.propertyName)) return
+      active = Math.max(0, active - 1)
+      if (active === 0) scheduleSettle()
+    }
+
+    root.addEventListener('transitionrun', onTransitionRun, true)
+    root.addEventListener('transitionstart', onTransitionRun, true)
+    root.addEventListener('transitionend', onTransitionDone, true)
+    root.addEventListener('transitioncancel', onTransitionDone, true)
+
+    fallbackTimer = setTimeout(() => finish(), durationMs + 240)
+    scheduleSettle()
+  })
+}
+
+async function runWithEdgesHiddenDuringAnimation(
+  finalEdges: GraphEdge[],
+  durationMs: number,
+  runAnimation: () => Promise<void>,
+): Promise<void> {
+  setEdges(withAllEdgesHidden(getEdges.value))
+  await nextTick()
+  await doubleRaf()
+  await runAnimation()
+  await waitForFocusAnimationEnd(durationMs)
+  await remountEdgesAfterAnimation(finalEdges)
 }
 
 function flowRootEl(): HTMLElement | null {
@@ -145,8 +220,11 @@ async function waitForGraphLayout(): Promise<void> {
 }
 
 async function fitOverviewCamera(): Promise<void> {
+  const finalEdges = getEdges.value.map((e) => ({ ...e })) as GraphEdge[]
   await waitForGraphLayout()
-  await fitView({ padding: 0.05, duration: FIT_DURATION_MS, maxZoom: 1.8, minZoom: 0.05 })
+  await runWithEdgesHiddenDuringAnimation(finalEdges, FIT_DURATION_MS, async () => {
+    await fitView({ padding: 0.05, duration: FIT_DURATION_MS, maxZoom: 1.8, minZoom: 0.05 })
+  })
 }
 
 /** After layer drill clears: return to prior container zoom if any, else full overview. */
@@ -156,18 +234,24 @@ async function fitCameraAfterLayerDrillClear(): Promise<void> {
   await waitForGraphLayout()
   if (returnTo && getNodes.value.some((n) => n.id === returnTo)) {
     applyDimming(returnTo)
-    await nextTick()
-    const ids = [...brightIdsFor(returnTo)]
-    await fitView({
-      nodes: ids,
-      padding: 0.05,
-      duration: FIT_DURATION_MS,
-      maxZoom: 2.4,
-      minZoom: 0.05,
+    const finalEdges = getEdges.value.map((e) => ({ ...e })) as GraphEdge[]
+    await runWithEdgesHiddenDuringAnimation(finalEdges, FIT_DURATION_MS, async () => {
+      await nextTick()
+      const ids = [...brightIdsFor(returnTo)]
+      await fitView({
+        nodes: ids,
+        padding: 0.05,
+        duration: FIT_DURATION_MS,
+        maxZoom: 2.4,
+        minZoom: 0.05,
+      })
     })
     return
   }
-  await fitView({ padding: 0.05, duration: FIT_DURATION_MS, maxZoom: 1.8, minZoom: 0.05 })
+  const finalEdges = getEdges.value.map((e) => ({ ...e })) as GraphEdge[]
+  await runWithEdgesHiddenDuringAnimation(finalEdges, FIT_DURATION_MS, async () => {
+    await fitView({ padding: 0.05, duration: FIT_DURATION_MS, maxZoom: 1.8, minZoom: 0.05 })
+  })
 }
 
 function readFlowViewport(): { width: number; height: number } {
@@ -451,20 +535,16 @@ async function clearLayerDrillWithFlip(): Promise<void> {
   layerSnapshot.value = null
   layerDrillId.value = null
 
-  setEdges(withDependencyEdgesHiddenDuringFlip(getEdges.value))
-  await nextTick()
-  await doubleRaf()
-
   const flowEl = flowRootEl()
   flowEl?.classList.add(FLIP_FLOW_CLASS)
-  setNodes(attachLayerFlipInvert(restoredNodes, firstById, 'none'))
-  setEdges(withDependencyEdgesHiddenDuringFlip(restoredEdges))
-  await nextTick()
-  await doubleRaf()
-  setNodes(playLayerFlip(getNodes.value, FIT_DURATION_MS, FLIP_EASING))
-  await new Promise<void>((r) => setTimeout(r, FIT_DURATION_MS))
+  await runWithEdgesHiddenDuringAnimation(restoredEdges, FIT_DURATION_MS, async () => {
+    setNodes(attachLayerFlipInvert(restoredNodes, firstById, 'none'))
+    setEdges(withAllEdgesHidden(restoredEdges))
+    await nextTick()
+    await doubleRaf()
+    setNodes(playLayerFlip(getNodes.value, FIT_DURATION_MS, FLIP_EASING))
+  })
   setNodes(stripLayerFlipsFromNodes(getNodes.value))
-  await remountDependencyEdgesAfterFlip(restoredEdges)
   flowEl?.classList.remove(FLIP_FLOW_CLASS)
   await afterLayerDrillOut?.()
 }
@@ -603,7 +683,11 @@ async function applyLayerDrill(moduleId: string) {
     ;({ top: diagramTop, height: diagramH } = diagramModuleVerticalSpan(nodes, regionParent))
   }
   const baseW = typeof target.width === 'number' ? target.width : 200
-  const focusW = focusedModuleWidthForDrill(vp, numCols, baseW, regionParent, nodes)
+  const preferredFocusWidth =
+    target.data && typeof target.data === 'object' && typeof (target.data as Record<string, unknown>).preferredFocusWidth === 'number'
+      ? ((target.data as Record<string, unknown>).preferredFocusWidth as number)
+      : undefined
+  const focusW = focusedModuleWidthForDrill(vp, numCols, baseW, regionParent, nodes, preferredFocusWidth)
 
   const regionParticipants = collectRegionParticipants(nodes, regionParent, depths)
 
@@ -758,33 +842,32 @@ async function applyLayerDrill(moduleId: string) {
     hidden: hiddenSiblingIds.has(e.source) || hiddenSiblingIds.has(e.target),
   })) as GraphEdge[]
 
-  setEdges(withDependencyEdgesHiddenDuringFlip(getEdges.value))
-  await nextTick()
-  await doubleRaf()
-
   const flowEl = flowRootEl()
   flowEl?.classList.add(FLIP_FLOW_CLASS)
-  setNodes(attachLayerFlipInvert(nextNodes, firstRects, 'none'))
-  setEdges(withDependencyEdgesHiddenDuringFlip(finalEdgesForDrill))
-  await nextTick()
-  await doubleRaf()
-  setNodes(playLayerFlip(getNodes.value, FIT_DURATION_MS, FLIP_EASING))
-  await new Promise<void>((r) => setTimeout(r, FIT_DURATION_MS))
+  await runWithEdgesHiddenDuringAnimation(finalEdgesForDrill, FIT_DURATION_MS, async () => {
+    setNodes(attachLayerFlipInvert(nextNodes, firstRects, 'none'))
+    setEdges(withAllEdgesHidden(finalEdgesForDrill))
+    await nextTick()
+    await doubleRaf()
+    setNodes(playLayerFlip(getNodes.value, FIT_DURATION_MS, FLIP_EASING))
+  })
   setNodes(stripLayerFlipsFromNodes(getNodes.value))
-  await remountDependencyEdgesAfterFlip(finalEdgesForDrill)
   flowEl?.classList.remove(FLIP_FLOW_CLASS)
 }
 
 async function zoomIntoContainer(id: string) {
   applyDimming(id)
-  const ids = [...brightIdsFor(id)]
-  await nextTick()
-  await fitView({
-    nodes: ids,
-    padding: 0.05,
-    duration: FIT_DURATION_MS,
-    maxZoom: 2.4,
-    minZoom: 0.05,
+  const finalEdges = getEdges.value.map((e) => ({ ...e })) as GraphEdge[]
+  await runWithEdgesHiddenDuringAnimation(finalEdges, FIT_DURATION_MS, async () => {
+    const ids = [...brightIdsFor(id)]
+    await nextTick()
+    await fitView({
+      nodes: ids,
+      padding: 0.05,
+      duration: FIT_DURATION_MS,
+      maxZoom: 2.4,
+      minZoom: 0.05,
+    })
   })
 }
 

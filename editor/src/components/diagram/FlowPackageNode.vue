@@ -7,17 +7,10 @@
  * when layer-drill focused. Does not relay subtitle link-action clicks (package boxes have no markdown
  * links yet — re-add the `tritonEmitLinkAction` injection here when that changes).
  */
-import { Handle, Position, useVueFlow } from '@vue-flow/core'
+import { useVueFlow } from '@vue-flow/core'
 import { computed, inject, nextTick, watch } from 'vue'
 import { boxColorForId, nextNamedBoxColor } from '../../graph/boxColors'
-import {
-  AGG_TARGET_HANDLE,
-  aggregateFanTopPctForUsedSlots,
-  aggregateSourceHandleId,
-} from '../../graph/handles'
 import type { ModuleAnchorTops } from '../../graph/layoutDependencyLayers'
-import { edgeContributesToClasspathDepth, strokeColorForFlowEdge } from '../../graph/relationKinds'
-import { usedHandlesForNode } from '../../graph/usedFlowHandles'
 import {
   setInnerArtefactColorsMap,
   setInnerArtefactPinnedMap,
@@ -27,6 +20,7 @@ import {
 } from '../../store/overlayStore'
 import { openInEditor } from '../../openInEditor'
 import type { Ref } from 'vue'
+import DepthRelationHandles from '../common/DepthRelationHandles.vue'
 import DiagramSection from './DiagramSection.vue'
 import PackageBox, {
   type InnerArtefactRelationSummary,
@@ -145,7 +139,7 @@ const innerDrillPathForBox = computed(() => {
   return Array.isArray(raw) ? raw.map(String) : []
 })
 
-const { updateNodeData, getNodes, getEdges } = useVueFlow()
+const { updateNodeData, getNodes } = useVueFlow()
 
 /**
  * The inner artefact ID that is currently focused in ANY package node. When non-null and
@@ -211,50 +205,6 @@ function triggerOpenInEditor(line?: number): void {
 /** Same Vue node shell as packages so layout + chrome stay aligned (`type` from flow graph). */
 const isScalaArtefactLeaf = computed(() => getNodes.value.find((n) => n.id === props.id)?.type === 'artefact')
 
-const used = computed(() => usedHandlesForNode(props.id, getEdges.value))
-
-function edgeVisible(e: { hidden?: boolean }): boolean {
-  return !(e as { hidden?: boolean }).hidden
-}
-
-const strokeAggIn = computed(() => {
-  const hit = getEdges.value.find(
-    (e) =>
-      edgeVisible(e) &&
-      edgeContributesToClasspathDepth(e) &&
-      String(e.target) === props.id &&
-      String(e.targetHandle ?? AGG_TARGET_HANDLE) === AGG_TARGET_HANDLE,
-  )
-  return hit ? strokeColorForFlowEdge(hit) : '#64748b'
-})
-
-const strokeAggOutBySlot = computed(() => {
-  const out: Record<number, string> = {}
-  for (const slot of used.value.aggOutSlots) {
-    const hid = aggregateSourceHandleId(slot)
-    const hit = getEdges.value.find(
-      (e) =>
-        edgeVisible(e) &&
-        edgeContributesToClasspathDepth(e) &&
-        String(e.source) === props.id &&
-        String(e.sourceHandle ?? '') === hid,
-    )
-    out[slot] = hit ? strokeColorForFlowEdge(hit) : '#64748b'
-  }
-  return out
-})
-
-function anchorTopAggIn(fallback: number): string {
-  const v = props.data.anchorTops?.aggIn
-  return `${v != null && Number.isFinite(v) ? v : fallback}%`
-}
-
-function anchorAggOutTop(slot: number): string {
-  const fb = aggregateFanTopPctForUsedSlots(slot, used.value.aggOutSlots)
-  const v = props.data.anchorTops?.aggOut?.[String(slot)]
-  return `${v != null && Number.isFinite(v) ? v : fb}%`
-}
-
 const refreshDimming = inject<(() => void) | undefined>('tritonRefreshDimming', undefined)
 const relayoutViewport = inject<(() => void | Promise<void>) | undefined>('tritonRelayoutViewport', undefined)
 const graphFocusUi = inject<{ containerFocusId: string | null } | undefined>('tritonGraphFocusUi', undefined)
@@ -302,24 +252,14 @@ const layerFlipStyle = computed((): Record<string, string> => {
   const f = props.data.layerFlip
   if (!f) return {}
   return {
-    transform: `translate(${f.tx}px, ${f.ty}px) scale(${f.sx}, ${f.sy})`,
+    transform: `translate(${f.tx}px, ${f.ty}px)`,
     transformOrigin: '0 0',
     transition: f.transition ?? 'none',
   }
 })
 
 const layerFlipCounterStyle = computed((): Record<string, string> => {
-  const f = props.data.layerFlip
-  if (!f) return {}
-  const { sx, sy } = f
-  if (Math.abs(sx - 1) < 1e-5 && Math.abs(sy - 1) < 1e-5) return {}
-  const safeSx = Math.abs(sx) < 1e-6 ? 1 : sx
-  const safeSy = Math.abs(sy) < 1e-6 ? 1 : sy
-  return {
-    transform: `scale(${1 / safeSx}, ${1 / safeSy})`,
-    transformOrigin: '0 0',
-    transition: f.transition ?? 'none',
-  }
+  return {}
 })
 
 function cycleColor() {
@@ -475,25 +415,11 @@ watch(
         </DiagramSection>
       </div>
     </div>
-
-    <Handle
-      :id="AGG_TARGET_HANDLE"
-      class="handle handle-agg-in-target tg-handle-anchor"
-      type="target"
-      :position="Position.Left"
-      :style="{ top: anchorTopAggIn(50), '--tg-handle-stroke': strokeAggIn }"
-    />
-    <Handle
-      v-for="slot in used.aggOutSlots"
-      :key="aggregateSourceHandleId(slot)"
-      :id="aggregateSourceHandleId(slot)"
-      class="handle handle-agg-fan-out tg-handle-anchor"
-      type="source"
-      :position="Position.Right"
-      :style="{
-        top: anchorAggOutTop(slot),
-        '--tg-handle-stroke': strokeAggOutBySlot[slot] ?? '#64748b',
-      }"
+    <DepthRelationHandles
+      :node-id="id"
+      :anchor-tops="data.anchorTops"
+      target-class="handle-agg-in-target"
+      source-class="handle-agg-fan-out"
     />
   </div>
 </template>

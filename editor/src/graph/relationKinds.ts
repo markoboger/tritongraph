@@ -14,6 +14,9 @@ export const SCALA_HAS_TRAIT_STROKE = '#9333ea'
  */
 export const SCALA_GETS_STROKE = '#d97706'
 
+/** Inner-package "creates" relation: artefact A constructs artefact B in its body. */
+export const SCALA_CREATES_STROKE = '#059669'
+
 /** sbt `aggregate(...)` — task scope / project grouping; also contributes to depth columns. */
 export const SBT_AGGREGATE_STROKE = '#16a34a'
 

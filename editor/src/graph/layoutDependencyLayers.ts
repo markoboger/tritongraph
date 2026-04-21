@@ -1,5 +1,10 @@
-import { aggregateSourceHandleId, DEP_SOURCE_HANDLE } from './handles'
-import { isLeafBoxNode } from './nodeKinds'
+import {
+  AGG_TARGET_HANDLE,
+  aggregateSourceHandleId,
+  aggregateTargetHandleId,
+  DEP_SOURCE_HANDLE,
+} from './handles'
+import { isLayerDrillBoxNode, isLeafBoxNode } from './nodeKinds'
 import { edgeContributesToClasspathDepth } from './relationKinds'
 
 /** Top + bottom gutter inside each layout region for smoothstep edges that skip ≥1 depth column. */
@@ -633,9 +638,13 @@ export function computeLayerDrillColumnLayout(input: {
    * (Previously we used S_tracks − sum(original other tracks), which capped the focus at ~1 column
    * and erased the intended widening.)
    */
-  const numOther = Math.max(0, numCols - 1)
-  const minOtherTracksTotal = numOther * minTrack
-  const maxFocusTrack = Math.max(minTrack, S_tracks - minOtherTracksTotal)
+  const reserveScale = numCols <= 2 ? 0.72 : numCols === 3 ? 0.62 : 0.48
+  let reservedOtherTracksTotal = 0
+  for (let d = 0; d <= maxD; d++) {
+    if (d === fd) continue
+    reservedOtherTracksTotal += Math.max(minTrack, Math.round((track0.get(d) ?? minTrack) * reserveScale))
+  }
+  const maxFocusTrack = Math.max(minTrack, S_tracks - reservedOtherTracksTotal)
   const maxFocusInner = maxFocusTrack - 2 * DRILL_COL_INSET
 
   /** Target inner width: much wider than base, at least caller hint, capped by conserved span. */
@@ -763,8 +772,8 @@ function stripRoutingFromEdge(edge: any): any {
 }
 
 /**
- * Assign distinct **source** handles (`agg-out-0` …) for parallel depth relations from the same
- * module (classpath, aggregate, or any labeled relation) so Vue Flow gets distinct anchor points.
+ * Assign distinct source/target handles (`agg-out-*`, `agg-in-*`) for parallel depth relations so
+ * Vue Flow gets distinct anchor points on both endpoints.
  */
 export function annotateParallelAggregateEdgeOffsets(
   nodes: readonly any[],
@@ -777,10 +786,14 @@ export function annotateParallelAggregateEdgeOffsets(
   for (const e of out) {
     if (!edgeContributesToClasspathDepth(e)) continue
     const sh = String((e as { sourceHandle?: string }).sourceHandle ?? '')
+    const th = String((e as { targetHandle?: string }).targetHandle ?? '')
     if (sh === DEP_SOURCE_HANDLE || sh === 'dep-out') {
       e.sourceHandle = aggregateSourceHandleId(0)
     } else if (sh === 'agg-out') {
       e.sourceHandle = aggregateSourceHandleId(0)
+    }
+    if (th === AGG_TARGET_HANDLE || th === 'agg-in') {
+      e.targetHandle = aggregateTargetHandleId(0)
     }
   }
 
@@ -793,6 +806,7 @@ export function annotateParallelAggregateEdgeOffsets(
   }
 
   const groups = new Map<string, string[]>()
+  const groupsByTarget = new Map<string, string[]>()
   for (const e of out) {
     if ((e as { hidden?: boolean }).hidden) continue
     if (!edgeContributesToClasspathDepth(e)) continue
@@ -801,10 +815,14 @@ export function annotateParallelAggregateEdgeOffsets(
     if (!src || !tgt) continue
     if (parentKey(src) !== parentKey(tgt)) continue
     const region = parentKey(src) ?? '__root__'
-    const key = `${region}|${e.source}`
-    const ids = groups.get(key) ?? []
-    ids.push(String(e.id))
-    groups.set(key, ids)
+    const sourceKey = `${region}|${e.source}`
+    const sourceIds = groups.get(sourceKey) ?? []
+    sourceIds.push(String(e.id))
+    groups.set(sourceKey, sourceIds)
+    const targetKey = `${region}|${e.target}`
+    const targetIds = groupsByTarget.get(targetKey) ?? []
+    targetIds.push(String(e.id))
+    groupsByTarget.set(targetKey, targetIds)
   }
 
   for (const ids of groups.values()) {
@@ -819,6 +837,21 @@ export function annotateParallelAggregateEdgeOffsets(
     for (let i = 0; i < ids.length; i++) {
       const edge = byOutId.get(ids[i]!)!
       edge.sourceHandle = aggregateSourceHandleId(i)
+    }
+  }
+
+  for (const ids of groupsByTarget.values()) {
+    if (ids.length < 2) continue
+    ids.sort((a, b) => {
+      const ea = byOutId.get(a)!
+      const eb = byOutId.get(b)!
+      const dy = centerYWorld(String(ea.source)) - centerYWorld(String(eb.source))
+      if (dy !== 0) return dy
+      return String(ea.source).localeCompare(String(eb.source))
+    })
+    for (let i = 0; i < ids.length; i++) {
+      const edge = byOutId.get(ids[i]!)!
+      edge.targetHandle = aggregateTargetHandleId(i)
     }
   }
 
@@ -961,13 +994,13 @@ export function routeSmoothstepEdgesInViewport(
 
 /** Per-module handle `top` % (0–100) derived from partner box centers — call after layout + routing. */
 export type ModuleAnchorTops = {
-  aggIn?: number
+  aggIn?: Record<string, number>
   aggOut?: Record<string, number>
 }
 
 type AnchorAcc = {
   /** Target world Y (flow space) for each incident edge on this handle — median → one shared Y → local %. */
-  aggInY: number[]
+  aggInY: Map<number, number[]>
   aggOutY: Map<number, number[]>
 }
 
@@ -1003,7 +1036,7 @@ function median(nums: number[]): number | undefined {
   return s.length % 2 === 1 ? s[m]! : (s[m - 1]! + s[m]!) / 2
 }
 
-/** Aligns module handles so paired endpoints share one world Y (median when several edges share a handle), then local `top` %. */
+/** Aligns source/target handle slots so paired endpoints share one world Y, then converts to local `top` %. */
 export function applyHandleAnchorAlignment(nodes: readonly any[], edges: readonly any[]): any[] {
   const byId = new Map<string, any>(nodes.map((n) => [String(n.id), n]))
   const acc = new Map<string, AnchorAcc>()
@@ -1011,7 +1044,7 @@ export function applyHandleAnchorAlignment(nodes: readonly any[], edges: readonl
   function accFor(id: string): AnchorAcc {
     let a = acc.get(id)
     if (!a) {
-      a = { aggInY: [], aggOutY: new Map() }
+      a = { aggInY: new Map(), aggOutY: new Map() }
       acc.set(id, a)
     }
     return a
@@ -1025,30 +1058,41 @@ export function applyHandleAnchorAlignment(nodes: readonly any[], edges: readonl
     const src = byId.get(s)
     const tgt = byId.get(t)
     if (!src || !tgt) continue
-    if (!isLeafBoxNode(src) || !isLeafBoxNode(tgt)) continue
+    if (!isLayerDrillBoxNode(src) || !isLayerDrillBoxNode(tgt)) continue
     if (parentKey(src) !== parentKey(tgt)) continue
 
     const midY = roundWorldY((worldCenterYForNode(s, byId) + worldCenterYForNode(t, byId)) / 2)
 
     const sh = String((e as { sourceHandle?: string }).sourceHandle ?? '')
-    const m = sh.match(/^agg-out-(\d+)$/)
-    const slot = m ? Number(m[1]) : 0
+    const tm = String((e as { targetHandle?: string }).targetHandle ?? '').match(/^agg-in-(\d+)$/)
+    const sm = sh.match(/^agg-out-(\d+)$/)
+    const sourceSlot = sm ? Number(sm[1]) : 0
+    const targetSlot = tm ? Number(tm[1]) : 0
     const sa = accFor(s)
     const ta = accFor(t)
-    let arr = sa.aggOutY.get(slot)
-    if (!arr) {
-      arr = []
-      sa.aggOutY.set(slot, arr)
+    let outYs = sa.aggOutY.get(sourceSlot)
+    if (!outYs) {
+      outYs = []
+      sa.aggOutY.set(sourceSlot, outYs)
     }
-    arr.push(midY)
-    ta.aggInY.push(midY)
+    outYs.push(midY)
+    let inYs = ta.aggInY.get(targetSlot)
+    if (!inYs) {
+      inYs = []
+      ta.aggInY.set(targetSlot, inYs)
+    }
+    inYs.push(midY)
   }
 
   const anchorById = new Map<string, ModuleAnchorTops>()
   for (const [id, a] of acc) {
     const tops: ModuleAnchorTops = {}
-    const gIy = median(a.aggInY)
-    if (gIy !== undefined) tops.aggIn = worldYToLocalTopPct(id, gIy, byId)
+    const aggInRec: Record<string, number> = {}
+    for (const [slot, ys] of a.aggInY) {
+      const y = median(ys)
+      if (y !== undefined) aggInRec[String(slot)] = worldYToLocalTopPct(id, y, byId)
+    }
+    if (Object.keys(aggInRec).length) tops.aggIn = aggInRec
     const aggOutRec: Record<string, number> = {}
     for (const [slot, ys] of a.aggOutY) {
       const y = median(ys)
@@ -1059,7 +1103,7 @@ export function applyHandleAnchorAlignment(nodes: readonly any[], edges: readonl
   }
 
   return nodes.map((n) => {
-    if (!isLeafBoxNode(n)) return n
+    if (!isLayerDrillBoxNode(n)) return n
     const tops = anchorById.get(String(n.id))
     const prev =
       n.data && typeof n.data === 'object' ? { ...(n.data as Record<string, unknown>) } : {}
@@ -1082,6 +1126,7 @@ export function focusedModuleWidthForDrill(
   baseW: number,
   parentNode: string | undefined,
   allNodes: readonly any[],
+  preferredWidth?: number,
 ): number {
   let innerW = viewportRoot.width
   if (parentNode) {
@@ -1097,7 +1142,14 @@ export function focusedModuleWidthForDrill(
   const colW = (usableW - Math.max(0, numCols - 1) * COLUMN_GUTTER) / numCols
   const colInnerW = Math.max(64, colW - 2 * COL_INSET)
   const span = Math.min(vp.width - originX - marginX - 8, colInnerW * 3.15 + COLUMN_GUTTER)
-  return Math.round(Math.max(baseW, span))
+  const preferred =
+    preferredWidth ??
+    (numCols <= 2
+      ? Math.round(Math.max(baseW * 1.55, 460))
+      : numCols === 3
+        ? Math.round(Math.max(baseW * 1.8, 500))
+        : span)
+  return Math.round(Math.max(baseW, Math.min(span, preferred)))
 }
 
 /** Vertical band height for maximizing a node in a layer drill (root vs nested group). */

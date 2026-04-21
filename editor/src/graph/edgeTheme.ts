@@ -34,13 +34,16 @@ function edgeLabelVerticalNudge(): Pick<CSSProperties, 'transform'> {
 }
 
 /** Legible caption above the path; {@link GraphWorkspace} bumps opacity further on hover emphasis. */
-export function dependencyEdgeLabelStyle(): CSSProperties {
+export function dependencyEdgeLabelStyle(
+  color: string = '#334155',
+  emphasized: boolean = false,
+): CSSProperties {
   return {
     ...edgeLabelVerticalNudge(),
-    opacity: 0.82,
-    fill: '#334155',
+    opacity: emphasized ? 1 : 0.82,
+    fill: color,
     fontSize: '11px',
-    fontWeight: 500,
+    fontWeight: emphasized ? 600 : 500,
   }
 }
 

@@ -1,16 +1,11 @@
 <script setup lang="ts">
-import { Handle, Position, useVueFlow } from '@vue-flow/core'
+import { useVueFlow } from '@vue-flow/core'
 import { computed, inject, nextTick } from 'vue'
 import { boxColorForId, nextNamedBoxColor } from '../../graph/boxColors'
-import {
-  AGG_TARGET_HANDLE,
-  aggregateFanTopPctForUsedSlots,
-  aggregateSourceHandleId,
-} from '../../graph/handles'
 import type { ModuleAnchorTops } from '../../graph/layoutDependencyLayers'
-import { edgeContributesToClasspathDepth, strokeColorForFlowEdge } from '../../graph/relationKinds'
-import { usedHandlesForNode } from '../../graph/usedFlowHandles'
 import { setNodeColor, setNodeNotes, setNodePinned } from '../../store/overlayStore'
+import type { BoxCompartment } from '../../diagram/boxCompartments'
+import DepthRelationHandles from '../common/DepthRelationHandles.vue'
 import DiagramSection from './DiagramSection.vue'
 import ProjectBox from './ProjectBox.vue'
 
@@ -49,12 +44,15 @@ const props = defineProps<{
     pinned?: boolean
     boxColor?: string
     language?: string
+    projectKind?: 'project' | 'module'
+    projectCompartments?: readonly BoxCompartment[]
+    preferredFocusWidth?: number
     /** Set by layout: handle `top` % aligned to partner module centers. */
     anchorTops?: ModuleAnchorTops
   }
 }>()
 
-const { updateNodeData, getNodes, getEdges } = useVueFlow()
+const { updateNodeData, getNodes } = useVueFlow()
 
 /**
  * Workspace key supplied by `App.vue` so overlay-store writes target the active tab. Empty
@@ -65,49 +63,6 @@ function ws(): string {
   return workspaceKey?.value ?? ''
 }
 
-const used = computed(() => usedHandlesForNode(props.id, getEdges.value))
-
-function edgeVisible(e: { hidden?: boolean }): boolean {
-  return !(e as { hidden?: boolean }).hidden
-}
-
-const strokeAggIn = computed(() => {
-  const hit = getEdges.value.find(
-    (e) =>
-      edgeVisible(e) &&
-      edgeContributesToClasspathDepth(e) &&
-      String(e.target) === props.id &&
-      String(e.targetHandle ?? AGG_TARGET_HANDLE) === AGG_TARGET_HANDLE,
-  )
-  return hit ? strokeColorForFlowEdge(hit) : '#64748b'
-})
-
-const strokeAggOutBySlot = computed(() => {
-  const out: Record<number, string> = {}
-  for (const slot of used.value.aggOutSlots) {
-    const hid = aggregateSourceHandleId(slot)
-    const hit = getEdges.value.find(
-      (e) =>
-        edgeVisible(e) &&
-        edgeContributesToClasspathDepth(e) &&
-        String(e.source) === props.id &&
-        String(e.sourceHandle ?? '') === hid,
-    )
-    out[slot] = hit ? strokeColorForFlowEdge(hit) : '#64748b'
-  }
-  return out
-})
-
-function anchorTopAggIn(fallback: number): string {
-  const v = props.data.anchorTops?.aggIn
-  return `${v != null && Number.isFinite(v) ? v : fallback}%`
-}
-
-function anchorAggOutTop(slot: number): string {
-  const fb = aggregateFanTopPctForUsedSlots(slot, used.value.aggOutSlots)
-  const v = props.data.anchorTops?.aggOut?.[String(slot)]
-  return `${v != null && Number.isFinite(v) ? v : fb}%`
-}
 const refreshDimming = inject<(() => void) | undefined>('tritonRefreshDimming', undefined)
 const relayoutViewport = inject<(() => void | Promise<void>) | undefined>('tritonRelayoutViewport', undefined)
 const graphFocusUi = inject<{ containerFocusId: string | null } | undefined>('tritonGraphFocusUi', undefined)
@@ -165,24 +120,14 @@ const layerFlipStyle = computed((): Record<string, string> => {
   const f = props.data.layerFlip
   if (!f) return {}
   return {
-    transform: `translate(${f.tx}px, ${f.ty}px) scale(${f.sx}, ${f.sy})`,
+    transform: `translate(${f.tx}px, ${f.ty}px)`,
     transformOrigin: '0 0',
     transition: f.transition ?? 'none',
   }
 })
 
 const layerFlipCounterStyle = computed((): Record<string, string> => {
-  const f = props.data.layerFlip
-  if (!f) return {}
-  const { sx, sy } = f
-  if (Math.abs(sx - 1) < 1e-5 && Math.abs(sy - 1) < 1e-5) return {}
-  const safeSx = Math.abs(sx) < 1e-6 ? 1 : sx
-  const safeSy = Math.abs(sy) < 1e-6 ? 1 : sy
-  return {
-    transform: `scale(${1 / safeSx}, ${1 / safeSy})`,
-    transformOrigin: '0 0',
-    transition: f.transition ?? 'none',
-  }
+  return {}
 })
 
 function cycleColor() {
@@ -239,7 +184,9 @@ function togglePin(ev: MouseEvent) {
             :description="(data.notes as string | undefined) || data.description"
             :notes="data.drillNote"
             :language="data.language"
+            :kind="data.projectKind"
             :box-color="data.boxColor"
+            :compartments="data.projectCompartments"
             :pinned="!!data.pinned"
             :focused="!!data.layerDrillFocus"
             :show-pin-tool="showPinTool"
@@ -253,25 +200,11 @@ function togglePin(ev: MouseEvent) {
         </DiagramSection>
       </div>
     </div>
-
-    <Handle
-      :id="AGG_TARGET_HANDLE"
-      class="handle handle-agg-in-target tg-handle-anchor"
-      type="target"
-      :position="Position.Left"
-      :style="{ top: anchorTopAggIn(50), '--tg-handle-stroke': strokeAggIn }"
-    />
-    <Handle
-      v-for="slot in used.aggOutSlots"
-      :key="aggregateSourceHandleId(slot)"
-      :id="aggregateSourceHandleId(slot)"
-      class="handle handle-agg-fan-out tg-handle-anchor"
-      type="source"
-      :position="Position.Right"
-      :style="{
-        top: anchorAggOutTop(slot),
-        '--tg-handle-stroke': strokeAggOutBySlot[slot] ?? '#64748b',
-      }"
+    <DepthRelationHandles
+      :node-id="id"
+      :anchor-tops="data.anchorTops"
+      target-class="handle-agg-in-target"
+      source-class="handle-agg-fan-out"
     />
   </div>
 </template>

@@ -16,7 +16,6 @@ defineOptions({ name: 'PackageBox' })
  */
 import { computed, inject, nextTick, onMounted, onScopeDispose, onUnmounted, ref, watch, type Ref } from 'vue'
 import { openInEditor } from '../../openInEditor'
-import { getSmoothStepPath, Position } from '@vue-flow/core'
 import type {
   TritonInnerArtefactRelationSpec,
   TritonInnerArtefactSpec,
@@ -25,6 +24,7 @@ import type {
 import { boxColorForId, nextNamedBoxColor, type NamedBoxColor } from '../../graph/boxColors'
 import { dependencyEdgeLabelStyle } from '../../graph/edgeTheme'
 import {
+  SCALA_CREATES_STROKE,
   SCALA_EXTENDS_STROKE,
   SCALA_HAS_TRAIT_STROKE,
   SCALA_GETS_STROKE,
@@ -37,8 +37,15 @@ import scalaTraitIconUrl from '../../assets/language-icons/scala-trait.svg'
 import scalaObjectIconUrl from '../../assets/language-icons/scala-object.svg'
 import scalaEnumIconUrl from '../../assets/language-icons/scala-enum.svg'
 import ShikiInlineCode from '../ShikiInlineCode.vue'
+import GeneralFocusedBox from '../common/GeneralFocusedBox.vue'
+import BoxMetricStrip from '../common/BoxMetricStrip.vue'
+import { simulatedMetricsForBox } from '../common/boxMetricDemo'
+import BoxCompartments from '../common/BoxCompartments.vue'
 import { useScalaCoverageKeyed } from '../../store/useOverlay'
 import { getScalaCoverage, onScalaCoverageChanged } from '../../store/overlayStore'
+import type { BoxCompartment } from '../../diagram/boxCompartments'
+import { shouldHideEdgeForRelationFilter } from '../../graph/relationVisibility'
+import { buildAnchoredSmoothStepRelationDraws } from '../../graph/anchoredSmoothStepRelations'
 
 /**
  * Pick the kind-specific Scala badge (class / trait / object / enum) for a Scala leaf
@@ -177,6 +184,25 @@ const emit = defineEmits<{
 
 const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
 
+const focusedLegacyCompartments = computed<readonly BoxCompartment[]>(() => {
+  const out: BoxCompartment[] = []
+  if ((props.description ?? '').trim()) {
+    out.push({
+      id: 'purpose',
+      title: 'Purpose',
+      rows: [{ value: String(props.description ?? '') }],
+    })
+  }
+  if ((props.notes ?? '').trim()) {
+    out.push({
+      id: 'notes',
+      title: 'Notes',
+      rows: [{ value: String(props.notes ?? '') }],
+    })
+  }
+  return out
+})
+
 const isScalaLeaf = computed(() => props.leafVisual === 'artefact')
 
 /**
@@ -217,6 +243,10 @@ function canOpenInnerArtefactInEditor(artId: string): boolean {
 
 const workspaceKeyRef = inject<Ref<string>>('tritonWorkspaceKey', ref(''))
 const scalaCoverageRef = useScalaCoverageKeyed(workspaceKeyRef, String(props.boxId ?? ''))
+const relationTypeVisibilityRef = inject<Ref<Record<string, boolean>>>(
+  'tritonRelationTypeVisibility',
+  ref({}),
+)
 
 /**
  * Real coverage percentage from Scoverage (when available).
@@ -233,6 +263,7 @@ const coveragePercent = computed((): number | null => {
 const hasCoverage = computed(() => coveragePercent.value !== null)
 /** Safe numeric for template bindings (only used when `hasCoverage`). */
 const coveragePercentValue = computed(() => coveragePercent.value ?? 0)
+const simulatedMetrics = computed(() => simulatedMetricsForBox(props.boxId))
 
 const innerCoverageVersion = ref(0)
 const offInnerCoverage = onScalaCoverageChanged(() => {
@@ -264,9 +295,15 @@ const activeInnerSpec = computed((): TritonInnerPackageSpec | null => {
   return findSpecAtPath(props.innerPackages, path)
 })
 
-const innerArtefactRelationList = computed((): readonly TritonInnerArtefactRelationSpec[] =>
-  Array.isArray(props.innerArtefactRelations) ? props.innerArtefactRelations : [],
-)
+const innerArtefactRelationList = computed((): readonly TritonInnerArtefactRelationSpec[] => {
+  const raw = Array.isArray(props.innerArtefactRelations) ? props.innerArtefactRelations : []
+  const visibility = relationTypeVisibilityRef.value
+  return raw.filter((rel) => !shouldHideEdgeForRelationFilter({ label: rel.label }, visibility))
+})
+
+function innerSimulatedMetrics(id: string) {
+  return simulatedMetricsForBox(id)
+}
 
 const innerArtefactById = computed(() => {
   const m = new Map<string, InnerArtefactSummary>()
@@ -331,9 +368,9 @@ const focusFilteredIds = computed((): Set<string> | null => {
 /**
  * LR columns: abstract parents left → concrete subtypes right (see {@link assignInnerArtefactLayers}).
  *
- * All relation kinds (`extends`, `with`, `gets`) shape the column layout:
- *   - Inheritance: parent (from) left → child (to) right.
- *   - Gets: consumer (from, Bear) left → dependency (to, DietProfile) right.
+ * Only inheritance shapes the column layout:
+ *   - `extends` / `with`: parent (from) left → child (to) right.
+ * `gets` and `creates` are drawn as overlays on top of that inheritance-driven structure.
  *
  * When focus is active only the filtered subset of artefacts and their connecting
  * edges are passed to the layout algorithm.
@@ -343,7 +380,7 @@ const innerArtefactLayerColumns = computed((): string[][] => {
   const allIds = props.innerArtefacts.map((a) => a.id)
   const ids = filter ? allIds.filter((id) => filter.has(id)) : allIds
   if (!ids.length) return []
-  const rels = innerArtefactRelationList.value
+  const rels = innerArtefactRelationList.value.filter((r) => r.label === 'extends' || r.label === 'with')
   const filteredRels = filter ? rels.filter((r) => filter.has(r.from) && filter.has(r.to)) : rels
   if (!filteredRels.length) return [ids]
   return assignInnerArtefactLayers(ids, filteredRels)
@@ -358,7 +395,7 @@ type InnerEdgeDraw = {
   path: string
   labelX: number
   labelY: number
-  /** YAML / graph value (`extends` | `with` | `gets`). */
+  /** YAML / graph value (`extends` | `with` | `gets` | `creates`). */
   relationLabel: string
   displayLabel: string
   /**
@@ -366,7 +403,7 @@ type InnerEdgeDraw = {
    * `'with'` and `'extends'` distinct from `'gets'` (instead of collapsing the two inheritance
    * kinds) because the marker definitions are keyed on this value.
    */
-  kind: 'extends' | 'with' | 'gets'
+  kind: 'extends' | 'with' | 'gets' | 'creates'
   stroke: string
   from: string
   to: string
@@ -379,36 +416,42 @@ const innerHoverEdgeId = ref<string | null>(null)
 const innerHoverArtId = ref<string | null>(null)
 
 function innerEdgeLabelSvgStyleFor(draw: InnerEdgeDraw): Record<string, string> {
-  const s = dependencyEdgeLabelStyle()
+  const s = dependencyEdgeLabelStyle(draw.stroke, innerEdgeEmphasized(draw))
   return {
-    fill: draw.stroke,
+    fill: String(s.fill ?? draw.stroke),
     fontSize: String(s.fontSize ?? '11px'),
     fontWeight: String(s.fontWeight ?? '500'),
     opacity: String(s.opacity ?? '0.88'),
   }
 }
 
-function innerArtefactRelationStroke(label: string): { kind: 'extends' | 'with' | 'gets'; stroke: string } {
+function innerArtefactRelationStroke(label: string): { kind: 'extends' | 'with' | 'gets' | 'creates'; stroke: string } {
   if (label === 'with') return { kind: 'with', stroke: SCALA_HAS_TRAIT_STROKE }
   if (label === 'gets') return { kind: 'gets', stroke: SCALA_GETS_STROKE }
+  if (label === 'creates') return { kind: 'creates', stroke: SCALA_CREATES_STROKE }
   return { kind: 'extends', stroke: SCALA_EXTENDS_STROKE }
 }
 
-function innerArtefactEdgeDisplayLabel(kind: 'extends' | 'with' | 'gets', wrapperName?: string): string {
+function innerArtefactEdgeDisplayLabel(kind: 'extends' | 'with' | 'gets' | 'creates', wrapperName?: string): string {
   if (kind === 'with') return 'has trait'
   if (kind === 'gets') return wrapperName ? `gets as ${wrapperName}` : 'gets'
+  if (kind === 'creates') return 'creates'
   return 'extends'
 }
 
-function innerEdgeMarkerSuffix(kind: 'extends' | 'with' | 'gets'): string {
+function innerEdgeMarkerSuffix(kind: 'extends' | 'with' | 'gets' | 'creates'): string {
   if (kind === 'with') return 'hastrait'
   if (kind === 'gets') return 'gets'
+  if (kind === 'creates') return 'creates'
   return 'extends'
 }
 
 const innerArtefactFocusActive = computed(
   () => !!props.focusedInnerArtefactId && !innerDrillPathArr.value.length,
 )
+
+const emphasizedInnerEdgeDraws = computed(() => innerEdgeDraws.value.filter((draw) => innerEdgeEmphasized(draw)))
+const normalInnerEdgeDraws = computed(() => innerEdgeDraws.value.filter((draw) => !innerEdgeEmphasized(draw)))
 
 
 function innerEdgeEmphasized(draw: InnerEdgeDraw): boolean {
@@ -448,22 +491,6 @@ function bindInnerArtefactSlotEl(artId: string, el: unknown) {
   else innerArtefactSlotEls.delete(artId)
 }
 
-/**
- * Returns the viewport center of the named anchor dot (`--in` or `--out`) inside a slot
- * element, falling back to the slot's left/right edge mid-Y when the anchor isn't found.
- * The anchor spans are positioned at the artefact-row's exact midpoint, which is correct
- * even when the surrounding slot div is taller due to `align-self: stretch`.
- */
-function innerAnchorCenter(slotEl: HTMLElement, side: '--in' | '--out'): { x: number; y: number } {
-  const anchor = slotEl.querySelector(`.package-box__artefact-anchor${side}`)
-  if (anchor) {
-    const r = anchor.getBoundingClientRect()
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
-  }
-  const r = slotEl.getBoundingClientRect()
-  return { x: side === '--in' ? r.left : r.right, y: r.top + r.height / 2 }
-}
-
 function refreshInnerArtefactEdges() {
   const root = innerArtefactDiagramRef.value
   const rels = innerArtefactRelationList.value
@@ -471,52 +498,31 @@ function refreshInnerArtefactEdges() {
     innerEdgeDraws.value = []
     return
   }
-  const rr = root.getBoundingClientRect()
-  if (rr.width <= 0 || rr.height <= 0) {
-    innerEdgeDraws.value = []
-    return
-  }
+  const sharedDraws = buildAnchoredSmoothStepRelationDraws({
+    rootEl: root,
+    relations: rels.map((rel, index) => ({
+      id: `ie-${props.boxId}-${index}`,
+      from: rel.from,
+      to: rel.to,
+    })),
+    slotEls: innerArtefactSlotEls,
+  })
   const out: InnerEdgeDraw[] = []
-  let i = 0
-  for (const rel of rels) {
-    const fromEl = innerArtefactSlotEls.get(rel.from)
-    const toEl = innerArtefactSlotEls.get(rel.to)
-    if (!fromEl || !toEl) continue
-    // Use the dedicated anchor dots as connection points. The slot divs use
-    // align-self:stretch so their height may exceed the visible row — using
-    // the slot rect's mid-Y lands the edge in the wrong place. The anchor
-    // spans are absolutely positioned to the artefact-row's midpoint and
-    // exactly at its left/right edges, matching what the user sees.
-    const srcPt = innerAnchorCenter(fromEl, '--out')
-    const tgtPt = innerAnchorCenter(toEl, '--in')
-    // Always route left-to-right: swap when the source is geometrically to
-    // the right of the target (safety net for layout edge cases).
-    const fwd = srcPt.x <= tgtPt.x
-    const sourceX = (fwd ? srcPt.x : tgtPt.x) - rr.left
-    const sourceY = (fwd ? srcPt.y : tgtPt.y) - rr.top
-    const targetX = (fwd ? tgtPt.x : srcPt.x) - rr.left
-    const targetY = (fwd ? tgtPt.y : srcPt.y) - rr.top
-    const [path, labelX, labelY] = getSmoothStepPath({
-      sourceX,
-      sourceY,
-      sourcePosition: Position.Right,
-      targetX,
-      targetY,
-      targetPosition: Position.Left,
-      borderRadius: 8,
-    })
+  for (let i = 0; i < sharedDraws.length; i++) {
+    const geom = sharedDraws[i]!
+    const rel = rels[i]!
     const { kind, stroke } = innerArtefactRelationStroke(rel.label)
     out.push({
-      id: `ie-${props.boxId}-${i++}`,
-      path,
-      labelX,
-      labelY,
+      id: geom.id,
+      path: geom.path,
+      labelX: geom.labelX,
+      labelY: geom.labelY,
       relationLabel: rel.label,
       displayLabel: innerArtefactEdgeDisplayLabel(kind, rel.wrapperName),
       kind,
       stroke,
-      from: rel.from,
-      to: rel.to,
+      from: geom.from,
+      to: geom.to,
     })
   }
   innerEdgeDraws.value = out
@@ -886,27 +892,17 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     v-if="embedded"
     ref="rootEl"
     class="package-box package-box--embedded"
-    :class="{ 'package-box--pinned': pinned, 'package-box--has-coverage': hasCoverage }"
+    :class="{ 'package-box--pinned': pinned, 'package-box--has-metrics': true }"
     :style="{ '--box-accent': accent }"
   >
-    <span
-      v-if="hasCoverage"
-      class="package-box__coverage package-box__coverage--embedded"
-      :title="`Code coverage: ${coveragePercentValue}%`"
-      role="img"
-      :aria-label="`Code coverage ${coveragePercentValue} percent`"
-    >
-      <svg viewBox="0 0 100 20" preserveAspectRatio="none" aria-hidden="true" class="package-box__coverage-svg">
-        <rect x="0" y="0" :width="coveragePercentValue" height="20" class="package-box__coverage-fill--covered" />
-        <rect
-          :x="coveragePercentValue"
-          y="0"
-          :width="100 - coveragePercentValue"
-          height="20"
-          class="package-box__coverage-fill--uncovered"
-        />
-      </svg>
-    </span>
+    <div class="package-box__metrics package-box__metrics--embedded">
+      <BoxMetricStrip
+        :coverage-percent="hasCoverage ? coveragePercentValue : null"
+        :technical-debt-percent="simulatedMetrics.technicalDebtPercent"
+        :issue-count="simulatedMetrics.issueCount"
+        :issue-level="simulatedMetrics.issueLevel"
+      />
+    </div>
     <div class="lang-icon-slot lang-icon-slot--embedded">
       <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
     </div>
@@ -922,121 +918,73 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     Artefact-specific content is injected via slots so {@link ScalaArtefactBox} can reuse this shell
     without duplicating chrome — see `focused-tools-prefix`, `focused-header-icon`, `focused-body`.
   -->
-  <div
-    v-else-if="focused"
-    ref="rootEl"
-    class="package-box package-box--focused package-box--focused-layout"
-    :class="{
-      'package-box--scala-leaf': isScalaLeaf,
-      'package-box--pinned': pinned,
-      'package-box--tools-wide': showColorTool,
-      'package-box--pin-only': showPinTool && !showColorTool,
-      'package-box--editing': editing,
-      'package-box--has-coverage': hasCoverage,
-    }"
-    :style="{ '--box-accent': accent }"
-  >
-    <div class="package-box__tools" @pointerdown.stop>
-      <span
-        v-if="hasCoverage"
-        class="package-box__coverage"
-        :title="`Code coverage: ${coveragePercentValue}%`"
-        role="img"
-        :aria-label="`Code coverage ${coveragePercentValue} percent`"
-      >
-        <svg
-          viewBox="0 0 100 20"
-          preserveAspectRatio="none"
-          aria-hidden="true"
-          class="package-box__coverage-svg"
-        >
-          <rect x="0" y="0" :width="coveragePercentValue" height="20" class="package-box__coverage-fill--covered" />
-          <rect :x="coveragePercentValue" y="0" :width="100 - coveragePercentValue" height="20" class="package-box__coverage-fill--uncovered" />
-        </svg>
-      </span>
+  <div v-else-if="focused" class="package-box-host">
+    <GeneralFocusedBox
+      :accent="accent"
+      :title="label"
+      :subtitle="declaration || subtitle"
+      :title-tooltip="isScalaLeaf ? String(label ?? '') : 'Double-click to rename / edit description'"
+      :pinned="pinned"
+      :show-pin-tool="showPinTool"
+      :show-color-tool="showColorTool"
+      :has-coverage="hasCoverage"
+      :coverage-percent="coveragePercentValue"
+      :technical-debt-percent="simulatedMetrics.technicalDebtPercent"
+      :issue-count="simulatedMetrics.issueCount"
+      :issue-level="simulatedMetrics.issueLevel"
+      :pin-title="
+        isScalaLeaf
+          ? 'Pin — keep this declaration highlighted when another box is zoomed'
+          : 'Pin — keep this package highlighted when another box is zoomed'
+      "
+      :pin-aria-label="
+        isScalaLeaf
+          ? 'Pin declaration (stays focused when zooming elsewhere)'
+          : 'Pin package (stays focused when zooming elsewhere)'
+      "
+      @toggle-pin="emit('toggle-pin', $event)"
+      @cycle-color="emit('cycle-color')"
+      @header-dblclick="onHeaderDblClick"
+    >
+    <template #tools-prefix>
       <slot name="focused-tools-prefix" />
-      <button
-        v-if="showPinTool"
-        type="button"
-        class="tool-btn tool-btn--pin"
-        :class="{ 'tool-btn--active': pinned }"
-        :title="isScalaLeaf ? 'Pin — keep this declaration highlighted when another box is zoomed' : 'Pin — keep this package highlighted when another box is zoomed'"
-        :aria-pressed="pinned ? 'true' : 'false'"
-        :aria-label="isScalaLeaf ? 'Pin declaration (stays focused when zooming elsewhere)' : 'Pin package (stays focused when zooming elsewhere)'"
-        @click.stop="emit('toggle-pin', $event)"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true" class="tool-btn__icon tool-btn__icon--pin">
-          <path
-            fill="currentColor"
-            d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z"
-          />
-        </svg>
-      </button>
-      <button
-        v-if="showColorTool"
-        type="button"
-        class="tool-btn tool-btn--color"
-        :title="`Accent: ${accent}. Click for next color.`"
-        aria-label="Change box accent color"
-        @click.stop="emit('cycle-color')"
-      >
-        <svg viewBox="0 0 16 16" aria-hidden="true" class="tool-btn__icon tool-btn__icon--color">
-          <circle cx="6" cy="8" r="4.25" />
-          <circle cx="11" cy="8" r="3" opacity="0.45" />
-        </svg>
-      </button>
-    </div>
-
-    <div class="package-box__focused-shell">
-      <div
-        class="package-box__focused-header"
-        @dblclick.stop="onHeaderDblClick"
-      >
-        <slot name="focused-header-icon">
-          <div class="lang-icon-slot lang-icon-slot--header">
-            <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
-          </div>
-        </slot>
-        <div class="package-box__focused-head-text">
-          <div
-            ref="titleEl"
-            class="title title--header"
-            :title="isScalaLeaf ? String(label ?? '') : 'Double-click to rename / edit description'"
-          >
-            {{ label }}
-          </div>
-          <div v-if="declaration || subtitle" class="subtitle subtitle--header">
-            <!--
-              Scala declaration header is a click-to-open target — clicking jumps the user's
-              editor to the row where this artefact is declared. We render a <button> wrapper
-              only for Scala leaves (plain packages don't have a source-file anchor), and only
-              when the caller actually wants it (the emit is a no-op for listeners that aren't
-              attached). `tabindex="-1"` keeps the focused-box keyboard flow unchanged; the tool
-              button in the header still owns the primary Tab target.
-            -->
-            <button
-              v-if="isScalaLeaf && declaration"
-              type="button"
-              class="subtitle__open-btn"
-              :title="'Click to open this declaration in the editor'"
-              tabindex="-1"
-              @click.stop="emit('declaration-click')"
-            >
-              <ShikiInlineCode :code="declaration" lang="scala" />
-            </button>
-            <template v-else>{{ declaration || subtitle }}</template>
-          </div>
+    </template>
+    <template #header-icon>
+      <slot name="focused-header-icon">
+        <div class="lang-icon-slot lang-icon-slot--header">
+          <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
         </div>
-      </div>
-
-      <slot name="focused-body">
-      <div
-        v-if="hasInnerDiagram"
-        class="package-box__inner-diagram nodrag nopan"
-        @pointerdown.stop
-        @wheel.stop
-        @click.self="clearInnerDrill"
+      </slot>
+    </template>
+    <template #subtitle>
+      <!--
+        Scala declaration header is a click-to-open target — clicking jumps the user's
+        editor to the row where this artefact is declared. We render a <button> wrapper
+        only for Scala leaves (plain packages don't have a source-file anchor), and only
+        when the caller actually wants it (the emit is a no-op for listeners that aren't
+        attached). `tabindex="-1"` keeps the focused-box keyboard flow unchanged; the tool
+        button in the header still owns the primary Tab target.
+      -->
+      <button
+        v-if="isScalaLeaf && declaration"
+        type="button"
+        class="subtitle__open-btn"
+        :title="'Click to open this declaration in the editor'"
+        tabindex="-1"
+        @click.stop="emit('declaration-click')"
       >
+        <ShikiInlineCode :code="declaration" lang="scala" />
+      </button>
+      <template v-else>{{ declaration || subtitle }}</template>
+    </template>
+      <slot name="focused-body">
+        <div
+          v-if="hasInnerDiagram"
+          class="package-box__inner-diagram nodrag nopan"
+          @pointerdown.stop
+          @wheel.stop
+          @click.self="clearInnerDrill"
+        >
         <div
           v-if="innerDrillPathArr.length"
           class="package-box__inner-drill-toolbar"
@@ -1107,8 +1055,19 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                     v-if="innerArtefactFocusActive && focusedInnerArtefactId === artId && innerArtefactCell(artId)"
                     :ref="(el) => bindInnerArtefactSlotEl(artId, el)"
                     class="package-box__inner-slot package-box__inner-slot--artefact-layer package-box__inner-slot--artefact-focused-cell"
+                    :style="{ '--box-accent': innerArtefactAccent(artId) }"
                     @click="onFocusedArtefactBackgroundClick"
                   >
+                    <span
+                      class="package-box__artefact-anchor package-box__artefact-anchor--in"
+                      :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
+                      aria-hidden="true"
+                    />
+                    <span
+                      class="package-box__artefact-anchor package-box__artefact-anchor--out"
+                      :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
+                      aria-hidden="true"
+                    />
                     <ScalaArtefactBox
                       :box-id="artId"
                       :label="innerArtefactCell(artId)!.name"
@@ -1153,36 +1112,15 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                     @mouseleave="onInnerArtefactSlotLeave(artId)"
                     @click.stop="onArtefactRowClick(artId)"
                   >
-                    <div class="package-box__artefact-row">
-                      <span
-                        v-if="innerHasCoverage(artId)"
-                        class="package-box__coverage package-box__coverage--inner-artefact"
-                        :title="`Code coverage: ${innerCoveragePercentValue(artId)}%`"
-                        role="img"
-                        :aria-label="`Code coverage ${innerCoveragePercentValue(artId)} percent`"
-                      >
-                        <svg
-                          viewBox="0 0 100 20"
-                          preserveAspectRatio="none"
-                          aria-hidden="true"
-                          class="package-box__coverage-svg"
-                        >
-                          <rect
-                            x="0"
-                            y="0"
-                            :width="innerCoveragePercentValue(artId)"
-                            height="20"
-                            class="package-box__coverage-fill--covered"
-                          />
-                          <rect
-                            :x="innerCoveragePercentValue(artId)"
-                            y="0"
-                            :width="100 - innerCoveragePercentValue(artId)"
-                            height="20"
-                            class="package-box__coverage-fill--uncovered"
-                          />
-                        </svg>
-                      </span>
+                    <div class="package-box__artefact-row package-box__artefact-row--has-metrics">
+                      <div class="package-box__artefact-metrics">
+                        <BoxMetricStrip
+                          :coverage-percent="innerHasCoverage(artId) ? innerCoveragePercentValue(artId) : null"
+                          :technical-debt-percent="innerSimulatedMetrics(artId).technicalDebtPercent"
+                          :issue-count="innerSimulatedMetrics(artId).issueCount"
+                          :issue-level="innerSimulatedMetrics(artId).issueLevel"
+                        />
+                      </div>
                       <span
                         class="package-box__artefact-anchor package-box__artefact-anchor--in"
                         :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
@@ -1256,8 +1194,20 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                 >
                   <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--gets" />
                 </marker>
+                <marker
+                  :id="`${innerEdgeMarkerId}-creates`"
+                  class="package-box__inner-edge-marker"
+                  markerWidth="14"
+                  markerHeight="14"
+                  refX="12"
+                  refY="6"
+                  orient="auto"
+                  markerUnits="userSpaceOnUse"
+                >
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--creates" />
+                </marker>
               </defs>
-              <g v-for="e in innerEdgeDraws" :key="e.id" class="package-box__inner-edge-group">
+              <g v-for="e in normalInnerEdgeDraws" :key="e.id" class="package-box__inner-edge-group">
                 <path
                   :d="e.path"
                   class="package-box__inner-edge-hit"
@@ -1271,10 +1221,95 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                     'package-box__inner-edge-path',
                     { 'package-box__inner-edge-path--emph': innerEdgeEmphasized(e) },
                     e.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
+                    e.kind === 'creates' ? 'package-box__inner-edge-path--creates' : null,
                   ]"
                   fill="none"
                   :style="{ stroke: e.stroke }"
                   :marker-end="`url(#${innerEdgeMarkerId}-${innerEdgeMarkerSuffix(e.kind)})`"
+                />
+                <text
+                  :x="e.labelX"
+                  :y="e.labelY - 15"
+                  class="package-box__inner-edge-label"
+                  :class="{ 'package-box__inner-edge-label--emph': innerEdgeEmphasized(e) }"
+                  :style="innerEdgeLabelSvgStyleFor(e)"
+                  text-anchor="middle"
+                  dominant-baseline="middle"
+                >
+                  {{ e.displayLabel }}
+                </text>
+              </g>
+            </svg>
+            <svg class="package-box__inner-artefact-edges package-box__inner-artefact-edges--overlay" aria-hidden="true">
+              <defs>
+                <marker
+                  :id="`${innerEdgeMarkerId}-overlay-extends`"
+                  class="package-box__inner-edge-marker"
+                  markerWidth="14"
+                  markerHeight="14"
+                  refX="12"
+                  refY="6"
+                  orient="auto"
+                  markerUnits="userSpaceOnUse"
+                >
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--extends" />
+                </marker>
+                <marker
+                  :id="`${innerEdgeMarkerId}-overlay-hastrait`"
+                  class="package-box__inner-edge-marker"
+                  markerWidth="14"
+                  markerHeight="14"
+                  refX="12"
+                  refY="6"
+                  orient="auto"
+                  markerUnits="userSpaceOnUse"
+                >
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--hastrait" />
+                </marker>
+                <marker
+                  :id="`${innerEdgeMarkerId}-overlay-gets`"
+                  class="package-box__inner-edge-marker"
+                  markerWidth="14"
+                  markerHeight="14"
+                  refX="12"
+                  refY="6"
+                  orient="auto"
+                  markerUnits="userSpaceOnUse"
+                >
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--gets" />
+                </marker>
+                <marker
+                  :id="`${innerEdgeMarkerId}-overlay-creates`"
+                  class="package-box__inner-edge-marker"
+                  markerWidth="14"
+                  markerHeight="14"
+                  refX="12"
+                  refY="6"
+                  orient="auto"
+                  markerUnits="userSpaceOnUse"
+                >
+                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--creates" />
+                </marker>
+              </defs>
+              <g v-for="e in emphasizedInnerEdgeDraws" :key="e.id" class="package-box__inner-edge-group">
+                <path
+                  :d="e.path"
+                  class="package-box__inner-edge-hit"
+                  fill="none"
+                  @mouseenter="onInnerEdgeEnter(e)"
+                  @mouseleave="onInnerEdgeLeave(e)"
+                />
+                <path
+                  :d="e.path"
+                  :class="[
+                    'package-box__inner-edge-path',
+                    { 'package-box__inner-edge-path--emph': innerEdgeEmphasized(e) },
+                    e.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
+                    e.kind === 'creates' ? 'package-box__inner-edge-path--creates' : null,
+                  ]"
+                  fill="none"
+                  :style="{ stroke: e.stroke }"
+                  :marker-end="`url(#${innerEdgeMarkerId}-overlay-${innerEdgeMarkerSuffix(e.kind)})`"
                 />
                 <text
                   :x="e.labelX"
@@ -1333,12 +1368,11 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
         </div>
       </div>
 
-      <div v-else class="package-box__focused-legacy">
-        <div v-if="notes" class="drill-note">{{ notes }}</div>
-        <div v-if="description" class="description-full" :title="description">{{ description }}</div>
-      </div>
+        <div v-else class="package-box__focused-legacy">
+          <BoxCompartments :compartments="focusedLegacyCompartments" variant="dense" />
+        </div>
       </slot>
-    </div>
+    </GeneralFocusedBox>
 
     <div
       v-if="editing"
@@ -1393,31 +1427,22 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       'package-box--tools-wide': showColorTool,
       'package-box--pin-only': showPinTool && !showColorTool,
       'package-box--editing': editing,
-      'package-box--has-coverage': hasCoverage,
+      'package-box--has-metrics': true,
     }"
     :style="{ '--box-accent': accent }"
   >
+    <div class="package-box__metrics">
+      <BoxMetricStrip
+        :coverage-percent="hasCoverage ? coveragePercentValue : null"
+        :technical-debt-percent="simulatedMetrics.technicalDebtPercent"
+        :issue-count="simulatedMetrics.issueCount"
+        :issue-level="simulatedMetrics.issueLevel"
+      />
+    </div>
     <div
       class="package-box__tools"
       @pointerdown.stop
     >
-      <span
-        v-if="hasCoverage"
-        class="package-box__coverage"
-        :title="`Code coverage: ${coveragePercentValue}%`"
-        role="img"
-        :aria-label="`Code coverage ${coveragePercentValue} percent`"
-      >
-        <svg
-          viewBox="0 0 100 20"
-          preserveAspectRatio="none"
-          aria-hidden="true"
-          class="package-box__coverage-svg"
-        >
-          <rect x="0" y="0" :width="coveragePercentValue" height="20" class="package-box__coverage-fill--covered" />
-          <rect :x="coveragePercentValue" y="0" :width="100 - coveragePercentValue" height="20" class="package-box__coverage-fill--uncovered" />
-        </svg>
-      </span>
       <button
         v-if="showPinTool"
         type="button"
@@ -1525,6 +1550,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 </template>
 
 <style scoped>
+.package-box-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
 /*
  * Styles parallel ProjectBox; class names are namespaced (`package-box*`) so the two components
  * can drift independently without leaking selectors. If common styling between the two starts to
@@ -1598,13 +1630,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
  * buttons may wrap to a row below the bar, so the right-pad only needs to clear the widest
  * single-row item, not the cluster's total height.
  */
-.package-box--has-coverage {
+.package-box--has-metrics {
+  padding-right: clamp(46px, 8cqw, 56px);
+  padding-top: clamp(20px, 4vmin, 26px);
+}
+.package-box--has-metrics.package-box--pin-only {
   padding-right: clamp(46px, 8cqw, 56px);
 }
-.package-box--has-coverage.package-box--pin-only {
-  padding-right: clamp(46px, 8cqw, 56px);
-}
-.package-box--has-coverage.package-box--tools-wide {
+.package-box--has-metrics.package-box--tools-wide {
   padding-right: clamp(72px, 12cqw, 108px);
 }
 /**
@@ -1613,11 +1646,11 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
  * 30–40px and push it visually left. Drop the right-pad here and reserve vertical space at
  * the top instead — the icon stays its original size and re-centers below the bar.
  */
-.package-box--tight.package-box--has-coverage,
-.package-box--tight.package-box--has-coverage.package-box--pin-only,
-.package-box--tight.package-box--has-coverage.package-box--tools-wide {
+.package-box--tight.package-box--has-metrics,
+.package-box--tight.package-box--has-metrics.package-box--pin-only,
+.package-box--tight.package-box--has-metrics.package-box--tools-wide {
   padding-right: clamp(4px, 1vmin, 10px);
-  padding-top: clamp(20px, 4vmin, 26px);
+  padding-top: clamp(38px, 8vmin, 54px);
 }
 
 /**
@@ -1632,6 +1665,19 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   padding-right: clamp(6px, 1.35vmin, 14px);
 }
 
+.package-box__metrics {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 4;
+  width: min(124px, calc(100% - 12px));
+}
+
+.package-box__metrics--embedded {
+  top: 4px;
+  right: 4px;
+}
+
 .lang-icon-slot {
   display: flex;
   justify-content: center;
@@ -1640,9 +1686,18 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   flex-shrink: 0;
   width: 100%;
   height: clamp(40px, min(30cqw, 28cqh), 160px);
+  min-height: 36px;
   margin-bottom: clamp(6px, 1.5cqh, 16px);
   transform: none;
   pointer-events: none;
+}
+.package-box--has-metrics .package-box__tools {
+  top: 22px;
+}
+@container (max-width: 150px) {
+  .package-box--has-metrics .package-box__tools {
+    top: 42px;
+  }
 }
 .lang-icon-slot :deep(svg),
 .lang-icon-slot :deep(.lang-svg) {
@@ -1911,6 +1966,9 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   z-index: 0;
   overflow: visible;
 }
+.package-box__inner-artefact-edges--overlay {
+  z-index: 2;
+}
 .package-box__inner-edge-hit {
   stroke: transparent;
   stroke-width: 18;
@@ -1945,6 +2003,9 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .package-box__inner-edge-marker-shape--gets {
   fill: #d97706;
 }
+.package-box__inner-edge-marker-shape--creates {
+  fill: #059669;
+}
 /**
  * `gets` edges are dashed so they read as a structural reference rather than an inheritance
  * relation — same arrow head as `extends`, but the dashed body makes the distinction obvious
@@ -1952,6 +2013,9 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
  */
 .package-box__inner-edge-path--gets {
   stroke-dasharray: 5 3;
+}
+.package-box__inner-edge-path--creates {
+  stroke-dasharray: 2 2;
 }
 .package-box__inner-edge-label {
   paint-order: stroke fill;
@@ -2143,8 +2207,16 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   container-type: inline-size;
   container-name: pkg-artefact-row;
 }
-.package-box__artefact-row:has(.package-box__coverage--inner-artefact) {
-  padding-top: 18px;
+.package-box__artefact-row--has-metrics {
+  padding-top: 20px;
+}
+.package-box__artefact-metrics {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  max-width: calc(100% - 18px);
+  pointer-events: none;
 }
 /** Ridge handles (same idea as `.tg-handle-anchor` on Vue Flow modules). */
 .package-box__artefact-anchor {
@@ -2236,6 +2308,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   .package-box__artefact-row {
     gap: 4px;
     padding: 6px 4px 5px 10px;
+  }
+  .package-box__artefact-row--has-metrics {
+    padding-top: 40px;
+  }
+  .package-box__artefact-metrics {
+    top: 4px;
+    right: 4px;
+    max-width: 40px;
   }
   .package-box__artefact-row .package-box__artefact-text {
     min-width: 0;

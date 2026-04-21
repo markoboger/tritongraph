@@ -23,13 +23,17 @@ export function moduleLayoutRect(n: GraphNode): LayerFlipRect {
 
 /** Map “last” layout box to the visual of “first” (FLIP invert), origin top-left in parent flow space. */
 export function flipDeltaFromFirstLast(first: LayerFlipRect, last: LayerFlipRect): Omit<LayerFlipState, 'transition'> {
-  const lw = Math.max(1, last.w)
-  const lh = Math.max(1, last.h)
   return {
     tx: first.x - last.x,
     ty: first.y - last.y,
-    sx: first.w / lw,
-    sy: first.h / lh,
+    /**
+     * Focus FLIP intentionally animates translation only.
+     *
+     * Width/height changes are left to normal box reflow so text is laid out at the new size
+     * instead of being visually scaled, and icons keep their aspect ratio during the transition.
+     */
+    sx: 1,
+    sy: 1,
   }
 }
 

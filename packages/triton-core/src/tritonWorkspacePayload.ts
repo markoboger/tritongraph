@@ -58,6 +58,12 @@ type CoverageAggregate = {
   weighted: boolean
 }
 
+type ProjectCoverageMeta = {
+  id: string
+  baseDir: string
+  kind: 'project' | 'module'
+}
+
 function packageAncestorsInclusive(packageName: string): string[] {
   const trimmed = String(packageName ?? '').trim()
   if (!trimmed || trimmed === '<root>') return ['<root>']
@@ -101,6 +107,102 @@ function packageCoverageRollups(parsed: ParsedScoverageXml): Map<string, number>
   }
   for (const pkg of parsed.packageRates) out.set(pkg.packageName, pkg.statementRate)
   return out
+}
+
+function projectCoverageMetas(doc?: IlographDocument): ProjectCoverageMeta[] {
+  const resources = doc?.resources ?? []
+  const out: ProjectCoverageMeta[] = []
+  for (const res of resources) {
+    const compartments = res['x-triton-project-compartments'] ?? []
+    const settings = compartments.find((c) => c.id === 'settings')
+    const baseDir =
+      settings?.rows.find((row) => (row.label ?? '').toLowerCase() === 'base dir')?.value?.trim() ?? ''
+    out.push({
+      id: String(res.name ?? ''),
+      baseDir: baseDir || '.',
+      kind: res['x-triton-project-kind'] === 'project' ? 'project' : 'module',
+    })
+  }
+  return out.filter((x) => x.id)
+}
+
+function normalizeProjectBaseDir(baseDir: string): string {
+  const cleaned = String(baseDir ?? '').trim().replace(/^\.\/+/, '').replace(/\/+$/, '')
+  return cleaned || '.'
+}
+
+function projectIdForFile(relPath: string, projects: readonly ProjectCoverageMeta[]): string | undefined {
+  const normalized = String(relPath ?? '').replace(/^\.\/+/, '')
+  let best: ProjectCoverageMeta | undefined
+  for (const project of projects) {
+    const baseDir = normalizeProjectBaseDir(project.baseDir)
+    const match =
+      baseDir === '.' ? true : normalized === baseDir || normalized.startsWith(`${baseDir}/`)
+    if (!match) continue
+    if (!best || normalizeProjectBaseDir(best.baseDir).length < baseDir.length) best = project
+  }
+  return best?.id
+}
+
+function addProjectCoverageFromPackages(
+  out: Map<string, number>,
+  graph: ScalaPackageGraph,
+  parsedCoverage: ParsedScoverageXml,
+  doc?: IlographDocument,
+): void {
+  const projects = projectCoverageMetas(doc)
+  if (!projects.length) return
+
+  const packageRates = packageCoverageRollups(parsedCoverage)
+  const packageCounts = new Map(parsedCoverage.packageRates.map((r) => [r.packageName, r.statementCount ?? 0]))
+  const aggregates = new Map<string, CoverageAggregate>()
+
+  for (const pkg of graph.packages) {
+    const pkgRate = packageRates.get(pkg.name)
+    if (pkgRate == null) continue
+    const owners = new Set(pkg.files.map((file) => projectIdForFile(file, projects)).filter(Boolean) as string[])
+    if (!owners.size) continue
+    const statementCount = packageCounts.get(pkg.name)
+    const hasWeight =
+      typeof statementCount === 'number' && Number.isFinite(statementCount) && statementCount > 0
+    const fallbackWeight = Math.max(1, pkg.files.length)
+    for (const projectId of owners) {
+      const cur = aggregates.get(projectId) ?? { covered: 0, total: 0, weighted: false }
+      if (hasWeight) {
+        cur.covered += pkgRate * statementCount
+        cur.total += statementCount
+        cur.weighted = true
+      } else if (!cur.weighted) {
+        cur.covered += pkgRate * fallbackWeight
+        cur.total += fallbackWeight
+      }
+      aggregates.set(projectId, cur)
+    }
+  }
+
+  for (const [projectId, agg] of aggregates.entries()) {
+    if (!(agg.total > 0)) continue
+    out.set(projectId, agg.covered / agg.total)
+  }
+
+  const rootProjects = projects.filter((project) => project.kind === 'project')
+  if (!rootProjects.length) return
+
+  const overall = { covered: 0, total: 0 }
+  for (const pkg of graph.packages) {
+    const pkgRate = packageRates.get(pkg.name)
+    if (pkgRate == null) continue
+    const statementCount = packageCounts.get(pkg.name)
+    const weight =
+      typeof statementCount === 'number' && Number.isFinite(statementCount) && statementCount > 0
+        ? statementCount
+        : Math.max(1, pkg.files.length)
+    overall.covered += pkgRate * weight
+    overall.total += weight
+  }
+  if (!(overall.total > 0)) return
+  const overallRate = overall.covered / overall.total
+  for (const project of rootProjects) out.set(project.id, overallRate)
 }
 
 function buildArtefactSimpleNameIndex(
@@ -196,8 +298,10 @@ function buildSpecsByArtefact(
 function buildCoverage(
   graph: ScalaPackageGraph,
   parsedCoverage: ParsedScoverageXml,
+  ilographDocument?: IlographDocument,
 ): TritonCoverageEntry[] {
   const out = new Map<string, number>()
+  const packageRollups = packageCoverageRollups(parsedCoverage)
   const idx = new Map<string, { classIds: string[]; objectIds: string[]; traitIds: string[] }>()
 
   for (const p of graph.packages) {
@@ -213,9 +317,11 @@ function buildCoverage(
     }
   }
 
-  for (const [packageId, stmtPct] of packageCoverageRollups(parsedCoverage).entries()) {
+  for (const [packageId, stmtPct] of packageRollups.entries()) {
     out.set(packageId, stmtPct)
   }
+
+  addProjectCoverageFromPackages(out, graph, parsedCoverage, ilographDocument)
 
   for (const rate of parsedCoverage.classRates) {
     const dot = rate.fullName.lastIndexOf('.')
@@ -241,6 +347,22 @@ function buildCoverage(
     for (const id of candidates) out.set(id, rate.statementRate)
   }
 
+  /**
+   * Some artefacts never appear as individual `<class>` rows in scoverage even though their
+   * package has coverage and they have associated specs/test output. Tiny wrapper/base classes
+   * like `Vertebrate` in the tutorial example are a common case. Rather than showing no coverage
+   * icon at all, fall back to the enclosing package's aggregated statement rate.
+   */
+  for (const p of graph.packages) {
+    const pkgRate = packageRollups.get(p.name)
+    if (pkgRate == null) continue
+    for (const a of p.artefacts) {
+      const id = artefactResourceId(a.packageName, a)
+      if (out.has(id)) continue
+      out.set(id, pkgRate)
+    }
+  }
+
   return [...out.entries()]
     .map(([id, stmtPct]) => ({ id, stmtPct }))
     .sort((a, b) => a.id.localeCompare(b.id))
@@ -254,7 +376,9 @@ export function buildScalaWorkspacePayload(
   const specsByArtefact = options.parsedTestLog
     ? buildSpecsByArtefact(options.graph, options.parsedTestLog)
     : []
-  const coverage = options.parsedCoverage ? buildCoverage(options.graph, options.parsedCoverage) : []
+  const coverage = options.parsedCoverage
+    ? buildCoverage(options.graph, options.parsedCoverage, options.ilographDocument)
+    : []
 
   return {
     kind: 'scala-workspace',

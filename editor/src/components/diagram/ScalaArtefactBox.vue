@@ -5,7 +5,6 @@
  * Reuses the focused **box chrome** from {@link PackageBox} (accent strip, focus outline, padding,
  * tools cluster, tight layout, transitions). This component is intentionally thin: it only supplies
  * the artefact-specific bits via PackageBox slots:
- *   - `focused-tools-prefix` — coverage / sonar metric icons next to the pin/color tools
  *   - `focused-header-icon`  — kind badge (`C`, `T`, `O`, …) instead of the folder icon
  *   - `focused-body`         — Scaladoc / coverage / signatures / sonar collapsible sections
  *
@@ -423,28 +422,6 @@ const kindBadge = computed(() => {
     @cycle-color="emit('cycle-color')"
     @declaration-click="emit('open-in-editor')"
   >
-    <template #focused-tools-prefix>
-      <!--
-        Coverage indicator is now rendered by the parent `PackageBox` for *every* box
-        (packages + Scala leaves, focused or not) as a slim horizontal split bar — see
-        `.package-box__coverage` there. We only inject the issues placeholder here, since
-        Sonar issues remain a Scala-artefact-specific signal for now.
-      -->
-      <span
-        class="metric-icon metric-icon--issues"
-        title="Issues (placeholder)"
-        role="img"
-        aria-label="Issues reported for this artefact"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true" class="metric-icon__svg">
-          <path
-            fill="currentColor"
-            d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"
-          />
-        </svg>
-      </span>
-    </template>
-
     <template #focused-header-icon>
       <div class="kind-badge-slot kind-badge-slot--header">
         <span
@@ -588,29 +565,6 @@ const kindBadge = computed(() => {
   width: 36px;
   height: 36px;
   font-size: clamp(0.72rem, 11cqw, 1rem);
-}
-
-.metric-icon {
-  width: 26px;
-  height: 26px;
-  border-radius: 999px;
-  border: 1px solid rgb(15 23 42 / 0.2);
-  background: rgb(255 255 255 / 0.95);
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  color: #475569;
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06);
-}
-
-.metric-icon--issues {
-  color: #b45309;
-  border-color: rgb(180 83 9 / 0.4);
-}
-.metric-icon__svg {
-  width: 14px;
-  height: 14px;
-  display: block;
 }
 
 .artefact-body {
