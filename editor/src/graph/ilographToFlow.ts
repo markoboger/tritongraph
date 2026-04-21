@@ -447,6 +447,10 @@ export function ilographDocumentToFlow(
     }
   })
 
+  // Debug: Log cross-package relations
+  console.log('Cross-package relations detected:', allCrossPackageRels)
+  console.log('Artifact nodes:', artifactNodes.map(n => ({ id: n.id, name: n.data.name })))
+
   // Find the package ID for each foreign artifact endpoint
   allCrossPackageRels.forEach((rel) => {
     if (rel.fromPkgId === '') {
@@ -479,6 +483,7 @@ export function ilographDocumentToFlow(
     const toId = `${rel.toPkgId}:${rel.to}`
     const fromArtifact = artifactNodes.find((n) => n.id === fromId)
     const toArtifact = artifactNodes.find((n) => n.id === toId)
+    console.log(`Creating cross-package edge: ${fromId} -> ${toId}, fromArtifact: ${!!fromArtifact}, toArtifact: ${!!toArtifact}`)
     if (fromArtifact && toArtifact) {
       const edgeId = `cross-art-${index}`
       edges.push({
