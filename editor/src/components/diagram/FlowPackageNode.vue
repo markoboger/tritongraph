@@ -401,7 +401,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="rootEl" class="flow-graph-node flow-graph-node--package">
+  <div
+    ref="rootEl"
+    class="flow-graph-node flow-graph-node--package"
+    :data-node-id="id"
+    :data-testid="`diagram-node-${id}`"
+  >
     <div class="flow-graph-node__flip-outer" :style="layerFlipStyle">
       <div class="flow-graph-node__flip-counter" :style="layerFlipCounterStyle">
         <DiagramSection>

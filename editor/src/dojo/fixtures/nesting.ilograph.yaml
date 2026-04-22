@@ -1,0 +1,36 @@
+description: |
+  Dojo fixture for nested containers. Useful for verifying containment rendering and drill-in
+  behavior without depending on the larger example projects.
+
+resources:
+  - name: workspace
+    children:
+      - name: backend
+        children:
+          - name: billing
+          - name: catalog
+      - name: frontend
+        children:
+          - name: web-app
+          - name: admin-app
+      - name: shared
+        children:
+          - name: protocol
+          - name: ui-kit
+
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    relations:
+      - from: web-app
+        to: ui-kit
+        label: depends on
+      - from: admin-app
+        to: ui-kit
+        label: depends on
+      - from: billing
+        to: protocol
+        label: depends on
+      - from: catalog
+        to: protocol
+        label: depends on

@@ -27,6 +27,7 @@ const {
   getEdges,
   setEdges,
   fitView,
+  setViewport,
   onNodeClick,
   onNodeDoubleClick,
   onPaneClick,
@@ -223,6 +224,16 @@ async function fitOverviewCamera(): Promise<void> {
   const finalEdges = getEdges.value.map((e) => ({ ...e })) as GraphEdge[]
   await waitForGraphLayout()
   await runWithEdgesHiddenDuringAnimation(finalEdges, FIT_DURATION_MS, async () => {
+    const topVisible = getNodes.value.filter((n) => !n.parentNode && !n.hidden)
+    const singletonRootPackageScope =
+      topVisible.length === 1 &&
+      ((topVisible[0]?.type === 'group' &&
+        ((topVisible[0]?.data as Record<string, unknown> | undefined)?.packageScope === true)) ||
+        isLeafBoxNode(topVisible[0]!))
+    if (singletonRootPackageScope) {
+      await setViewport({ x: 0, y: 0, zoom: 1 }, { duration: FIT_DURATION_MS })
+      return
+    }
     await fitView({ padding: 0.05, duration: FIT_DURATION_MS, maxZoom: 1.8, minZoom: 0.05 })
   })
 }
@@ -250,6 +261,16 @@ async function fitCameraAfterLayerDrillClear(): Promise<void> {
   }
   const finalEdges = getEdges.value.map((e) => ({ ...e })) as GraphEdge[]
   await runWithEdgesHiddenDuringAnimation(finalEdges, FIT_DURATION_MS, async () => {
+    const topVisible = getNodes.value.filter((n) => !n.parentNode && !n.hidden)
+    const singletonRootPackageScope =
+      topVisible.length === 1 &&
+      ((topVisible[0]?.type === 'group' &&
+        ((topVisible[0]?.data as Record<string, unknown> | undefined)?.packageScope === true)) ||
+        isLeafBoxNode(topVisible[0]!))
+    if (singletonRootPackageScope) {
+      await setViewport({ x: 0, y: 0, zoom: 1 }, { duration: FIT_DURATION_MS })
+      return
+    }
     await fitView({ padding: 0.05, duration: FIT_DURATION_MS, maxZoom: 1.8, minZoom: 0.05 })
   })
 }

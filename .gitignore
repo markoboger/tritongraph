@@ -10,6 +10,9 @@ editor/node_modules/
 tools/sbt-to-ilograph/node_modules/
 tools/sbt-to-ilograph/dist/
 editor/dist/
+editor/coverage/
+editor/playwright-report/
+editor/test-results/
 
 # Local Scala / Metals / BSP (do not commit)
 .bsp/

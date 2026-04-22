@@ -20,6 +20,8 @@ const DEP_PERSPECTIVE_NAMES = new Set(['dependencies', 'module dependencies', 'd
 export interface FlowFromIlographOptions {
   /** When true, use x-triton-editor.positions if present */
   preferSavedPositions?: boolean
+  /** Preferred perspective name or id to load when a document exposes multiple perspectives. */
+  preferredPerspectiveName?: string
   /**
    * Vue Flow `type` for non-group resource nodes. Picks which custom node component renders the box
    * (e.g. `module` → `FlowProjectNode`, `package` → `FlowPackageNode`). Defaults to `module`.
@@ -42,8 +44,17 @@ function flattenResources(
   }
 }
 
-function pickDependencyPerspective(doc: IlographDocument) {
+function pickDependencyPerspective(doc: IlographDocument, preferredPerspectiveName?: string) {
   const perspectives = doc.perspectives ?? []
+  const preferred = preferredPerspectiveName?.trim().toLowerCase()
+  if (preferred) {
+    const exact = perspectives.find((p) => {
+      const name = p.name?.trim().toLowerCase()
+      const id = p.id?.trim().toLowerCase()
+      return (name === preferred || id === preferred) && p.relations?.length
+    })
+    if (exact) return exact
+  }
   const named = perspectives.find(
     (p) => DEP_PERSPECTIVE_NAMES.has(p.name.trim().toLowerCase()) && p.relations?.length,
   )
@@ -244,7 +255,12 @@ export function ilographDocumentToFlow(
             ? 560
             : innerPackages?.length
               ? 460
-            : undefined
+              : undefined
+    const preferredLeafHeight =
+      typeof res['x-triton-preferred-leaf-height'] === 'number' &&
+      Number.isFinite(res['x-triton-preferred-leaf-height'])
+        ? Number(res['x-triton-preferred-leaf-height'])
+        : undefined
     return {
       id,
       type: isGroup ? 'group' : leafType,
@@ -281,6 +297,7 @@ export function ilographDocumentToFlow(
         ...(crossArtefactRelations?.length ? { crossArtefactRelations } : {}),
         ...(projectCompartments?.length ? { projectCompartments } : {}),
         ...(typeof preferredFocusWidth === 'number' ? { preferredFocusWidth } : {}),
+        ...(typeof preferredLeafHeight === 'number' ? { preferredLeafHeight } : {}),
         ...(res['x-triton-project-kind'] === 'project' || res['x-triton-project-kind'] === 'module'
           ? { projectKind: res['x-triton-project-kind'] }
           : {}),
@@ -298,7 +315,7 @@ export function ilographDocumentToFlow(
     }
   })
 
-  const perspective = pickDependencyPerspective(doc)
+  const perspective = pickDependencyPerspective(doc, options.preferredPerspectiveName)
   const edges: any[] = []
   let e = 0
   if (perspective?.relations) {

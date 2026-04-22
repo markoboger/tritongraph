@@ -68,19 +68,19 @@ export function buildAnchoredSmoothStepRelationDraws(
     const srcPt = anchoredSlotCenter(fromEl, outAnchorSelector, 'right')
     const tgtPt = anchoredSlotCenter(toEl, inAnchorSelector, 'left')
 
-    const fwd = srcPt.x <= tgtPt.x
-    const sourceX = ((fwd ? srcPt.x : tgtPt.x) - rootRect.left) * scale
-    const sourceY = ((fwd ? srcPt.y : tgtPt.y) - rootRect.top) * scale
-    const targetX = ((fwd ? tgtPt.x : srcPt.x) - rootRect.left) * scale
-    const targetY = ((fwd ? tgtPt.y : srcPt.y) - rootRect.top) * scale
+    const sourceX = (srcPt.x - rootRect.left) * scale
+    const sourceY = (srcPt.y - rootRect.top) * scale
+    const targetX = (tgtPt.x - rootRect.left) * scale
+    const targetY = (tgtPt.y - rootRect.top) * scale
+    const leftToRight = sourceX <= targetX
 
     const [path, labelX, labelY] = getSmoothStepPath({
       sourceX,
       sourceY,
-      sourcePosition: Position.Right,
+      sourcePosition: leftToRight ? Position.Right : Position.Left,
       targetX,
       targetY,
-      targetPosition: Position.Left,
+      targetPosition: leftToRight ? Position.Left : Position.Right,
       borderRadius,
     })
 

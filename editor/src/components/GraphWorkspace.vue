@@ -53,7 +53,7 @@ const emit = defineEmits<{
  * “do nothing” visually. A stable id links parent composables to the mounted pane.
  */
 const WORKSPACE_FLOW_ID = 'triton-workspace'
-const { fitView, screenToFlowCoordinate, setNodes, setEdges, updateNodeInternals } =
+const { fitView, screenToFlowCoordinate, setNodes, setEdges, updateNodeInternals, setViewport } =
   useVueFlow(WORKSPACE_FLOW_ID)
 const drillRef = ref<InstanceType<typeof GraphDrillIn> | null>(null)
 
@@ -61,6 +61,23 @@ const hoveredNodeId = ref<string | null>(null)
 /** When set, only this edge is stroke-emphasized (takes precedence over node-hover). */
 const hoveredEdgeId = ref<string | null>(null)
 const packageFocusRelayoutQueued = ref(false)
+
+function hasSingletonRootPackageScopeOverview(): boolean {
+  const topVisible = nodes.value.filter((n) => !n.parentNode && !n.hidden)
+  if (topVisible.length !== 1) return false
+  const root = topVisible[0]
+  if (root?.type === 'group') {
+    const data = (root.data ?? {}) as Record<string, unknown>
+    return data.packageScope === true
+  }
+  return isLeafBoxNode(root)
+}
+
+async function fitOverviewSingletonPackageScope(duration = 0): Promise<void> {
+  await nextTick()
+  await doubleRaf()
+  await setViewport({ x: 0, y: 0, zoom: 1 }, { duration })
+}
 
 /** After connect-start from a **source** handle: if pointer up does not complete @connect, create a module on the pane. */
 const pendingPaneConnect = ref<{ nodeId: string; handleId: string | null } | null>(null)
@@ -322,7 +339,13 @@ async function relayoutViewport(opts?: { skipDrillReapply?: boolean }) {
   if (reapplied) return
   /** Keep the full graph in view after geometry changes; skip while layer drill owns the camera. */
   const layerDrill = drillRef.value && 'layerDrillId' in drillRef.value ? (drillRef.value as any).layerDrillId : null
-  if (!unref(layerDrill)) await fitToViewport({ duration: 0 })
+  if (!unref(layerDrill)) {
+    if (hasSingletonRootPackageScopeOverview()) {
+      await fitOverviewSingletonPackageScope(0)
+    } else {
+      await fitToViewport({ duration: 0 })
+    }
+  }
 }
 
 provide('tritonRelayoutViewport', relayoutViewport)
@@ -642,6 +665,10 @@ async function fitToViewport(opts?: { duration?: number }) {
   await nextTick()
   await doubleRaf()
   const duration = opts?.duration ?? 220
+  if (hasSingletonRootPackageScopeOverview()) {
+    await fitOverviewSingletonPackageScope(duration)
+    return
+  }
   await fitView({ padding: 0.05, duration, maxZoom: 2.2, minZoom: 0.05 })
 }
 

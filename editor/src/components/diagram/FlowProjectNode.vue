@@ -173,7 +173,11 @@ function togglePin(ev: MouseEvent) {
 
 <template>
   <!-- FLIP transform only on inner shell so handle positions match Vue Flow edge math (tall pinned boxes). -->
-  <div class="flow-graph-node flow-graph-node--project">
+  <div
+    class="flow-graph-node flow-graph-node--project"
+    :data-node-id="id"
+    :data-testid="`diagram-node-${id}`"
+  >
     <div class="flow-graph-node__flip-outer" :style="layerFlipStyle">
       <div class="flow-graph-node__flip-counter" :style="layerFlipCounterStyle">
         <DiagramSection>

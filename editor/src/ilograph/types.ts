@@ -193,6 +193,12 @@ export interface IlographResource {
   /** Non-standard: coordinates last saved by this editor (Ilograph ignores unknown top-level keys on resources if nested — we keep under a namespace key at doc level instead). */
   /** Non-standard: focused project-box panels for sbt module metadata (versions, libraries, settings). */
   'x-triton-project-compartments'?: readonly BoxCompartment[]
+  /**
+   * Non-standard: preferred compact leaf height for this resource in the dependency layout.
+   * Used by stress-test dojos and future box variants that can stay readable in a shorter row,
+   * so the layout can reduce intra-box bottom slack before the viewport camera starts zooming out.
+   */
+  'x-triton-preferred-leaf-height'?: number
 }
 
 /** Document-level extension block (not in Ilograph spec). Safe: Ilograph only documents known top-level keys; unknown keys may be preserved or dropped depending on product version — we keep minimal and prefer layout inside description or omit for strict compatibility). */

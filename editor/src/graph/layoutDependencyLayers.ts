@@ -19,8 +19,8 @@ const MIN_STACK_BAND = 44
 
 const MODULE_W = 200
 const MODULE_H = 72
-const GROUP_MIN_W = 360
-const GROUP_MIN_H = 280
+const GROUP_MIN_W = 220
+const GROUP_MIN_H = 160
 
 const MARGIN_X = 28
 const MARGIN_Y = 36
@@ -33,6 +33,8 @@ const INNER_PAD_X = 32
 const INNER_PAD_Y = 52
 const COLUMN_GUTTER = 64
 const STACK_GAP = 24
+const STACK_GAP_MIN_ROOT = 6
+const STACK_GAP_MIN_NESTED = 10
 /**
  * Extra slack added on the RIGHT and BOTTOM when sizing a group container around its laid-out
  * children. Combined with `INNER_PAD_*` this gives roughly symmetric breathing room on all
@@ -169,6 +171,9 @@ function sizeOf(n: {
   if (typeof n.width === 'number' && typeof n.height === 'number') {
     return { w: n.width, h: n.height }
   }
+  if (isLeafBoxNode(n)) {
+    return { w: MODULE_W, h: preferredLeafHeight(n) }
+  }
   if (n.type === 'group') {
     return {
       w: Number(n.style?.width) || GROUP_MIN_W,
@@ -176,6 +181,14 @@ function sizeOf(n: {
     }
   }
   return { w: MODULE_W, h: MODULE_H }
+}
+
+function preferredLeafHeight(n: { data?: unknown }): number {
+  const raw =
+    n.data && typeof n.data === 'object'
+      ? (n.data as Record<string, unknown>).preferredLeafHeight
+      : undefined
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : MODULE_H
 }
 
 /**
@@ -194,7 +207,7 @@ function sizeOf(n: {
  * height the inner content needs and reserves it.
  */
 function requiredChildSize(child: any): { w: number; h: number } {
-  if (isLeafBoxNode(child)) return { w: MODULE_W, h: MODULE_H }
+  if (isLeafBoxNode(child)) return { w: MODULE_W, h: preferredLeafHeight(child) }
   const w = Number(child.style?.width)
   const h = Number(child.style?.height)
   return {
@@ -424,7 +437,6 @@ function layoutOneParent(
     const layerNodes = byDepth.get(d) ?? []
     const visibleLayerNodes = layerNodes.filter((c) => !(c as { hidden?: boolean }).hidden)
     const n = visibleLayerNodes.length
-    const totalGaps = Math.max(0, n - 1) * STACK_GAP
 
     /**
      * Two-pass cell sizing for mixed leaf+group columns:
@@ -438,13 +450,23 @@ function layoutOneParent(
      * being cropped.
      */
     const childSizes = visibleLayerNodes.map((c) => requiredChildSize(c))
+    const minGap = parentId ? STACK_GAP_MIN_NESTED : STACK_GAP_MIN_ROOT
+    const preferredContentH = childSizes.reduce((sum, size) => sum + size.h, 0)
+    const gapBudget = Math.max(0, stackBand - preferredContentH)
+    const stackGap =
+      n > 1 ? Math.max(minGap, Math.min(STACK_GAP, Math.floor(gapBudget / (n - 1)))) : 0
+    const totalGaps = Math.max(0, n - 1) * stackGap
     const sumGroupH = visibleLayerNodes.reduce(
       (s, c, i) => s + (isLeafBoxNode(c) ? 0 : childSizes[i]!.h),
       0,
     )
     const numLeaves = visibleLayerNodes.reduce((s, c) => s + (isLeafBoxNode(c) ? 1 : 0), 0)
     const remainingH = Math.max(0, stackBand - sumGroupH - totalGaps)
-    const leafH = numLeaves > 0 ? Math.max(MODULE_H, remainingH / numLeaves) : Math.max(44, stackBand)
+    const minLeafH = visibleLayerNodes.reduce(
+      (m, c, i) => (isLeafBoxNode(c) ? Math.max(m, childSizes[i]!.h) : m),
+      44,
+    )
+    const leafH = numLeaves > 0 ? Math.max(minLeafH, remainingH / numLeaves) : Math.max(44, stackBand)
     const maxGroupChildW = visibleLayerNodes.reduce(
       (m, c, i) => (isLeafBoxNode(c) ? m : Math.max(m, childSizes[i]!.w)),
       0,
@@ -459,7 +481,7 @@ function layoutOneParent(
       const idx = out.findIndex((x) => x.id === node.id)
       if (idx === -1) {
         // Still advance cursor so subsequent siblings don't collapse onto missing slot.
-        yCursor += (isLeafBoxNode(node) ? leafH : childSizes[i]!.h) + STACK_GAP
+        yCursor += (isLeafBoxNode(node) ? leafH : childSizes[i]!.h) + stackGap
         continue
       }
       const x = xCursor + COL_INSET
@@ -482,7 +504,7 @@ function layoutOneParent(
           pointerEvents: 'auto',
         },
       }
-      yCursor += childH + STACK_GAP
+      yCursor += childH + stackGap
     }
 
     for (const node of layerNodes) {
@@ -1286,6 +1308,253 @@ function readNodePixelDim(styleVal: unknown, numVal: unknown, fallback: number):
   return fallback
 }
 
+function writeNodeRect(
+  out: any[],
+  nodeId: string,
+  position: { x: number; y: number },
+  size: { width: number; height: number },
+): void {
+  const idx = out.findIndex((n) => n.id === nodeId)
+  if (idx === -1) return
+  const n = out[idx] as any
+  const prevStyle = n.style && typeof n.style === 'object' ? { ...n.style } : {}
+  out[idx] = {
+    ...n,
+    position,
+    width: size.width,
+    height: size.height,
+    style: {
+      ...prevStyle,
+      width: `${size.width}px`,
+      height: `${size.height}px`,
+    },
+  }
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  if (value <= 0) return 0
+  if (value >= 1) return 1
+  return value
+}
+
+function lerp(min: number, preferred: number, t: number): number {
+  return min + (preferred - min) * clamp01(t)
+}
+
+/**
+ * Dedicated layout for the package-nesting dojo shape: a single-child chain of package containers
+ * ending in one leaf package, with no dependency edges.
+ *
+ * The generic dependency layout repeatedly rescales children from their current bounding boxes,
+ * which compounds badly for deep chains (depth 11/12). Here we instead assign each level an
+ * explicit inset rectangle derived from the remaining depth budget, so containment is guaranteed
+ * and the innermost leaf stays visible.
+ */
+function relayoutNestedSingleChildPackageChainIntoBounds(
+  rootGroupId: string,
+  nodes: readonly any[],
+  edges: readonly { source: string; target: string; label?: unknown }[],
+  bounds: ViewportSize,
+): any[] | null {
+  if (edges.length) return null
+
+  const out = nodes.map((n) => ({
+    ...n,
+    position: { x: n.position?.x ?? 0, y: n.position?.y ?? 0 },
+    style: n.style ? { ...n.style } : undefined,
+  }))
+
+  const root = out.find((n) => n.id === rootGroupId)
+  if (!root || root.type !== 'group' || root.data?.packageScope !== true) return null
+
+  const visibleChildrenOf = (parentId: string) =>
+    out.filter((n) => String(n.parentNode) === parentId && !(n as { hidden?: boolean }).hidden)
+
+  const groupChain: string[] = [rootGroupId]
+  let terminalLeafId: string | null = null
+  let currentId = rootGroupId
+  while (true) {
+    const children = visibleChildrenOf(currentId)
+    if (children.length !== 1) return null
+    const child = children[0] as any
+    const childId = String(child.id)
+    if (child.type === 'group') {
+      if (child.data?.packageScope !== true) return null
+      groupChain.push(childId)
+      currentId = childId
+      continue
+    }
+    if (visibleChildrenOf(childId).length) return null
+    terminalLeafId = childId
+    break
+  }
+  if (!terminalLeafId) return null
+
+  const allSubtreeIds = new Set<string>([rootGroupId])
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const n of out) {
+      const pid = n.parentNode != null && n.parentNode !== '' ? String(n.parentNode) : undefined
+      if (pid && allSubtreeIds.has(pid) && !allSubtreeIds.has(String(n.id))) {
+        allSubtreeIds.add(String(n.id))
+        changed = true
+      }
+    }
+  }
+  const chainIds = new Set<string>([...groupChain, terminalLeafId])
+  for (const id of allSubtreeIds) {
+    if (!chainIds.has(id)) return null
+  }
+
+  const LEAF_PREFERRED_W = 180
+  const LEAF_PREFERRED_H = 96
+  const LEAF_RENDER_MIN_W = 104
+  const LEAF_RENDER_MIN_H = 132
+  const GROUP_RENDER_MIN_H = 96
+  const CHAIN_WIDTH_SAFETY = 0
+  const CHAIN_HEIGHT_SAFETY = 0
+  const SIDE_INSET_MIN = 0
+  const SIDE_INSET_TARGET = 14
+  const SIDE_INSET_MAX = 18
+  const BOTTOM_INSET_MIN = 6
+  const BOTTOM_INSET_TARGET = 12
+  const BOTTOM_INSET_MAX = 14
+  const CHILD_PLACEMENT_SHIFT_MAX = 8
+  const TOP_INSET_MIN = 10
+  const TOP_INSET_TARGET = 36
+  const TOP_INSET_MAX = 92
+  const PARENT_HEADER_CLEARANCE_MIN = 10
+  const PARENT_HEADER_CLEARANCE_TARGET = 36
+  const PARENT_HEADER_CLEARANCE_MAX = 96
+
+  const preferredSubtreeWidth = new Map<string, number>()
+  const preferredSubtreeHeight = new Map<string, number>()
+
+  preferredSubtreeWidth.set(terminalLeafId, LEAF_PREFERRED_W)
+  preferredSubtreeHeight.set(terminalLeafId, LEAF_PREFERRED_H)
+
+  for (let i = groupChain.length - 1; i >= 0; i--) {
+    const nodeId = groupChain[i]!
+    const childId = i + 1 < groupChain.length ? groupChain[i + 1]! : terminalLeafId
+    const childPreferredWidth = preferredSubtreeWidth.get(childId) ?? LEAF_PREFERRED_W
+    const childPreferredHeight = preferredSubtreeHeight.get(childId) ?? LEAF_PREFERRED_H
+    const preferredTopInset = Math.max(TOP_INSET_TARGET, PARENT_HEADER_CLEARANCE_TARGET)
+    preferredSubtreeWidth.set(nodeId, childPreferredWidth + 2 * SIDE_INSET_TARGET + CHAIN_WIDTH_SAFETY)
+    preferredSubtreeHeight.set(
+      nodeId,
+      childPreferredHeight + preferredTopInset + BOTTOM_INSET_TARGET + CHAIN_HEIGHT_SAFETY,
+    )
+  }
+
+  writeNodeRect(out, rootGroupId, root.position ?? { x: 0, y: 0 }, { width: bounds.width, height: bounds.height })
+
+  let parentWidth = bounds.width
+  let parentHeight = bounds.height
+  for (let i = 0; i < groupChain.length; i++) {
+    const childId = i + 1 < groupChain.length ? groupChain[i + 1]! : terminalLeafId
+    const childIsTerminalLeaf = childId === terminalLeafId
+    const rootHeaderBoost = i === 0 ? 42 : 0
+    const childPreferredWidth = preferredSubtreeWidth.get(childId) ?? LEAF_PREFERRED_W
+    const childPreferredHeight = preferredSubtreeHeight.get(childId) ?? LEAF_PREFERRED_H
+    const descendantDepth = groupChain.length - i - 1
+    const childRenderableMinWidth =
+      LEAF_RENDER_MIN_W + descendantDepth * (2 * SIDE_INSET_MIN + CHAIN_WIDTH_SAFETY)
+    const childBaseMinHeight = childIsTerminalLeaf ? LEAF_RENDER_MIN_H : GROUP_RENDER_MIN_H
+    const childRenderableMinHeight =
+      childBaseMinHeight +
+      descendantDepth *
+        (Math.max(TOP_INSET_MIN, PARENT_HEADER_CLEARANCE_MIN) +
+          BOTTOM_INSET_MIN +
+          CHAIN_HEIGHT_SAFETY)
+
+    const minParentWidth = childRenderableMinWidth + 2 * SIDE_INSET_MIN + CHAIN_WIDTH_SAFETY
+    const preferredParentWidth = childPreferredWidth + 2 * SIDE_INSET_TARGET + CHAIN_WIDTH_SAFETY
+    const widthPressure = clamp01(
+      preferredParentWidth <= minParentWidth
+        ? 1
+        : (parentWidth - minParentWidth) / (preferredParentWidth - minParentWidth),
+    )
+    const preferredSideInset = Math.round(
+      Math.min(SIDE_INSET_MAX, lerp(SIDE_INSET_MIN, SIDE_INSET_TARGET, widthPressure)),
+    )
+    const maxSideInsetForFit = Math.max(
+      SIDE_INSET_MIN,
+      Math.floor((parentWidth - childRenderableMinWidth - CHAIN_WIDTH_SAFETY) / 2),
+    )
+    const sideInset = Math.max(SIDE_INSET_MIN, Math.min(preferredSideInset, maxSideInsetForFit))
+
+    const minTopInset = Math.max(TOP_INSET_MIN, PARENT_HEADER_CLEARANCE_MIN) + rootHeaderBoost
+    const preferredTopInset = Math.max(TOP_INSET_TARGET, PARENT_HEADER_CLEARANCE_TARGET) + rootHeaderBoost
+    const minParentHeight =
+      childRenderableMinHeight + minTopInset + BOTTOM_INSET_MIN + CHAIN_HEIGHT_SAFETY
+    const preferredParentHeight =
+      childPreferredHeight + preferredTopInset + BOTTOM_INSET_TARGET + CHAIN_HEIGHT_SAFETY
+    const heightPressure = clamp01(
+      preferredParentHeight <= minParentHeight
+        ? 1
+        : (parentHeight - minParentHeight) / (preferredParentHeight - minParentHeight),
+    )
+
+    const preferredParentHeaderClearance = Math.round(
+      Math.min(
+        PARENT_HEADER_CLEARANCE_MAX,
+        lerp(PARENT_HEADER_CLEARANCE_MIN, PARENT_HEADER_CLEARANCE_TARGET, heightPressure),
+      ),
+    )
+    const preferredBottomInset = Math.round(
+      Math.min(BOTTOM_INSET_MAX, lerp(BOTTOM_INSET_MIN, BOTTOM_INSET_TARGET, heightPressure)),
+    )
+    const maxInsetBudget = Math.max(
+      minTopInset + BOTTOM_INSET_MIN,
+      parentHeight - childRenderableMinHeight - CHAIN_HEIGHT_SAFETY,
+    )
+    const clampedInsetBudget = Math.max(minTopInset + BOTTOM_INSET_MIN, maxInsetBudget)
+    const preferredInsetBudget = preferredParentHeaderClearance + preferredBottomInset
+    const insetBudget = Math.min(preferredInsetBudget, clampedInsetBudget)
+    const bottomInset = Math.max(
+      BOTTOM_INSET_MIN,
+      Math.min(preferredBottomInset, insetBudget - minTopInset),
+    )
+    const topInset = Math.max(
+      minTopInset,
+      Math.min(TOP_INSET_MAX, insetBudget - bottomInset),
+    )
+    const terminalLeafHeightSafety = childIsTerminalLeaf ? 64 : 20
+
+    const childWidth = Math.max(
+      childRenderableMinWidth,
+      Math.min(parentWidth, parentWidth - sideInset * 2 - CHAIN_WIDTH_SAFETY),
+    )
+    const childHeight = Math.max(
+      childRenderableMinHeight,
+      Math.min(
+        parentHeight,
+        parentHeight - topInset - bottomInset - CHAIN_HEIGHT_SAFETY - terminalLeafHeightSafety,
+      ),
+    )
+
+    const actualBottomSlack =
+      parentHeight - topInset - childHeight - CHAIN_HEIGHT_SAFETY - terminalLeafHeightSafety
+    const childPlacementShift = Math.max(
+      0,
+      Math.min(CHILD_PLACEMENT_SHIFT_MAX, actualBottomSlack - BOTTOM_INSET_MIN),
+    )
+
+    writeNodeRect(
+      out,
+      childId,
+      { x: sideInset, y: topInset + childPlacementShift },
+      { width: childWidth, height: childHeight },
+    )
+    parentWidth = childWidth
+    parentHeight = childHeight
+  }
+
+  return out
+}
+
 /**
  * Scala outer package group (`data.packageScope`): after depth layout, the group is pinned to
  * the full viewport but column math can leave the child bounding box small — scale + translate
@@ -1295,17 +1564,19 @@ function readNodePixelDim(styleVal: unknown, numVal: unknown, fallback: number):
 function stretchPackageScopeGroupChildrenToFillBounds(
   rootGroupId: string,
   out: any[],
+  edges: readonly { source: string; target: string; label?: unknown }[],
   bounds: ViewportSize,
-): void {
-  const gidx = out.findIndex((n) => n.id === rootGroupId)
-  if (gidx === -1) return
-  const group = out[gidx] as { data?: Record<string, unknown> }
-  if (group.data?.packageScope !== true) return
+): any[] {
+  let nextOut = out
+  const gidx = nextOut.findIndex((n) => n.id === rootGroupId)
+  if (gidx === -1) return nextOut
+  const group = nextOut[gidx] as { data?: Record<string, unknown> }
+  if (group.data?.packageScope !== true) return nextOut
 
-  const children = out.filter(
+  const children = nextOut.filter(
     (n) => String(n.parentNode) === rootGroupId && !(n as { hidden?: boolean }).hidden,
   )
-  if (!children.length) return
+  if (!children.length) return nextOut
 
   const geo = regionStackMetrics(bounds.height, rootGroupId)
   const innerLeft = INNER_PAD_X
@@ -1328,17 +1599,18 @@ function stretchPackageScopeGroupChildrenToFillBounds(
     maxX = Math.max(maxX, n.position.x + w)
     maxY = Math.max(maxY, n.position.y + h)
   }
-  if (!Number.isFinite(minX) || maxX <= minX || maxY <= minY) return
+  if (!Number.isFinite(minX) || maxX <= minX || maxY <= minY) return nextOut
 
   const bw = maxX - minX
   const bh = maxY - minY
   const sx = innerW / bw
   const sy = innerH / bh
+  const resizedChildGroups: Array<{ id: string; width: number; height: number }> = []
 
   for (const c of children) {
-    const idx = out.findIndex((x) => x.id === c.id)
+    const idx = nextOut.findIndex((x) => x.id === c.id)
     if (idx === -1) continue
-    const n = out[idx] as any
+    const n = nextOut[idx] as any
     const w = readNodePixelDim(n.style?.width, n.width, MODULE_W)
     const h = readNodePixelDim(n.style?.height, n.height, MODULE_H)
     const nx = Math.round(innerLeft + (n.position.x - minX) * sx)
@@ -1346,7 +1618,7 @@ function stretchPackageScopeGroupChildrenToFillBounds(
     const nw = Math.max(120, Math.round(w * sx))
     const nh = Math.max(72, Math.round(h * sy))
     const prevStyle = n.style && typeof n.style === 'object' ? { ...n.style } : {}
-    out[idx] = {
+    nextOut[idx] = {
       ...n,
       position: { x: nx, y: ny },
       width: nw,
@@ -1357,7 +1629,19 @@ function stretchPackageScopeGroupChildrenToFillBounds(
         height: `${nh}px`,
       },
     }
+    if (n.type === 'group') {
+      resizedChildGroups.push({ id: String(n.id), width: nw, height: nh })
+    }
   }
+
+  for (const child of resizedChildGroups) {
+    nextOut = relayoutSubtreeIntoBounds(child.id, nextOut, edges, {
+      width: child.width,
+      height: child.height,
+    }, { exactRootBounds: false })
+  }
+
+  return nextOut
 }
 
 /**
@@ -1378,6 +1662,7 @@ export function relayoutSubtreeIntoBounds(
   nodes: readonly any[],
   edges: readonly { source: string; target: string; label?: unknown }[],
   bounds: ViewportSize,
+  options: { exactRootBounds?: boolean } = {},
 ): any[] {
   const out = nodes.map((n) => ({
     ...n,
@@ -1399,6 +1684,9 @@ export function relayoutSubtreeIntoBounds(
     }
   }
 
+  const nestedChainLayout = relayoutNestedSingleChildPackageChainIntoBounds(rootGroupId, out, edges, bounds)
+  if (nestedChainLayout) return nestedChainLayout
+
   const innerParentIds = [...new Set(
     out
       .filter((n) => n.parentNode && inSubtree.has(String(n.parentNode)) && String(n.parentNode) !== rootGroupId)
@@ -1413,23 +1701,28 @@ export function relayoutSubtreeIntoBounds(
 
   layoutOneParent(rootGroupId, out, edges, bounds)
 
-  stretchPackageScopeGroupChildrenToFillBounds(rootGroupId, out, bounds)
+  const stretched = stretchPackageScopeGroupChildrenToFillBounds(rootGroupId, out, edges, bounds)
 
-  const ridx = out.findIndex((n) => n.id === rootGroupId)
+  const ridx = stretched.findIndex((n) => n.id === rootGroupId)
   if (ridx !== -1) {
     const prevStyle =
-      out[ridx].style && typeof out[ridx].style === 'object' ? { ...out[ridx].style } : {}
-    out[ridx] = {
-      ...out[ridx],
-      width: bounds.width,
-      height: bounds.height,
+      stretched[ridx].style && typeof stretched[ridx].style === 'object' ? { ...stretched[ridx].style } : {}
+    const exactRootBounds = options.exactRootBounds !== false
+    const currentW = readNodePixelDim(stretched[ridx].style?.width, stretched[ridx].width, bounds.width)
+    const currentH = readNodePixelDim(stretched[ridx].style?.height, stretched[ridx].height, bounds.height)
+    const finalW = exactRootBounds ? bounds.width : Math.max(bounds.width, currentW)
+    const finalH = exactRootBounds ? bounds.height : Math.max(bounds.height, currentH)
+    stretched[ridx] = {
+      ...stretched[ridx],
+      width: finalW,
+      height: finalH,
       style: {
         ...prevStyle,
-        width: `${bounds.width}px`,
-        height: `${bounds.height}px`,
+        width: `${finalW}px`,
+        height: `${finalH}px`,
       },
     }
   }
 
-  return out
+  return stretched
 }

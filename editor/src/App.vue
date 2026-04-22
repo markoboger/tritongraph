@@ -9,6 +9,7 @@ import DiagramTopBar from './components/common/DiagramTopBar.vue'
 import YamlDiffEditor from './components/YamlDiffEditor.vue'
 import { parseIlographYaml, stringifyIlographYaml } from './ilograph/parse'
 import type { IlographDocument } from './ilograph/types'
+import { dojoFixtures, getDojoFixture } from './dojo'
 import sbtLogoUrl from './assets/language-icons/sbt.svg'
 import cubeIconUrl from './assets/language-icons/cube.svg'
 import stackedCubesIconUrl from './assets/language-icons/stacked-cubes.svg'
@@ -72,6 +73,10 @@ const sourcePathLogoUrl = computed(() => {
   return cubeIconUrl
 })
 const runtimeQuery = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
+const requestedTabKey = runtimeQuery?.get('tab')?.trim() ?? ''
+const requestedDojo = runtimeQuery?.get('dojo')?.trim() ?? ''
+const initialRequestedPerspectiveName = runtimeQuery?.get('perspective')?.trim() ?? ''
+const initialRequestedDojoDepth = Number.parseInt(runtimeQuery?.get('dojoDepth')?.trim() ?? '', 10)
 const runtimeWorkspaceSession = computed(() => {
   const workspacePath = runtimeQuery?.get('workspaceFolder')?.trim() ?? ''
   const rawRuntimeUrl = runtimeQuery?.get('runtimeUrl')?.trim() ?? ''
@@ -121,6 +126,11 @@ const metricVisibility = ref<Record<'coverage' | 'debt' | 'issues', boolean>>({
   issues: false,
 })
 
+function requestedPerspectiveFromUrl(): string {
+  if (typeof window === 'undefined') return ''
+  return new URLSearchParams(window.location.search).get('perspective')?.trim() ?? ''
+}
+
 function collectInnerRelationTypeKeys(nodeList: readonly any[]): string[] {
   const out = new Set<string>()
   for (const node of nodeList) {
@@ -167,7 +177,23 @@ function setRelationTypeVisible(relationKey: string, visible: boolean) {
 const showYamlEditor = ref(false)
 
 /** Which sub-panel is visible in the right column (YAML diff, AI prompt, or canvas templates). */
-const sidePanelTab = ref<'yaml' | 'prompt' | 'templates'>('yaml')
+const sidePanelTab = ref<'yaml' | 'prompt' | 'templates' | 'dojo'>('yaml')
+
+const PACKAGE_NESTING_DOJO_ID = 'package-nesting'
+const PACKAGE_STACKING_DOJO_ID = 'package-stacking'
+
+function clampDojoDepth(raw: number): number {
+  if (!Number.isFinite(raw)) return 4
+  return Math.min(20, Math.max(1, Math.round(raw)))
+}
+
+function clampDojoStackCount(raw: number): number {
+  if (!Number.isFinite(raw)) return 8
+  return Math.min(40, Math.max(1, Math.round(raw)))
+}
+
+const dojoNestingDepth = ref(clampDojoDepth(initialRequestedDojoDepth))
+const dojoStackCount = ref(clampDojoStackCount(initialRequestedDojoDepth))
 
 /** All bundled examples (`build.sbt` files) across every registered examples-root. */
 const sbtExamplesAll = listSbtExamples()
@@ -189,6 +215,11 @@ const sbtExamplesLargeOss = sbtExamplesAll.filter(
   (e) => e.root === 'sbt-examples' && !isTutorialSbtFolder(e.dir),
 )
 const scalaExamples = sbtExamplesAll.filter((e) => e.root === 'scala-examples')
+const dojoExamples = computed(() => [
+  { id: PACKAGE_NESTING_DOJO_ID, title: 'Package nesting' },
+  { id: PACKAGE_STACKING_DOJO_ID, title: 'Package stacking' },
+  ...dojoFixtures.map((fixture) => ({ id: fixture.id, title: fixture.title })),
+])
 
 /**
  * One opened diagram = one entry here. The active tab's payload is held in the top-level
@@ -218,6 +249,7 @@ interface DiagramTab {
   yamlBaseline: string
   nodes: any[]
   edges: any[]
+  dojoDepth?: number
 }
 
 interface RuntimeWorkspaceBundle {
@@ -453,6 +485,7 @@ async function applyDoc(
   }
   const { nodes: n, edges: e, perspectiveName: p } = ilographDocumentToFlow(doc, {
     preferSavedPositions: preferSaved,
+    preferredPerspectiveName: initialRequestedPerspectiveName || requestedPerspectiveFromUrl() || undefined,
     moduleNodeType: options.moduleNodeType ?? 'module',
   })
   applyOverlayToFlowNodes(n)
@@ -570,6 +603,10 @@ async function selectExample(id: string) {
     await openBuiltinTab()
     return
   }
+  if (id.startsWith('dojo:')) {
+    await openDojoTab(id.slice('dojo:'.length))
+    return
+  }
   if (id.startsWith('sbt:')) {
     /** Body shape: `<root>/<dir>` (see `exampleSelectionId`). */
     const body = id.slice('sbt:'.length)
@@ -662,6 +699,7 @@ async function openOrActivateTab(
     yamlBaseline: '',
     nodes: [],
     edges: [],
+    dojoDepth: undefined,
   }
   tabs.value = [...tabs.value, tab]
   activeTabId.value = tab.id
@@ -685,8 +723,210 @@ async function openBuiltinTab(): Promise<void> {
   )
 }
 
+function buildPackageNestingDojoDocument(depth: number): IlographDocument {
+  const normalizedDepth = clampDojoDepth(depth)
+
+  function buildLevel(level: number): NonNullable<IlographDocument['resources']>[number] {
+    return {
+      id: `package-${level}`,
+      name: `package-${level}`,
+      subtitle: `depth ${level}`,
+      'x-triton-package-scope': true,
+      ...(level === 1 ? { 'x-triton-package-language': 'scala' } : {}),
+      ...(level < normalizedDepth ? { children: [buildLevel(level + 1)] } : {}),
+    }
+  }
+
+  return {
+    description:
+      'Dojo for nested package containers. Increase depth with the dojo slider to inspect how nested package scopes resize and reflow.',
+    resources: [buildLevel(1)],
+    perspectives: [
+      {
+        id: 'dependencies',
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        relations: [],
+      },
+    ],
+  }
+}
+
+function buildPackageStackingDojoDocument(count: number): IlographDocument {
+  const normalizedCount = clampDojoStackCount(count)
+  return {
+    description:
+      'Dojo for independent package containers stacked in one diagram. Increase the count to inspect how package-scope containers stack and reflow without nesting.',
+    resources: Array.from({ length: normalizedCount }, (_, index) => {
+      const level = index + 1
+      return {
+        id: `stack-package-${level}`,
+        name: `stack-package-${level}`,
+        subtitle: `stack ${level}`,
+        'x-triton-package-scope': true,
+        'x-triton-preferred-leaf-height': 52,
+        ...(level === 1 ? { 'x-triton-package-language': 'scala' } : {}),
+      }
+    }),
+    perspectives: [
+      {
+        id: 'dependencies',
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        relations: [],
+      },
+    ],
+  }
+}
+
+async function loadPackageNestingDojo(depth: number) {
+  const normalizedDepth = clampDojoDepth(depth)
+  dojoNestingDepth.value = normalizedDepth
+  sourcePath.value = `dojo/${PACKAGE_NESTING_DOJO_ID}.ilograph.yaml`
+  await applyDoc(
+    stringifyIlographYaml(buildPackageNestingDojoDocument(normalizedDepth)),
+    `${PACKAGE_NESTING_DOJO_ID}.ilograph.yaml`,
+    false,
+    { moduleNodeType: 'package' },
+  )
+  if (activeTab.value) activeTab.value.dojoDepth = normalizedDepth
+  status.value = `Loaded dojo fixture ${PACKAGE_NESTING_DOJO_ID} at depth ${normalizedDepth}.`
+}
+
+async function loadPackageStackingDojo(count: number) {
+  const normalizedCount = clampDojoStackCount(count)
+  dojoStackCount.value = normalizedCount
+  sourcePath.value = `dojo/${PACKAGE_STACKING_DOJO_ID}.ilograph.yaml`
+  await applyDoc(
+    stringifyIlographYaml(buildPackageStackingDojoDocument(normalizedCount)),
+    `${PACKAGE_STACKING_DOJO_ID}.ilograph.yaml`,
+    false,
+    { moduleNodeType: 'package' },
+  )
+  if (activeTab.value) activeTab.value.dojoDepth = normalizedCount
+  status.value = `Loaded dojo fixture ${PACKAGE_STACKING_DOJO_ID} with ${normalizedCount} packages.`
+}
+
+async function loadDojoFixture(id: string) {
+  if (id === PACKAGE_NESTING_DOJO_ID) {
+    await loadPackageNestingDojo(dojoNestingDepth.value)
+    return
+  }
+  if (id === PACKAGE_STACKING_DOJO_ID) {
+    await loadPackageStackingDojo(dojoStackCount.value)
+    return
+  }
+  const fixture = getDojoFixture(id)
+  if (!fixture) {
+    status.value = `Unknown dojo fixture: ${id}`
+    await loadBuiltinExample()
+    return
+  }
+  sourcePath.value = `dojo/${fixture.fileName}`
+  await applyDoc(fixture.yaml, fixture.fileName, false)
+  status.value = `Loaded dojo fixture ${fixture.id}.`
+}
+
+async function openDojoTab(id: string): Promise<void> {
+  const fixture = getDojoFixture(id)
+  const title =
+    id === PACKAGE_NESTING_DOJO_ID ? `${PACKAGE_NESTING_DOJO_ID}.ilograph.yaml` : fixture?.fileName ?? `${id}.ilograph.yaml`
+  await openOrActivateTab(
+    { key: `dojo:${id}`, title, iconUrl: cubeIconUrl },
+    () => loadDojoFixture(id),
+  )
+  if (id === PACKAGE_NESTING_DOJO_ID || id === PACKAGE_STACKING_DOJO_ID) {
+    showYamlEditor.value = true
+    sidePanelTab.value = 'dojo'
+  }
+}
+
 function runtimeTabKey(prefix: 'runtime-sbt' | 'runtime-packages', workspacePath: string, workspaceName: string): string {
   return `${prefix}:${workspacePath}::${workspaceName}`
+}
+
+function isRestorableTabKey(key: string): boolean {
+  return (
+    key === 'builtin' ||
+    key.startsWith('dojo:') ||
+    key.startsWith('sbt:') ||
+    key.startsWith('packages:') ||
+    key.startsWith('runtime-sbt:') ||
+    key.startsWith('runtime-packages:')
+  )
+}
+
+function syncUrlFromState(): void {
+  if (typeof window === 'undefined') return
+  const params = new URLSearchParams(window.location.search)
+  params.delete('dojo')
+  params.delete('tab')
+  params.delete('perspective')
+  params.delete('dojoDepth')
+
+  const key = activeTab.value?.key?.trim() ?? ''
+  if (key && isRestorableTabKey(key)) params.set('tab', key)
+  const perspective = perspectiveName.value?.trim() ?? ''
+  if (perspective) params.set('perspective', perspective)
+  if (key === `dojo:${PACKAGE_NESTING_DOJO_ID}`) {
+    params.set('dojoDepth', String(clampDojoDepth(activeTab.value?.dojoDepth ?? dojoNestingDepth.value)))
+  }
+  if (key === `dojo:${PACKAGE_STACKING_DOJO_ID}`) {
+    params.set('dojoDepth', String(clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoStackCount.value)))
+  }
+
+  const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}${window.location.hash}`
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`
+  if (next !== current) {
+    window.history.replaceState(null, '', next)
+  }
+}
+
+async function openTabFromUrlKey(key: string): Promise<boolean> {
+  const trimmed = key.trim()
+  if (!trimmed) return false
+  if (trimmed === 'builtin') {
+    await openBuiltinTab()
+    return true
+  }
+  if (trimmed.startsWith('dojo:')) {
+    await openDojoTab(trimmed.slice('dojo:'.length))
+    return true
+  }
+  if (trimmed.startsWith('sbt:')) {
+    const body = trimmed.slice('sbt:'.length)
+    const slash = body.indexOf('/')
+    if (slash < 0) return false
+    await openSbtExampleTab(body.slice(0, slash), body.slice(slash + 1))
+    return true
+  }
+  if (trimmed.startsWith('packages:')) {
+    const body = trimmed.slice('packages:'.length)
+    const hash = body.indexOf('#')
+    const scope = hash >= 0 ? body.slice(hash + 1) : ''
+    const exampleBody = hash >= 0 ? body.slice(0, hash) : body
+    const slash = exampleBody.indexOf('/')
+    if (slash < 0) return false
+    await openScalaPackagesTab(
+      exampleBody.slice(0, slash),
+      exampleBody.slice(slash + 1),
+      scope || undefined,
+    )
+    return true
+  }
+  if (trimmed.startsWith('runtime-sbt:')) {
+    const parsed = parseRuntimeTabKey(trimmed)
+    if (!parsed) return false
+    await openRuntimeSbtTab(parsed.workspacePath, parsed.workspaceName)
+    return true
+  }
+  if (trimmed.startsWith('runtime-packages:')) {
+    const parsed = parseRuntimeTabKey(trimmed)
+    if (!parsed) return false
+    await openRuntimePackagesTab(parsed.workspacePath, parsed.workspaceName, parsed.projectId)
+    return true
+  }
+  return false
 }
 
 async function openSbtExampleTab(root: string, dir: string): Promise<void> {
@@ -1516,6 +1756,58 @@ watch(showYamlEditor, () => {
   void relayoutAfterPanelToggle()
 })
 
+const activeDojoId = computed(() => {
+  const key = activeTab.value?.key ?? ''
+  return key.startsWith('dojo:') ? key.slice('dojo:'.length) : ''
+})
+
+const showDojoPanel = computed(
+  () => activeDojoId.value === PACKAGE_NESTING_DOJO_ID || activeDojoId.value === PACKAGE_STACKING_DOJO_ID,
+)
+
+watch(activeTabId, () => {
+  if (activeDojoId.value === PACKAGE_NESTING_DOJO_ID) {
+    dojoNestingDepth.value = clampDojoDepth(activeTab.value?.dojoDepth ?? dojoNestingDepth.value)
+  }
+  if (activeDojoId.value === PACKAGE_STACKING_DOJO_ID) {
+    dojoStackCount.value = clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoStackCount.value)
+  }
+})
+
+watch(dojoNestingDepth, (depth, prev) => {
+  const normalized = clampDojoDepth(depth)
+  if (normalized !== depth) {
+    dojoNestingDepth.value = normalized
+    return
+  }
+  if (normalized === prev) return
+  if (activeDojoId.value !== PACKAGE_NESTING_DOJO_ID) return
+  void loadPackageNestingDojo(normalized).then(() => {
+    snapshotActiveTab()
+    syncUrlFromState()
+    void nextTick(() => graphRef.value?.fitToViewport())
+  })
+})
+
+watch(dojoStackCount, (count, prev) => {
+  const normalized = clampDojoStackCount(count)
+  if (normalized !== count) {
+    dojoStackCount.value = normalized
+    return
+  }
+  if (normalized === prev) return
+  if (activeDojoId.value !== PACKAGE_STACKING_DOJO_ID) return
+  void loadPackageStackingDojo(normalized).then(() => {
+    snapshotActiveTab()
+    syncUrlFromState()
+    void nextTick(() => graphRef.value?.fitToViewport())
+  })
+})
+
+watch([activeTabId, perspectiveName], () => {
+  syncUrlFromState()
+})
+
 /**
  * Toggling the YAML side panel changes `.flow-wrap` width without a window resize event,
  * so Vue Flow's pane / viewport metrics can be stale by the time we re-layout. Nudge the
@@ -1539,9 +1831,17 @@ onMounted(() => {
     const workspaceLabel = ideSession.value.workspaceName ? ` (${ideSession.value.workspaceName})` : ''
     status.value = `Connected to ${ideSession.value.ideName}${workspaceLabel} for open-in-editor links.`
   }
+  if (requestedTabKey) {
+    void openTabFromUrlKey(requestedTabKey)
+    return
+  }
   const runtimeSession = runtimeWorkspaceSession.value
   if (runtimeSession) {
     void openRuntimeSbtTab(runtimeSession.workspacePath, runtimeSession.workspaceName)
+    return
+  }
+  if (requestedDojo) {
+    void openDojoTab(requestedDojo)
     return
   }
   /**
@@ -1626,6 +1926,21 @@ onUnmounted(() => {
           >
             Ilograph demo (five layers)
           </button>
+          <template v-if="dojoExamples.length">
+            <div class="menu-sep" role="separator" />
+            <div class="menu-heading" role="presentation">Dojo</div>
+            <button
+              v-for="dojo in dojoExamples"
+              :key="dojo.id"
+              type="button"
+              class="menu-item"
+              role="menuitem"
+              :class="{ 'menu-item--active': activeTab?.key === `dojo:${dojo.id}` }"
+              @click="selectExample(`dojo:${dojo.id}`)"
+            >
+              {{ dojo.title }}
+            </button>
+          </template>
           <template v-if="sbtExamplesTutorial.length">
             <div class="menu-sep" role="separator" />
             <div class="menu-heading" role="presentation">Bundled sbt (tutorial)</div>
@@ -1776,6 +2091,17 @@ onUnmounted(() => {
           >
             Templates
           </button>
+          <button
+            v-if="showDojoPanel"
+            type="button"
+            class="side-tab"
+            role="tab"
+            :class="{ 'side-tab--active': sidePanelTab === 'dojo' }"
+            :aria-selected="sidePanelTab === 'dojo'"
+            @click="sidePanelTab = 'dojo'"
+          >
+            Dojo
+          </button>
         </div>
         <div class="side-panel-body">
           <div
@@ -1833,6 +2159,65 @@ onUnmounted(() => {
                 <img class="side-template-btn__icon" :src="folderIconUrl" alt="" aria-hidden="true" />
                 <span>Add Package</span>
               </button>
+            </div>
+          </div>
+          <div
+            v-if="showDojoPanel"
+            v-show="sidePanelTab === 'dojo'"
+            class="side-panel-pane side-panel-pane--dojo"
+            role="tabpanel"
+          >
+            <div v-if="activeDojoId === PACKAGE_NESTING_DOJO_ID" class="dojo-panel">
+              <div class="dojo-panel__header">
+                <div class="dojo-panel__title">Package Nesting</div>
+                <div class="dojo-panel__meta">Depth {{ dojoNestingDepth }}</div>
+              </div>
+              <p class="dojo-panel__hint">
+                Increase the nesting depth to inspect how package-scope containers resize and how much readable space remains at each level.
+              </p>
+              <label class="dojo-panel__control" for="dojo-package-depth">
+                <span class="dojo-panel__label">Nesting depth</span>
+                <input
+                  id="dojo-package-depth"
+                  v-model.number="dojoNestingDepth"
+                  class="dojo-panel__slider"
+                  type="range"
+                  min="1"
+                  max="20"
+                  step="1"
+                  aria-label="Package nesting depth"
+                />
+              </label>
+              <div class="dojo-panel__scale">
+                <span>1</span>
+                <span>20</span>
+              </div>
+            </div>
+            <div v-else-if="activeDojoId === PACKAGE_STACKING_DOJO_ID" class="dojo-panel">
+              <div class="dojo-panel__header">
+                <div class="dojo-panel__title">Package Stacking</div>
+                <div class="dojo-panel__meta">Count {{ dojoStackCount }}</div>
+              </div>
+              <p class="dojo-panel__hint">
+                Increase the package count to inspect how independent package-scope containers stack and reflow without nesting.
+              </p>
+              <label class="dojo-panel__control" for="dojo-package-stack-count">
+                <span class="dojo-panel__label">Package count</span>
+                <input
+                  id="dojo-package-stack-count"
+                  v-model.number="dojoStackCount"
+                  class="dojo-panel__slider"
+                  type="range"
+                  min="1"
+                  max="40"
+                  step="1"
+                  aria-label="Package stacking count"
+                />
+              </label>
+              <div class="dojo-panel__scale">
+                <span>1</span>
+                <span>40</span>
+              </div>
             </div>
           </div>
         </div>
@@ -2220,6 +2605,9 @@ onUnmounted(() => {
   flex: 0 1 auto;
   align-items: flex-start;
 }
+.side-panel-pane--dojo {
+  flex: 0 1 auto;
+}
 .side-templates-hint {
   margin: 0;
   font-size: 12px;
@@ -2233,6 +2621,56 @@ onUnmounted(() => {
   gap: 8px;
   align-items: stretch;
   margin-top: 4px;
+}
+.dojo-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f8fbff 0%, #eef6ff 100%);
+}
+.dojo-panel__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dojo-panel__title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #0f172a;
+}
+.dojo-panel__meta {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1d4ed8;
+}
+.dojo-panel__hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #475569;
+}
+.dojo-panel__control {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dojo-panel__label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #334155;
+}
+.dojo-panel__slider {
+  width: 100%;
+}
+.dojo-panel__scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #64748b;
 }
 .side-template-btn {
   display: inline-flex;

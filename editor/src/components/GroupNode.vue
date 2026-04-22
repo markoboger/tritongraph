@@ -95,7 +95,12 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
 </script>
 
 <template>
-  <div class="group-node" :class="{ 'group-node--focus': data.layerDrillFocus }">
+  <div
+    class="group-node"
+    :class="{ 'group-node--focus': data.layerDrillFocus }"
+    :data-node-id="id"
+    :data-testid="`diagram-node-${id}`"
+  >
     <div class="group-node__flip-outer" :style="layerFlipStyle">
       <div class="group-node__flip-counter" :style="layerFlipCounterStyle">
         <div
@@ -195,17 +200,18 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
    * remain readable through the outer scope.
    */
   background: transparent;
+  overflow: hidden;
 }
 .group-node__metrics {
   position: absolute;
-  top: 6px;
+  top: 3px;
   right: 8px;
   width: min(124px, calc(100% - 16px));
   z-index: 5;
 }
 .group-node__language {
   position: absolute;
-  top: 22px;
+  top: 16px;
   right: 8px;
   width: 36px;
   height: 36px;
@@ -227,24 +233,24 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
 }
 .group-node__pkg-header {
   position: absolute;
-  top: 8px;
-  left: 12px;
+  top: 3px;
+  left: 8px;
   /** Default: no coverage/language affordances → titles can use full width. */
-  right: 12px;
+  right: 8px;
   display: flex;
   flex-direction: row;
   align-items: flex-start;
-  gap: 10px;
+  gap: 6px;
   pointer-events: none;
 }
 /** Metrics strip only. */
 .group-node__frame--has-metrics .group-node__pkg-header {
   right: 56px;
-  padding-top: 18px;
+  padding-top: 8px;
 }
 @container (max-width: 150px) {
   .group-node__frame--has-metrics .group-node__pkg-header {
-    padding-top: 40px;
+    padding-top: 28px;
   }
 }
 /** Metrics strip + language logo. */
@@ -252,8 +258,8 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   right: 100px;
 }
 .group-node__folder-icon {
-  width: 34px;
-  height: 34px;
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
   object-fit: contain;
   opacity: 0.95;
@@ -263,7 +269,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
 }
 .group-node--focus .group-node__frame {
   border-color: #2563eb;
@@ -295,10 +301,10 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   top: auto;
   left: auto;
   right: auto;
-  font-size: clamp(0.85rem, 1.4vmin, 1.05rem);
+  font-size: 0.96rem;
   font-weight: 700;
   color: #0f172a;
-  line-height: 1.2;
+  line-height: 1.1;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
@@ -307,10 +313,111 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   top: auto;
   left: auto;
   right: auto;
-  font-size: clamp(0.72rem, 1.2vmin, 0.88rem);
-  line-height: 1.35;
+  font-size: 0.76rem;
+  line-height: 1.1;
   word-break: break-word;
   overflow-wrap: anywhere;
+}
+@container (max-width: 260px) {
+  .group-node__pkg-header .banner {
+    font-size: 0.86rem;
+  }
+  .group-node__pkg-header .banner-sub {
+    font-size: 0.7rem;
+  }
+}
+@container (max-width: 190px) {
+  .group-node__pkg-header .banner {
+    font-size: 0.78rem;
+  }
+  .group-node__pkg-header .banner-sub {
+    font-size: 0.64rem;
+  }
+}
+@container (max-height: 180px) {
+  .group-node__pkg-header {
+    top: 2px;
+  }
+  .group-node__pkg-header .banner {
+    font-size: 0.84rem;
+  }
+  .group-node__pkg-header .banner-sub {
+    font-size: 0.68rem;
+  }
+}
+@container (max-height: 145px) {
+  .group-node__pkg-header {
+    top: 1px;
+    gap: 5px;
+  }
+  .group-node__pkg-header .banner {
+    font-size: 0.76rem;
+  }
+  .group-node__pkg-header .banner-sub {
+    font-size: 0.62rem;
+  }
+}
+@container (max-height: 112px) {
+  .group-node__pkg-header .banner-sub {
+    display: none;
+  }
+}
+@container (max-height: 118px) {
+  .group-node__pkg-header {
+    top: 4px;
+    left: 8px;
+    right: 8px;
+    gap: 6px;
+  }
+  .group-node__folder-icon {
+    width: 24px;
+    height: 24px;
+  }
+  .group-node__pkg-header .banner {
+    font-size: 0.74rem;
+    line-height: 1.15;
+  }
+  .group-node__pkg-header .banner-sub {
+    font-size: 0.58rem;
+    line-height: 1.15;
+  }
+}
+@container (max-height: 92px) {
+  .group-node__pkg-header {
+    top: 3px;
+    left: 6px;
+    right: 6px;
+    gap: 4px;
+  }
+  .group-node__folder-icon {
+    width: 20px;
+    height: 20px;
+  }
+  .group-node__pkg-header .banner {
+    font-size: 0.66rem;
+  }
+  .group-node__pkg-header .banner-sub {
+    font-size: 0.52rem;
+  }
+}
+@container (max-height: 76px) {
+  .group-node__pkg-header {
+    top: 2px;
+    left: 4px;
+    right: 4px;
+    gap: 4px;
+  }
+  .group-node__folder-icon {
+    width: 16px;
+    height: 16px;
+  }
+  .group-node__pkg-header .banner {
+    font-size: 0.6rem;
+    line-height: 1.1;
+  }
+  .group-node__pkg-header .banner-sub {
+    display: none;
+  }
 }
 .gh {
   position: absolute;

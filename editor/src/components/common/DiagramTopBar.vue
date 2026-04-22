@@ -60,6 +60,7 @@ function onMetricToggle(metricKey: 'coverage' | 'debt' | 'issues', ev: Event) {
       >
         <input
           type="checkbox"
+          :aria-label="`Show ${displayRelationLabel(rel)} relations`"
           :checked="relationTypeVisibility[rel] !== false"
           @change="onToggle(rel, $event)"
         />
@@ -72,6 +73,7 @@ function onMetricToggle(metricKey: 'coverage' | 'debt' | 'issues', ev: Event) {
       >
         <input
           type="checkbox"
+          aria-label="Show coverage metric"
           :checked="metricVisibility.coverage !== false"
           @change="onMetricToggle('coverage', $event)"
         />
@@ -83,6 +85,7 @@ function onMetricToggle(metricKey: 'coverage' | 'debt' | 'issues', ev: Event) {
       >
         <input
           type="checkbox"
+          aria-label="Show debt metric"
           :checked="metricVisibility.debt !== false"
           @change="onMetricToggle('debt', $event)"
         />
@@ -94,6 +97,7 @@ function onMetricToggle(metricKey: 'coverage' | 'debt' | 'issues', ev: Event) {
       >
         <input
           type="checkbox"
+          aria-label="Show issues metric"
           :checked="metricVisibility.issues !== false"
           @change="onMetricToggle('issues', $event)"
         />
@@ -106,6 +110,7 @@ function onMetricToggle(metricKey: 'coverage' | 'debt' | 'issues', ev: Event) {
       >
         <input
           type="checkbox"
+          aria-label="Show metric tooltips"
           :checked="metricTooltipsEnabled"
           @change="onTooltipToggle"
         />

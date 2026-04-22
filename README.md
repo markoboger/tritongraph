@@ -43,6 +43,62 @@ If you have the Triton extension installed in VS Code, Cursor, or Windsurf, you 
 3. Enable `triton.autoStartRuntime=true`.
 4. Run `Triton: Open Diagram`, or use the command links above from this README.
 
+## Testing
+
+The editor now has a two-layer test setup:
+
+- `Vitest` for fast unit tests around graph conversion, routing, layering, and relation visibility.
+- `Playwright` for browser-level dojo scenarios that lock down diagram behavior such as nesting, focus, and relation toggles.
+
+### Run tests
+
+```bash
+cd /Users/markoboger/workspace/tritongraph/editor
+npm run test
+```
+
+For faster iteration, run either layer on its own:
+
+```bash
+cd /Users/markoboger/workspace/tritongraph/editor
+npm run test:unit
+npm run test:e2e
+```
+
+If Playwright has not downloaded Chromium yet:
+
+```bash
+cd /Users/markoboger/workspace/tritongraph/editor
+npm run test:e2e:install
+```
+
+### Coverage report
+
+Unit tests write an inspectable HTML coverage report to:
+
+- [editor/coverage/index.html](/Users/markoboger/workspace/tritongraph/editor/coverage/index.html)
+
+That report lets you drill into file-level details such as:
+
+- [editor/coverage/ilographToFlow.ts.html](/Users/markoboger/workspace/tritongraph/editor/coverage/ilographToFlow.ts.html)
+- [editor/coverage/anchoredSmoothStepRelations.ts.html](/Users/markoboger/workspace/tritongraph/editor/coverage/anchoredSmoothStepRelations.ts.html)
+- [editor/coverage/innerArtefactLayerLayout.ts.html](/Users/markoboger/workspace/tritongraph/editor/coverage/innerArtefactLayerLayout.ts.html)
+- [editor/coverage/relationVisibility.ts.html](/Users/markoboger/workspace/tritongraph/editor/coverage/relationVisibility.ts.html)
+
+### Dojo fixtures
+
+Browser regression scenarios live under:
+
+- [editor/src/dojo/fixtures](/Users/markoboger/workspace/tritongraph/editor/src/dojo/fixtures)
+
+You can open them directly in the browser UI with URLs like:
+
+- [http://127.0.0.1:5173/?tab=dojo:folding&perspective=dependencies](http://127.0.0.1:5173/?tab=dojo:folding&perspective=dependencies)
+- [http://127.0.0.1:5173/?tab=dojo:nesting&perspective=dependencies](http://127.0.0.1:5173/?tab=dojo:nesting&perspective=dependencies)
+- [http://127.0.0.1:5173/?tab=dojo:relations&perspective=dependencies](http://127.0.0.1:5173/?tab=dojo:relations&perspective=dependencies)
+
+The active diagram and perspective are now mirrored into the URL, so a reload keeps you on the same view.
+
 ## Current web UI behavior
 
 Open the URL above in Cursor’s internal browser, VS Code Simple Browser, or your normal browser.

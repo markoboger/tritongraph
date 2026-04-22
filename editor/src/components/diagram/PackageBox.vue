@@ -216,6 +216,13 @@ const focusedLegacyCompartments = computed<readonly BoxCompartment[]>(() => {
 })
 
 const isScalaLeaf = computed(() => props.leafVisual === 'artefact')
+const preferCenteredStackLayout = computed(
+  () =>
+    !props.embedded &&
+    !props.focused &&
+    !isScalaLeaf.value &&
+    (props.innerPackages?.length ?? 0) === 0,
+)
 
 /**
  * `(root, dir)` of the tab's backing example — provided by `App.vue` so inner artefact cards
@@ -1020,6 +1027,8 @@ const titleEl = ref<HTMLElement | null>(null)
 const tightLayout = ref(false)
 /** Short, wide unfocused box: folder icon left, title + subtitle to the right (no stacked column). */
 const wideShortRow = ref(false)
+/** Innermost unfocused package: when height is too tight, fall back to a top-left header row. */
+const compactHeaderLayout = ref(false)
 
 let measureCanvas: CanvasRenderingContext2D | null = null
 
@@ -1041,18 +1050,36 @@ const WIDE_SHORT_MAX_H = 148
 const WIDE_SHORT_MIN_H_EXIT = 162
 const WIDE_SHORT_MIN_AR = 1.85
 const WIDE_SHORT_EXIT_AR = 1.72
+const COMPACT_HEADER_MAX_H = 108
+const COMPACT_HEADER_MIN_H_EXIT = 120
 
 function measure() {
   if (props.embedded) {
     tightLayout.value = false
     wideShortRow.value = false
+    compactHeaderLayout.value = false
     return
   }
   if (props.focused) {
     tightLayout.value = false
     wideShortRow.value = false
+    compactHeaderLayout.value = false
     return
   }
+  if (preferCenteredStackLayout.value) {
+    const root = rootEl.value
+    if (!root) return
+    const h = root.clientHeight
+    if (compactHeaderLayout.value) {
+      compactHeaderLayout.value = h <= COMPACT_HEADER_MIN_H_EXIT
+    } else {
+      compactHeaderLayout.value = h <= COMPACT_HEADER_MAX_H
+    }
+    tightLayout.value = false
+    wideShortRow.value = false
+    return
+  }
+  compactHeaderLayout.value = false
   const root = rootEl.value
   const title = titleEl.value
   if (!root || !title) return
@@ -1947,6 +1974,8 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       'package-box--editing': editing,
       'package-box--has-metrics': true,
       'package-box--cross-preview': crossPackagePreviewActive,
+      'package-box--centered-stack': preferCenteredStackLayout,
+      'package-box--compact-header': compactHeaderLayout,
     }"
     :style="{ '--box-accent': accent }"
   >
@@ -2512,6 +2541,77 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   flex-direction: column;
   justify-content: center;
   align-items: stretch;
+}
+
+.package-box--centered-stack {
+  justify-content: flex-start;
+}
+
+.package-box--centered-stack .lang-icon-slot {
+  margin-bottom: clamp(8px, 1.7cqh, 18px);
+}
+
+.package-box--centered-stack .package-box__body {
+  align-items: center;
+  justify-content: flex-start;
+  text-align: center;
+}
+
+.package-box--centered-stack .title,
+.package-box--centered-stack .subtitle {
+  text-align: center;
+  align-self: center;
+}
+
+.package-box--centered-stack.package-box--compact-header {
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 0;
+  padding-top: clamp(4px, 0.7vmin, 8px);
+  padding-left: clamp(8px, 1.1vmin, 12px);
+  padding-right: clamp(8px, 1.1vmin, 12px);
+  padding-bottom: clamp(4px, 0.7vmin, 8px);
+}
+
+.package-box--centered-stack.package-box--compact-header .lang-icon-slot {
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  margin-bottom: 0;
+  margin-right: 8px;
+  justify-content: center;
+}
+
+.package-box--centered-stack.package-box--compact-header .lang-icon-slot :deep(.lang-svg) {
+  height: 28px;
+  max-height: 28px;
+  max-width: 28px;
+}
+
+.package-box--centered-stack.package-box--compact-header .package-box__body {
+  align-items: flex-start;
+  justify-content: flex-start;
+  text-align: left;
+  gap: 1px;
+}
+
+.package-box--centered-stack.package-box--compact-header .title,
+.package-box--centered-stack.package-box--compact-header .subtitle {
+  text-align: left;
+  align-self: stretch;
+}
+
+.package-box--centered-stack.package-box--compact-header .title {
+  line-height: 1.05;
+}
+
+.package-box--centered-stack.package-box--compact-header .subtitle {
+  line-height: 1.05;
 }
 
 /** Layer-drill focused root: header row + inner diagram (child packages). */
@@ -3448,7 +3548,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .title {
   font-weight: 600;
-  font-size: clamp(0.78rem, min(2.2vmin, 3.5cqh), 1.35rem);
+  font-size: 1.2rem;
   color: #0f172a;
   line-height: 1.2;
   white-space: nowrap;
@@ -3461,7 +3561,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .subtitle {
   margin-top: clamp(2px, 0.6vmin, 8px);
-  font-size: clamp(0.65rem, min(1.6vmin, 2.5cqh), 0.95rem);
+  font-size: 0.92rem;
   color: #475569;
   line-height: 1.25;
   opacity: 1;
@@ -3486,6 +3586,38 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .package-box--focused .title {
   font-size: clamp(0.82rem, min(2.4vmin, 3.8cqh), 1.45rem);
+}
+@container (max-width: 260px) {
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .title {
+    font-size: 1.08rem;
+  }
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .subtitle {
+    font-size: 0.84rem;
+  }
+}
+@container (max-width: 190px) {
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .title {
+    font-size: 0.96rem;
+  }
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .subtitle {
+    font-size: 0.78rem;
+  }
+}
+@container (max-height: 180px) {
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .title {
+    font-size: 1.04rem;
+  }
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .subtitle {
+    font-size: 0.82rem;
+  }
+}
+@container (max-height: 145px) {
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .title {
+    font-size: 0.94rem;
+  }
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .subtitle {
+    font-size: 0.76rem;
+  }
 }
 .package-box--tight .title {
   white-space: nowrap;
