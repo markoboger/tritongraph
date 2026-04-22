@@ -181,6 +181,7 @@ const sidePanelTab = ref<'yaml' | 'prompt' | 'templates' | 'dojo'>('yaml')
 
 const PACKAGE_NESTING_DOJO_ID = 'package-nesting'
 const PACKAGE_STACKING_DOJO_ID = 'package-stacking'
+const PACKAGE_IMPORT_CHAIN_DOJO_ID = 'package-import-chain'
 
 function clampDojoDepth(raw: number): number {
   if (!Number.isFinite(raw)) return 4
@@ -194,6 +195,7 @@ function clampDojoStackCount(raw: number): number {
 
 const dojoNestingDepth = ref(clampDojoDepth(initialRequestedDojoDepth))
 const dojoStackCount = ref(clampDojoStackCount(initialRequestedDojoDepth))
+const dojoImportChainLength = ref(clampDojoStackCount(initialRequestedDojoDepth))
 
 /** All bundled examples (`build.sbt` files) across every registered examples-root. */
 const sbtExamplesAll = listSbtExamples()
@@ -218,6 +220,7 @@ const scalaExamples = sbtExamplesAll.filter((e) => e.root === 'scala-examples')
 const dojoExamples = computed(() => [
   { id: PACKAGE_NESTING_DOJO_ID, title: 'Package nesting' },
   { id: PACKAGE_STACKING_DOJO_ID, title: 'Package stacking' },
+  { id: PACKAGE_IMPORT_CHAIN_DOJO_ID, title: 'Package import chain' },
   ...dojoFixtures.map((fixture) => ({ id: fixture.id, title: fixture.title })),
 ])
 
@@ -468,7 +471,7 @@ async function applyDoc(
   text: string,
   name: string,
   preferSaved: boolean,
-  options: { moduleNodeType?: 'module' | 'package' } = {},
+  options: { moduleNodeType?: 'module' | 'package'; recenterStackShrink?: boolean } = {},
 ) {
   await whenOverlayStoreReady()
   const doc = parseIlographYaml(text)
@@ -506,7 +509,11 @@ async function applyDoc(
   status.value = `Loaded ${n.length} modules, ${e.length} relations — depth columns, vertical fill (auto-fit).`
   await nextTick()
   graphRef.value?.refreshEdgeEmphasis?.()
-  await graphRef.value?.resetView()
+  graphRef.value?.resetNavigationAfterDocReplace?.()
+  await graphRef.value?.fitToViewport?.({
+    duration: 0,
+    ...(options.recenterStackShrink ? { recenterStackShrink: true } : {}),
+  })
   await nextTick()
   yamlBaseline.value = yamlPreview.value
 }
@@ -752,6 +759,49 @@ function buildPackageNestingDojoDocument(depth: number): IlographDocument {
   }
 }
 
+/**
+ * Linear chain: `import-link-1` → … → `import-link-n` with `imports` edges (dependent on the left,
+ * imported symbol on the right), matching {@link layoutDependencyLayers} classpath semantics.
+ */
+function buildPackageImportChainDojoDocument(chainLen: number): IlographDocument {
+  const n = clampDojoStackCount(chainLen)
+  const resources = Array.from({ length: n }, (_, index) => {
+    const k = index + 1
+    return {
+      id: `import-link-${k}`,
+      name: `import-link-${k}`,
+      subtitle: `chain ${k} of ${n}`,
+      'x-triton-package-scope': true,
+      'x-triton-preferred-leaf-height': 52,
+      ...(k === 1 ? { 'x-triton-package-language': 'scala' } : {}),
+    }
+  })
+  const relations =
+    n >= 2
+      ? Array.from({ length: n - 1 }, (_, index) => {
+          const i = index + 1
+          return {
+            from: `import-link-${i}`,
+            to: `import-link-${i + 1}`,
+            label: 'imports',
+          }
+        })
+      : []
+  return {
+    description:
+      'Dojo for a linear chain of Scala package-scope containers linked by `imports` (Scala package import) edges. Extend the chain to stress depth columns, edge routing, and viewport fit.',
+    resources,
+    perspectives: [
+      {
+        id: 'dependencies',
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        relations,
+      },
+    ],
+  }
+}
+
 function buildPackageStackingDojoDocument(count: number): IlographDocument {
   const normalizedCount = clampDojoStackCount(count)
   return {
@@ -793,18 +843,34 @@ async function loadPackageNestingDojo(depth: number) {
   status.value = `Loaded dojo fixture ${PACKAGE_NESTING_DOJO_ID} at depth ${normalizedDepth}.`
 }
 
-async function loadPackageStackingDojo(count: number) {
+async function loadPackageStackingDojo(count: number, prevCount?: number) {
   const normalizedCount = clampDojoStackCount(count)
+  const stackShrunk = typeof prevCount === 'number' && normalizedCount < prevCount
   dojoStackCount.value = normalizedCount
   sourcePath.value = `dojo/${PACKAGE_STACKING_DOJO_ID}.ilograph.yaml`
   await applyDoc(
     stringifyIlographYaml(buildPackageStackingDojoDocument(normalizedCount)),
     `${PACKAGE_STACKING_DOJO_ID}.ilograph.yaml`,
     false,
-    { moduleNodeType: 'package' },
+    { moduleNodeType: 'package', ...(stackShrunk ? { recenterStackShrink: true } : {}) },
   )
   if (activeTab.value) activeTab.value.dojoDepth = normalizedCount
   status.value = `Loaded dojo fixture ${PACKAGE_STACKING_DOJO_ID} with ${normalizedCount} packages.`
+}
+
+async function loadPackageImportChainDojo(chainLen: number, prevLen?: number) {
+  const n = clampDojoStackCount(chainLen)
+  const chainShrunk = typeof prevLen === 'number' && n < prevLen
+  dojoImportChainLength.value = n
+  sourcePath.value = `dojo/${PACKAGE_IMPORT_CHAIN_DOJO_ID}.ilograph.yaml`
+  await applyDoc(
+    stringifyIlographYaml(buildPackageImportChainDojoDocument(n)),
+    `${PACKAGE_IMPORT_CHAIN_DOJO_ID}.ilograph.yaml`,
+    false,
+    { moduleNodeType: 'package', ...(chainShrunk ? { recenterStackShrink: true } : {}) },
+  )
+  if (activeTab.value) activeTab.value.dojoDepth = n
+  status.value = `Loaded dojo fixture ${PACKAGE_IMPORT_CHAIN_DOJO_ID} with chain length ${n}.`
 }
 
 async function loadDojoFixture(id: string) {
@@ -814,6 +880,10 @@ async function loadDojoFixture(id: string) {
   }
   if (id === PACKAGE_STACKING_DOJO_ID) {
     await loadPackageStackingDojo(dojoStackCount.value)
+    return
+  }
+  if (id === PACKAGE_IMPORT_CHAIN_DOJO_ID) {
+    await loadPackageImportChainDojo(dojoImportChainLength.value)
     return
   }
   const fixture = getDojoFixture(id)
@@ -830,12 +900,22 @@ async function loadDojoFixture(id: string) {
 async function openDojoTab(id: string): Promise<void> {
   const fixture = getDojoFixture(id)
   const title =
-    id === PACKAGE_NESTING_DOJO_ID ? `${PACKAGE_NESTING_DOJO_ID}.ilograph.yaml` : fixture?.fileName ?? `${id}.ilograph.yaml`
+    id === PACKAGE_NESTING_DOJO_ID
+      ? `${PACKAGE_NESTING_DOJO_ID}.ilograph.yaml`
+      : id === PACKAGE_STACKING_DOJO_ID
+        ? `${PACKAGE_STACKING_DOJO_ID}.ilograph.yaml`
+        : id === PACKAGE_IMPORT_CHAIN_DOJO_ID
+          ? `${PACKAGE_IMPORT_CHAIN_DOJO_ID}.ilograph.yaml`
+          : fixture?.fileName ?? `${id}.ilograph.yaml`
   await openOrActivateTab(
     { key: `dojo:${id}`, title, iconUrl: cubeIconUrl },
     () => loadDojoFixture(id),
   )
-  if (id === PACKAGE_NESTING_DOJO_ID || id === PACKAGE_STACKING_DOJO_ID) {
+  if (
+    id === PACKAGE_NESTING_DOJO_ID ||
+    id === PACKAGE_STACKING_DOJO_ID ||
+    id === PACKAGE_IMPORT_CHAIN_DOJO_ID
+  ) {
     showYamlEditor.value = true
     sidePanelTab.value = 'dojo'
   }
@@ -873,6 +953,9 @@ function syncUrlFromState(): void {
   }
   if (key === `dojo:${PACKAGE_STACKING_DOJO_ID}`) {
     params.set('dojoDepth', String(clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoStackCount.value)))
+  }
+  if (key === `dojo:${PACKAGE_IMPORT_CHAIN_DOJO_ID}`) {
+    params.set('dojoDepth', String(clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoImportChainLength.value)))
   }
 
   const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}${window.location.hash}`
@@ -1762,7 +1845,10 @@ const activeDojoId = computed(() => {
 })
 
 const showDojoPanel = computed(
-  () => activeDojoId.value === PACKAGE_NESTING_DOJO_ID || activeDojoId.value === PACKAGE_STACKING_DOJO_ID,
+  () =>
+    activeDojoId.value === PACKAGE_NESTING_DOJO_ID ||
+    activeDojoId.value === PACKAGE_STACKING_DOJO_ID ||
+    activeDojoId.value === PACKAGE_IMPORT_CHAIN_DOJO_ID,
 )
 
 watch(activeTabId, () => {
@@ -1771,6 +1857,9 @@ watch(activeTabId, () => {
   }
   if (activeDojoId.value === PACKAGE_STACKING_DOJO_ID) {
     dojoStackCount.value = clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoStackCount.value)
+  }
+  if (activeDojoId.value === PACKAGE_IMPORT_CHAIN_DOJO_ID) {
+    dojoImportChainLength.value = clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoImportChainLength.value)
   }
 })
 
@@ -1785,7 +1874,6 @@ watch(dojoNestingDepth, (depth, prev) => {
   void loadPackageNestingDojo(normalized).then(() => {
     snapshotActiveTab()
     syncUrlFromState()
-    void nextTick(() => graphRef.value?.fitToViewport())
   })
 })
 
@@ -1797,10 +1885,23 @@ watch(dojoStackCount, (count, prev) => {
   }
   if (normalized === prev) return
   if (activeDojoId.value !== PACKAGE_STACKING_DOJO_ID) return
-  void loadPackageStackingDojo(normalized).then(() => {
+  void loadPackageStackingDojo(normalized, prev).then(() => {
     snapshotActiveTab()
     syncUrlFromState()
-    void nextTick(() => graphRef.value?.fitToViewport())
+  })
+})
+
+watch(dojoImportChainLength, (len, prev) => {
+  const normalized = clampDojoStackCount(len)
+  if (normalized !== len) {
+    dojoImportChainLength.value = normalized
+    return
+  }
+  if (normalized === prev) return
+  if (activeDojoId.value !== PACKAGE_IMPORT_CHAIN_DOJO_ID) return
+  void loadPackageImportChainDojo(normalized, prev).then(() => {
+    snapshotActiveTab()
+    syncUrlFromState()
   })
 })
 
@@ -2212,6 +2313,32 @@ onUnmounted(() => {
                   max="40"
                   step="1"
                   aria-label="Package stacking count"
+                />
+              </label>
+              <div class="dojo-panel__scale">
+                <span>1</span>
+                <span>40</span>
+              </div>
+            </div>
+            <div v-else-if="activeDojoId === PACKAGE_IMPORT_CHAIN_DOJO_ID" class="dojo-panel">
+              <div class="dojo-panel__header">
+                <div class="dojo-panel__title">Package import chain</div>
+                <div class="dojo-panel__meta">Chain length {{ dojoImportChainLength }}</div>
+              </div>
+              <p class="dojo-panel__hint">
+                Each step adds one package and one <code>imports</code> link so the chain grows as a linear Scala package import path (left → right).
+              </p>
+              <label class="dojo-panel__control" for="dojo-package-import-chain">
+                <span class="dojo-panel__label">Chain length</span>
+                <input
+                  id="dojo-package-import-chain"
+                  v-model.number="dojoImportChainLength"
+                  class="dojo-panel__slider"
+                  type="range"
+                  min="1"
+                  max="40"
+                  step="1"
+                  aria-label="Package import chain length"
                 />
               </label>
               <div class="dojo-panel__scale">

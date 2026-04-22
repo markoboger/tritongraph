@@ -1029,6 +1029,21 @@ const tightLayout = ref(false)
 const wideShortRow = ref(false)
 /** Innermost unfocused package: when height is too tight, fall back to a top-left header row. */
 const compactHeaderLayout = ref(false)
+/**
+ * Centered-stack cards (~4+ deep stacks): folder icon top-left at preferred size; optional second
+ * row places the icon under the metrics strip when width is tight; title goes vertical before
+ * horizontal truncation (`stackTitleVertical`).
+ */
+const stackTopLeftLayout = ref(false)
+const stackIconBelowMetrics = ref(false)
+const stackTitleVertical = ref(false)
+/** Centered column stacks: 0 default padding, 1 / 2 = tighter horizontal inset before any reposition. */
+const stackHorizontalTightLevel = ref(0)
+
+/** Subtitle hidden when title uses vertical writing mode (stack-tl or generic tight). */
+const subtitleHiddenForVerticalTitle = computed(
+  () => tightLayout.value || stackTitleVertical.value,
+)
 
 let measureCanvas: CanvasRenderingContext2D | null = null
 
@@ -1050,35 +1065,126 @@ const WIDE_SHORT_MAX_H = 148
 const WIDE_SHORT_MIN_H_EXIT = 162
 const WIDE_SHORT_MIN_AR = 1.85
 const WIDE_SHORT_EXIT_AR = 1.72
-const COMPACT_HEADER_MAX_H = 108
-const COMPACT_HEADER_MIN_H_EXIT = 120
 
 function measure() {
   if (props.embedded) {
     tightLayout.value = false
     wideShortRow.value = false
     compactHeaderLayout.value = false
+    stackTopLeftLayout.value = false
+    stackIconBelowMetrics.value = false
+    stackTitleVertical.value = false
+    stackHorizontalTightLevel.value = 0
     return
   }
   if (props.focused) {
     tightLayout.value = false
     wideShortRow.value = false
     compactHeaderLayout.value = false
+    stackTopLeftLayout.value = false
+    stackIconBelowMetrics.value = false
+    stackTitleVertical.value = false
+    stackHorizontalTightLevel.value = 0
     return
   }
   if (preferCenteredStackLayout.value) {
     const root = rootEl.value
     if (!root) return
+    const w = root.clientWidth
     const h = root.clientHeight
+    /** Only the shortest rows use micro-compact; normal stacked leaf heights stay centered. */
+    const STACK_ULTRA_COMPACT_ENTER = 58
+    const STACK_ULTRA_COMPACT_EXIT = 70
     if (compactHeaderLayout.value) {
-      compactHeaderLayout.value = h <= COMPACT_HEADER_MIN_H_EXIT
+      compactHeaderLayout.value = h <= STACK_ULTRA_COMPACT_EXIT
     } else {
-      compactHeaderLayout.value = h <= COMPACT_HEADER_MAX_H
+      compactHeaderLayout.value = h <= STACK_ULTRA_COMPACT_ENTER
     }
-    tightLayout.value = false
     wideShortRow.value = false
+
+    /**
+     * Width hysteresis (per card). Stacked leaves share the column track width (~viewport minus
+     * diagram margins), so thresholds are tuned for real narrow panes — not package count alone.
+     *
+     * Apply **before** the ultra-compact (very short row height) early return: deep stacks shrink
+     * row height first; we still want tighter icon↔border inset from width while the centered stack
+     * chrome stays in the compact-header mode.
+     */
+    const HPAD_1_ENTER = 520
+    const HPAD_1_EXIT = 560
+    const HPAD_2_ENTER = 440
+    const HPAD_2_EXIT = 480
+    const lev = stackHorizontalTightLevel.value
+    let nextPad = 0
+    if (lev >= 2) {
+      nextPad = w < HPAD_2_EXIT ? 2 : w < HPAD_1_EXIT ? 1 : 0
+    } else if (lev === 1) {
+      nextPad = w < HPAD_2_ENTER ? 2 : w >= HPAD_1_EXIT ? 0 : 1
+    } else {
+      nextPad = w < HPAD_2_ENTER ? 2 : w < HPAD_1_ENTER ? 1 : 0
+    }
+    stackHorizontalTightLevel.value = nextPad
+
+    if (compactHeaderLayout.value) {
+      stackTopLeftLayout.value = false
+      stackIconBelowMetrics.value = false
+      stackTitleVertical.value = false
+      tightLayout.value = false
+      return
+    }
+    compactHeaderLayout.value = false
+
+    const padX =
+      parseFloat(getComputedStyle(root).paddingLeft) + parseFloat(getComputedStyle(root).paddingRight)
+    const title = titleEl.value
+    const label = String(props.label ?? '')
+    if (!title) {
+      stackTopLeftLayout.value = false
+      stackIconBelowMetrics.value = false
+      stackTitleVertical.value = false
+      stackHorizontalTightLevel.value = 0
+      tightLayout.value = false
+      return
+    }
+    const innerReserve = nextPad <= 0 ? 24 : nextPad === 1 ? 18 : 10
+    const availCentered = Math.max(20, w - padX - innerReserve)
+    const tw = measureTitleWidth(label, title)
+    const overflowCentered = tw > availCentered - 6
+    const REPO_ENTER_W = 300
+    const REPO_EXIT_W = 328
+    if (stackTopLeftLayout.value) {
+      stackTopLeftLayout.value = w < REPO_EXIT_W
+    } else {
+      stackTopLeftLayout.value = w < REPO_ENTER_W || (nextPad >= 2 && overflowCentered)
+    }
+
+    if (!stackTopLeftLayout.value) {
+      stackIconBelowMetrics.value = false
+      stackTitleVertical.value = false
+      tightLayout.value = false
+      return
+    }
+
+    const ICON_BELOW_W_ENTER = 214
+    const ICON_BELOW_W_EXIT = 228
+    if (stackIconBelowMetrics.value) {
+      stackIconBelowMetrics.value = w < ICON_BELOW_W_EXIT
+    } else {
+      stackIconBelowMetrics.value = w < ICON_BELOW_W_ENTER
+    }
+    const iconCol = stackIconBelowMetrics.value ? 0 : 52
+    const availW = Math.max(24, w - padX - iconCol - 10)
+    const titleNeedsVertical = stackTitleVertical.value
+      ? tw > availW - TITLE_TIGHT_EXIT
+      : tw > availW - 10
+    stackTitleVertical.value = titleNeedsVertical
+    tightLayout.value = false
     return
   }
+  stackHorizontalTightLevel.value = 0
+  stackTopLeftLayout.value = false
+  stackIconBelowMetrics.value = false
+  stackTitleVertical.value = false
   compactHeaderLayout.value = false
   const root = rootEl.value
   const title = titleEl.value
@@ -1131,11 +1237,7 @@ function scheduleMeasure() {
 }
 
 onMounted(() => {
-  void nextTick(() => {
-    measure()
-    ro = new ResizeObserver(() => scheduleMeasure())
-    if (rootEl.value) ro.observe(rootEl.value)
-  })
+  void nextTick(() => measure())
 })
 
 onUnmounted(() => {
@@ -1194,14 +1296,31 @@ watch(innerArtefactDiagramRef, (el) => {
   }
 })
 
-watch(rootEl, (el) => {
-  innerArtefactHostRo?.disconnect()
-  innerArtefactHostRo = null
-  if (el) {
-    innerArtefactHostRo = new ResizeObserver(() => scheduleInnerEdgeRefreshSettled())
-    innerArtefactHostRo.observe(el)
-  }
-})
+/**
+ * `ref="rootEl"` swaps between mutually exclusive templates (embedded / focused / default).
+ * Re-attach the layout ResizeObserver whenever the root element changes — otherwise after a
+ * layer-drill unfocus the observer stays on an unmounted element and compact-header state never
+ * updates (Vue Flow docs use the same “rebind when target changes” idea as interactive MiniMap).
+ */
+watch(
+  rootEl,
+  (el) => {
+    ro?.disconnect()
+    ro = null
+    if (el) {
+      ro = new ResizeObserver(() => scheduleMeasure())
+      ro.observe(el)
+      void nextTick(() => measure())
+    }
+    innerArtefactHostRo?.disconnect()
+    innerArtefactHostRo = null
+    if (el) {
+      innerArtefactHostRo = new ResizeObserver(() => scheduleInnerEdgeRefreshSettled())
+      innerArtefactHostRo.observe(el)
+    }
+  },
+  { flush: 'post' },
+)
 
 watch(
   () => [
@@ -1976,6 +2095,12 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       'package-box--cross-preview': crossPackagePreviewActive,
       'package-box--centered-stack': preferCenteredStackLayout,
       'package-box--compact-header': compactHeaderLayout,
+      'package-box--stack-top-left': stackTopLeftLayout,
+      'package-box--stack-icon-below-metrics': stackIconBelowMetrics,
+      'package-box--stack-hpad-1':
+        preferCenteredStackLayout && !stackTopLeftLayout && stackHorizontalTightLevel === 1,
+      'package-box--stack-hpad-2':
+        preferCenteredStackLayout && !stackTopLeftLayout && stackHorizontalTightLevel === 2,
     }"
     :style="{ '--box-accent': accent }"
   >
@@ -2042,13 +2167,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       <div
         ref="titleEl"
         class="title"
+        :class="{ 'stack-title-vertical': stackTitleVertical }"
         :title="isScalaLeaf ? String(label ?? '') : 'Double-click to rename / edit description'"
       >
         {{ label }}
       </div>
-      <div v-if="subtitle && !tightLayout" class="subtitle">{{ subtitle }}</div>
+      <div v-if="subtitle && !subtitleHiddenForVerticalTitle" class="subtitle">{{ subtitle }}</div>
       <div
-        v-if="!isScalaLeaf && description && !tightLayout && !wideShortRow"
+        v-if="!isScalaLeaf && description && !tightLayout && !wideShortRow && !stackTitleVertical"
         class="description-preview"
         :title="description"
       >
@@ -2374,6 +2500,26 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   padding-right: clamp(46px, 8cqw, 56px);
   padding-top: clamp(20px, 4vmin, 26px);
 }
+/**
+ * Centered stack: reduce horizontal padding (icon → border) before any top-left reposition.
+ * Metrics stay in the default absolute top-right slot from `.package-box__metrics`.
+ */
+.package-box--centered-stack.package-box--stack-hpad-1:not(.package-box--stack-top-left) {
+  padding-left: max(5px, min(9px, 1.15vmin));
+  padding-right: max(5px, min(9px, 1.15vmin));
+}
+.package-box--centered-stack.package-box--stack-hpad-1:not(.package-box--stack-top-left).package-box--has-metrics {
+  padding-top: clamp(14px, 3.1vmin, 22px);
+  padding-right: max(42px, min(50px, 8.5cqw));
+}
+.package-box--centered-stack.package-box--stack-hpad-2:not(.package-box--stack-top-left) {
+  padding: max(1px, 4px) max(1px, 6px);
+}
+.package-box--centered-stack.package-box--stack-hpad-2:not(.package-box--stack-top-left).package-box--has-metrics {
+  padding-top: max(11px, min(18px, 3vmin));
+  padding-right: max(38px, 1px);
+  padding-bottom: max(1px, 4px);
+}
 .package-box--has-metrics.package-box--pin-only {
   padding-right: clamp(46px, 8cqw, 56px);
 }
@@ -2561,6 +2707,130 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .package-box--centered-stack .subtitle {
   text-align: center;
   align-self: center;
+}
+
+/**
+ * Stacked package column (~4+ rows): icon pinned top-left at preferred size; metrics strip still
+ * top-right (min width follows the 124px metric strip). Narrow width drops the icon under the
+ * metrics row; title uses `stackTitleVertical` before horizontal ellipsis.
+ */
+.package-box.package-box--stack-top-left:not(.package-box--compact-header) {
+  display: grid;
+  min-width: min(100%, 124px);
+  column-gap: 8px;
+  row-gap: 6px;
+  align-items: start;
+  justify-items: stretch;
+}
+.package-box--stack-top-left:not(.package-box--stack-icon-below-metrics) {
+  grid-template-columns: 44px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.package-box--stack-top-left.package-box--stack-icon-below-metrics {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+.package-box--stack-top-left:not(.package-box--stack-icon-below-metrics) .package-box__metrics {
+  position: relative;
+  top: auto;
+  right: auto;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  width: min(124px, calc(100% - 8px));
+  max-width: 124px;
+  justify-self: end;
+  z-index: 4;
+}
+.package-box--stack-top-left.package-box--stack-icon-below-metrics .package-box__metrics {
+  position: relative;
+  top: auto;
+  right: auto;
+  grid-column: 1;
+  grid-row: 1;
+  width: min(124px, calc(100% - 8px));
+  max-width: 124px;
+  justify-self: end;
+  z-index: 4;
+}
+.package-box--stack-top-left .package-box__tools {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  z-index: 5;
+}
+.package-box--stack-top-left:not(.package-box--stack-icon-below-metrics) .lang-icon-slot {
+  grid-column: 1;
+  grid-row: 2;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  max-width: 44px;
+  max-height: 44px;
+  margin-bottom: 0;
+  align-self: start;
+  justify-self: start;
+  justify-content: center;
+}
+.package-box--stack-top-left:not(.package-box--stack-icon-below-metrics) .package-box__body {
+  grid-column: 2;
+  grid-row: 2;
+  align-items: flex-start;
+  justify-content: flex-start;
+  text-align: left;
+  min-width: 0;
+}
+.package-box--stack-top-left.package-box--stack-icon-below-metrics .lang-icon-slot {
+  grid-column: 1;
+  grid-row: 2;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  max-width: 44px;
+  max-height: 44px;
+  margin-bottom: 0;
+  justify-self: start;
+  justify-content: center;
+}
+.package-box--stack-top-left.package-box--stack-icon-below-metrics .package-box__body {
+  grid-column: 1;
+  grid-row: 3;
+  align-items: flex-start;
+  text-align: left;
+  min-width: 0;
+}
+.package-box--stack-top-left .lang-icon-slot :deep(.lang-svg) {
+  width: 40px;
+  height: 40px;
+  max-width: 44px;
+  max-height: 44px;
+}
+.package-box--stack-top-left .title {
+  text-align: left;
+  align-self: flex-start;
+}
+.package-box--stack-top-left .subtitle {
+  text-align: left;
+  align-self: flex-start;
+}
+.package-box--centered-stack.package-box--stack-top-left:not(.package-box--compact-header) .lang-icon-slot {
+  margin-bottom: 0;
+}
+.package-box--stack-top-left .title.stack-title-vertical {
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  max-width: none;
+  max-height: none;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-orientation: mixed;
+  line-height: 1.15;
+  align-self: center;
+  pointer-events: none;
 }
 
 .package-box--centered-stack.package-box--compact-header {

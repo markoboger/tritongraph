@@ -336,17 +336,19 @@ test.describe('dojo fixtures', () => {
     await expect(page).toHaveURL(/dojoDepth=40/)
   })
 
-  test('package stacking dojo switches short package cards into compact top-left headers', async ({ page }) => {
+  test('package stacking dojo tightens horizontal inset before reposition (narrow column)', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 520, height: 700 })
     await page.goto('/?tab=dojo:package-stacking&dojoDepth=1')
 
     await expect(page.getByLabel('Package stacking count')).toHaveValue('1')
-    await expect(page.locator('.package-box--compact-header')).toHaveCount(0)
+    await expect(page.locator('.package-box--stack-hpad-1')).toHaveCount(0)
 
-    await page.getByLabel('Package stacking count').fill('8')
-
-    await expect(page.getByLabel('Package stacking count')).toHaveValue('8')
+    await page.getByLabel('Package stacking count').fill('7')
+    await expect(page.getByLabel('Package stacking count')).toHaveValue('7')
     await expect
-      .poll(async () => page.locator('.package-box--compact-header').count())
+      .poll(async () => page.locator('.package-box--stack-hpad-1, .package-box--stack-hpad-2').count())
       .toBeGreaterThan(0)
   })
 

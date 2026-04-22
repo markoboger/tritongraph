@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import {
   ConnectionMode,
+  PanOnScrollMode,
   Position,
   VueFlow,
+  getRectOfNodes,
   type Connection,
+  type CoordinateExtent,
   type NodeTypesObject,
   useVueFlow,
 } from '@vue-flow/core'
@@ -26,6 +29,11 @@ import { isLeafBoxNode } from '../graph/nodeKinds'
 import { languageIconForId } from '../graph/languages'
 import { strokeColorForFlowEdge } from '../graph/relationKinds'
 import { drillNoteForModuleId } from '../graph/sbtStyleDrillNotes'
+
+/** Root-level stacked package-scope groups beyond this use width-fit zoom + vertical pan rail. */
+const VERTICAL_SCROLL_PACKAGE_STACK_MIN = 18
+/** Also enable vertical pan when fitting height would force zoom below this (width still allows more zoom). */
+const VERTICAL_SCROLL_MAX_ZOOM_HEIGHT_FIT = 0.88
 
 const MODULE_LAYOUT_W = 200
 const MODULE_LAYOUT_H = 72
@@ -53,9 +61,62 @@ const emit = defineEmits<{
  * “do nothing” visually. A stable id links parent composables to the mounted pane.
  */
 const WORKSPACE_FLOW_ID = 'triton-workspace'
-const { fitView, screenToFlowCoordinate, setNodes, setEdges, updateNodeInternals, setViewport } =
-  useVueFlow(WORKSPACE_FLOW_ID)
+const {
+  fitView,
+  screenToFlowCoordinate,
+  setNodes,
+  setEdges,
+  updateNodeInternals,
+  setViewport,
+  setTranslateExtent,
+} = useVueFlow(WORKSPACE_FLOW_ID)
+
+/** Default: pan is unconstrained (see Vue Flow store initial `translateExtent`). */
+const UNBOUNDED_TRANSLATE_EXTENT: CoordinateExtent = [
+  [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY],
+  [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
+]
 const drillRef = ref<InstanceType<typeof GraphDrillIn> | null>(null)
+
+const verticalScrollChrome = ref(false)
+/** 0 = show top of graph, 1000 = show bottom — only meaningful when {@link verticalScrollChrome}. */
+const verticalScrollSlider = ref(0)
+let vPan: { x: number; yMin: number; yMax: number; zoom: number } = { x: 0, yMin: 0, yMax: 0, zoom: 1 }
+let verticalSliderSync = false
+
+function countTopLevelPackageScopeGroups(arr: readonly any[]): number {
+  let c = 0
+  for (const n of arr) {
+    if (n.parentNode) continue
+    if ((n as { hidden?: boolean }).hidden) continue
+    if (String(n.type ?? '') !== 'group') continue
+    const d = n.data as Record<string, unknown> | undefined
+    if (d?.packageScope === true) c++
+  }
+  return c
+}
+
+function layerDrillActive(): boolean {
+  const raw = (drillRef.value as { layerDrillId?: unknown } | null)?.layerDrillId
+  return !!unref(raw)
+}
+
+function resetVerticalScrollChrome(): void {
+  verticalScrollChrome.value = false
+  verticalScrollSlider.value = 0
+  setTranslateExtent(UNBOUNDED_TRANSLATE_EXTENT)
+}
+
+/**
+ * Limit viewport pan so the user cannot scroll past the padded diagram bounds (Vue Flow
+ * `translateExtent` clamps `setViewport` / wheel-pan the same way `transformViewport` does).
+ */
+function translateExtentForVerticalPan(x: number, yMin: number, yMax: number): CoordinateExtent {
+  return [
+    [-x, -yMax],
+    [-x, -yMin],
+  ]
+}
 
 const hoveredNodeId = ref<string | null>(null)
 /** When set, only this edge is stroke-emphasized (takes precedence over node-hover). */
@@ -74,6 +135,7 @@ function hasSingletonRootPackageScopeOverview(): boolean {
 }
 
 async function fitOverviewSingletonPackageScope(duration = 0): Promise<void> {
+  resetVerticalScrollChrome()
   await nextTick()
   await doubleRaf()
   await setViewport({ x: 0, y: 0, zoom: 1 }, { duration })
@@ -208,8 +270,8 @@ async function applyPackageRelationFocusVisibilityAndRelayout() {
   packageFocusRelayoutQueued.value = true
   try {
     await nextTick()
-    // Trigger Vue Flow layout recalculation to ensure packages stack properly
-    await fitView({ padding: 0.1, duration: 300 })
+    /** Same camera rules as other relayouts — never a standalone zoom-out-to-whole-graph fit. */
+    await fitToViewport({ duration: 0 })
   } finally {
     packageFocusRelayoutQueued.value = false
   }
@@ -660,8 +722,25 @@ async function resetView() {
   await drillRef.value?.showFullGraph()
 }
 
-/** Fit graph to the current pane after layout (does not clear layer drill). */
-async function fitToViewport(opts?: { duration?: number }) {
+/** Clear drill/focus snapshot after structural doc replace; parent should call `fitToViewport` next. */
+function resetNavigationAfterDocReplace() {
+  resetVerticalScrollChrome()
+  drillRef.value?.resetNavigationAfterDocReplace?.()
+}
+
+/**
+ * Fit graph to the current pane after layout (does not clear layer drill).
+ *
+ * Camera rule: after a full document replace, use {@link resetNavigationAfterDocReplace} plus
+ * one `fitToViewport` — do not chain `fitView` / `fitOverviewCamera` first (avoids a visible
+ * zoom-out-then-correct). Vue Flow’s MiniMap uses a translucent viewport mask (`maskColor`);
+ * the vertical rail slider follows that same transparent aesthetic.
+ *
+ * Stacking dojo: when {@link opts.recenterStackShrink} is set (fewer top-level packages than
+ * before), re-center the camera — vertical-rail mode uses the middle of the allowed y-range;
+ * non-rail mode uses a slightly roomier `fitView` padding so the graph is not left offset.
+ */
+async function fitToViewport(opts?: { duration?: number; recenterStackShrink?: boolean }) {
   await nextTick()
   await doubleRaf()
   const duration = opts?.duration ?? 220
@@ -669,11 +748,112 @@ async function fitToViewport(opts?: { duration?: number }) {
     await fitOverviewSingletonPackageScope(duration)
     return
   }
-  await fitView({ padding: 0.05, duration, maxZoom: 2.2, minZoom: 0.05 })
+  if (layerDrillActive()) {
+    resetVerticalScrollChrome()
+    await fitView({ padding: 0.05, duration, maxZoom: 2.2, minZoom: 0.05 })
+    return
+  }
+
+  const roots = nodes.value.filter((n) => !n.parentNode && !(n as { hidden?: boolean }).hidden)
+  if (!roots.length) {
+    resetVerticalScrollChrome()
+    await fitView({ padding: 0.05, duration, maxZoom: 2.2, minZoom: 0.05 })
+    return
+  }
+
+  const rect = getRectOfNodes(roots as any)
+  if (
+    !Number.isFinite(rect.width) ||
+    rect.width <= 2 ||
+    !Number.isFinite(rect.height) ||
+    rect.height <= 2 ||
+    !Number.isFinite(rect.x) ||
+    !Number.isFinite(rect.y)
+  ) {
+    resetVerticalScrollChrome()
+    await fitView({ padding: 0.05, duration, maxZoom: 2.2, minZoom: 0.05 })
+    return
+  }
+
+  const vp = readFlowViewport()
+  const pad = 0.05
+  const px = vp.width * pad * 2
+  const py = vp.height * pad * 2
+  const usableW = Math.max(80, vp.width - px)
+  const usableH = Math.max(80, vp.height - py)
+  const zoomW = usableW / rect.width
+  const zoomH = usableH / rect.height
+  const manyPk = countTopLevelPackageScopeGroups(nodes.value)
+  const heightBound = zoomH < zoomW - 1e-6
+  const wouldSquashZoom = zoomH < VERTICAL_SCROLL_MAX_ZOOM_HEIGHT_FIT
+  const useVerticalPanRail =
+    (heightBound && wouldSquashZoom) || manyPk >= VERTICAL_SCROLL_PACKAGE_STACK_MIN
+
+  if (!useVerticalPanRail) {
+    resetVerticalScrollChrome()
+    /**
+     * After packages are removed from the stacking dojo, re-fit from defaults so the camera
+     * does not inherit a stale pan offset from the wider/taller graph.
+     */
+    await fitView({
+      padding: opts?.recenterStackShrink ? 0.08 : 0.05,
+      duration,
+      maxZoom: 2.2,
+      minZoom: 0.05,
+    })
+    return
+  }
+
+  const zoom = Math.min(2.2, Math.max(0.05, zoomW))
+  const cx = rect.x + rect.width / 2
+  const x = vp.width / 2 - cx * zoom
+  const tyTop = vp.height * pad - rect.y * zoom
+  const tyBot = vp.height * (1 - pad) - (rect.y + rect.height) * zoom
+  const yMax = Math.max(tyTop, tyBot)
+  const yMin = Math.min(tyTop, tyBot)
+  /** Fewer stacked packages → re-center vertically in the pan band (mid-scroll), not top-pinned. */
+  const yStart = opts?.recenterStackShrink ? (yMin + yMax) / 2 : yMax
+
+  vPan = { x, yMin, yMax, zoom }
+  verticalScrollChrome.value = true
+  verticalScrollSlider.value = opts?.recenterStackShrink ? 500 : 0
+
+  setTranslateExtent(translateExtentForVerticalPan(x, yMin, yMax))
+  await setViewport({ x, y: yStart, zoom }, { duration })
+}
+
+function onVerticalScrollSliderInput(ev: Event) {
+  if (!verticalScrollChrome.value) return
+  const el = ev.target as HTMLInputElement | null
+  if (!el) return
+  const v = Number(el.value)
+  verticalScrollSlider.value = Number.isFinite(v) ? Math.round(v) : 0
+  const span = vPan.yMin - vPan.yMax
+  if (!Number.isFinite(span) || Math.abs(span) < 1e-4) return
+  const t = verticalScrollSlider.value / 1000
+  const y = Math.min(vPan.yMax, Math.max(vPan.yMin, vPan.yMax + t * span))
+  verticalSliderSync = true
+  void setViewport({ x: vPan.x, y, zoom: vPan.zoom }, { duration: 0 }).finally(() => {
+    verticalSliderSync = false
+  })
+}
+
+function onFlowMoveEnd(ev: unknown) {
+  if (!verticalScrollChrome.value || verticalSliderSync) return
+  const ft = (ev as { flowTransform?: { x: number; y: number; zoom: number } } | null)?.flowTransform
+  if (!ft) return
+  const { x, y, zoom } = ft
+  if (Math.abs(zoom - vPan.zoom) > 0.02) return
+  vPan.x = x
+  const span = vPan.yMin - vPan.yMax
+  if (!Number.isFinite(span) || Math.abs(span) < 1e-4) return
+  const t = (y - vPan.yMax) / span
+  verticalScrollSlider.value = Math.round(Math.max(0, Math.min(1000, t * 1000)))
 }
 
 defineExpose({
   resetView,
+  resetNavigationAfterDocReplace,
   fitToViewport,
   relayoutViewport,
   refreshEdgeEmphasis: syncEdgeVisualState,
@@ -682,40 +862,65 @@ defineExpose({
 
 <template>
   <DiagramContainerView :model="diagramModel" class="diagram-root-wrap">
-    <VueFlow
-      :id="WORKSPACE_FLOW_ID"
-      v-model:nodes="nodes"
-      v-model:edges="edges"
-      :class="['flow', { 'tg-depth-layout-animate': depthLayoutAnimate }]"
-      :node-types="nodeTypes"
-    :default-edge-options="defaultEdgeOptions"
-    :connection-mode="ConnectionMode.Strict"
-    :nodes-draggable="false"
-    :nodes-connectable="true"
-    :edges-updatable="false"
-    :edges-focusable="true"
-    :snap-to-grid="true"
-    :snap-grid="[12, 12]"
-    :min-zoom="0.05"
-    :max-zoom="2.2"
-    :zoom-on-scroll="false"
-    :zoom-on-pinch="false"
-    :zoom-on-double-click="false"
-    :pan-on-drag="false"
-    :pan-on-scroll="false"
-    delete-key-code="Delete"
-    @connect="handleConnect"
-    @connect-start="onConnectStart"
-    @connect-end="onVueFlowConnectEnd"
-    @node-mouse-enter="onNodeMouseEnter"
-    @node-mouse-leave="onNodeMouseLeave"
-    @edge-mouse-enter="onEdgeMouseEnter"
-    @edge-mouse-leave="onEdgeMouseLeave"
-    @pane-click="onPaneClickClearHover"
-  >
-      <GraphDrillIn ref="drillRef" />
-      <Background pattern-color="#e2e8f0" :gap="18" />
-    </VueFlow>
+    <div class="flow-wrap-shell" :class="{ 'flow-wrap-shell--vscroll': verticalScrollChrome }">
+      <VueFlow
+        :id="WORKSPACE_FLOW_ID"
+        v-model:nodes="nodes"
+        v-model:edges="edges"
+        :class="['flow', { 'tg-depth-layout-animate': depthLayoutAnimate }]"
+        :node-types="nodeTypes"
+        :default-edge-options="defaultEdgeOptions"
+        :connection-mode="ConnectionMode.Strict"
+        :nodes-draggable="false"
+        :nodes-connectable="true"
+        :edges-updatable="false"
+        :edges-focusable="true"
+        :snap-to-grid="true"
+        :snap-grid="[12, 12]"
+        :min-zoom="0.05"
+        :max-zoom="2.2"
+        :zoom-on-scroll="false"
+        :zoom-on-pinch="false"
+        :zoom-on-double-click="false"
+        :pan-on-drag="false"
+        :pan-on-scroll="verticalScrollChrome"
+        :pan-on-scroll-mode="PanOnScrollMode.Vertical"
+        delete-key-code="Delete"
+        @connect="handleConnect"
+        @connect-start="onConnectStart"
+        @connect-end="onVueFlowConnectEnd"
+        @node-mouse-enter="onNodeMouseEnter"
+        @node-mouse-leave="onNodeMouseLeave"
+        @edge-mouse-enter="onEdgeMouseEnter"
+        @edge-mouse-leave="onEdgeMouseLeave"
+        @pane-click="onPaneClickClearHover"
+        @move-end="onFlowMoveEnd"
+      >
+        <GraphDrillIn ref="drillRef" />
+        <Background pattern-color="#e2e8f0" :gap="18" />
+      </VueFlow>
+      <aside
+        v-if="verticalScrollChrome"
+        class="flow-v-scroll-rail"
+        aria-label="Vertical diagram scroll"
+        @pointerdown.stop
+        @wheel.stop
+      >
+        <input
+          class="flow-v-scroll-rail__slider"
+          type="range"
+          min="0"
+          max="1000"
+          :value="verticalScrollSlider"
+          aria-valuemin="0"
+          aria-valuemax="1000"
+          :aria-valuenow="verticalScrollSlider"
+          aria-orientation="vertical"
+          title="Scroll vertically"
+          @input="onVerticalScrollSliderInput"
+        />
+      </aside>
+    </div>
   </DiagramContainerView>
 </template>
 
@@ -724,9 +929,82 @@ defineExpose({
   width: 100%;
   height: 100%;
 }
+.flow-wrap-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+.flow-wrap-shell--vscroll .flow {
+  width: calc(100% - 32px);
+  height: 100%;
+}
 .flow {
   width: 100%;
   height: 100%;
+}
+.flow-v-scroll-rail {
+  position: absolute;
+  top: 40px;
+  right: 4px;
+  bottom: 12px;
+  width: 28px;
+  z-index: 24;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  pointer-events: auto;
+}
+/**
+ * Translucent rail in the spirit of Vue Flow MiniMap `maskColor` / `maskStrokeColor`
+ * (see https://vueflow.dev/guide/components/minimap.html).
+ */
+.flow-v-scroll-rail__slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 24px;
+  min-height: 120px;
+  margin: 0;
+  cursor: grab;
+  background: transparent;
+  accent-color: transparent;
+  writing-mode: vertical-lr;
+  direction: rtl;
+}
+.flow-v-scroll-rail__slider::-webkit-slider-runnable-track {
+  width: 5px;
+  margin-inline: auto;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.28);
+}
+.flow-v-scroll-rail__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-inline-start: -4px;
+  border-radius: 50%;
+  cursor: grab;
+  background: rgba(59, 130, 246, 0.32);
+  border: 2px solid rgba(59, 130, 246, 0.55);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+.flow-v-scroll-rail__slider::-moz-range-track {
+  width: 5px;
+  height: 100%;
+  margin-inline: auto;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.28);
+}
+.flow-v-scroll-rail__slider::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  cursor: grab;
+  border: 2px solid rgba(59, 130, 246, 0.55);
+  background: rgba(59, 130, 246, 0.32);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
 }
 </style>
 

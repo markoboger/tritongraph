@@ -43,8 +43,76 @@ const STACK_GAP_MIN_NESTED = 10
  */
 const GROUP_WRAP = 28
 
+/**
+ * When many sibling `group` nodes stack in one depth column, their natural YAML heights (e.g.
+ * 360px) exceed the viewport stack band and the camera zooms out. Package-scope groups can
+ * shrink much further — typography follows via container queries in `GroupNode.vue` — so we
+ * fit heights into the band instead of growing the world bounds first.
+ */
+const STACKED_PACKAGE_SCOPE_GROUP_MIN_H = 40
+const STACKED_OTHER_GROUP_MIN_H = 76
+
 /** Small inset so handles are not flush with column boundary */
 const COL_INSET = 3
+
+/**
+ * Root column of many package-scope groups: keep natural stack heights so the camera can use
+ * width-fit zoom + vertical pan (see `GraphWorkspace.vue`) instead of crushing every row into the
+ * viewport band.
+ */
+const ROOT_PACKAGE_STACK_NO_SHRINK_MIN = 18
+
+function nodeIsPackageScopeGroup(node: { type?: string; data?: unknown }): boolean {
+  if (String(node.type ?? '') !== 'group') return false
+  const d = node.data
+  return !!(d && typeof d === 'object' && (d as Record<string, unknown>).packageScope === true)
+}
+
+/**
+ * Fit natural column heights into `avail` vertical pixels with per-row minimums, keeping taller
+ * rows proportionally larger when possible.
+ */
+function distributeHeightsToBand(avail: number, natural: readonly number[], mins: readonly number[]): number[] {
+  const n = natural.length
+  if (!n) return []
+  if (!Number.isFinite(avail) || avail <= 0) {
+    return Array.from({ length: n }, () => 32)
+  }
+  const sumMin = mins.reduce((a, b) => a + b, 0)
+  if (avail <= sumMin) {
+    const h = Math.max(28, Math.floor(avail / n))
+    return Array.from({ length: n }, () => h)
+  }
+  const flex = natural.map((h, i) => Math.max(0, h - mins[i]!))
+  const sumFlex = flex.reduce((a, b) => a + b, 0)
+  const out = [...mins]
+  const extra = avail - sumMin
+  if (sumFlex > 0 && extra > 0) {
+    for (let i = 0; i < n; i++) {
+      out[i]! += Math.floor(extra * (flex[i]! / sumFlex))
+    }
+  }
+  let drift = avail - out.reduce((a, b) => a + b, 0)
+  let guard = 0
+  while (drift > 0 && guard < n * 4) {
+    const k = guard % n
+    if (out[k]! < natural[k]!) {
+      out[k]! += 1
+      drift -= 1
+    }
+    guard++
+  }
+  guard = 0
+  while (drift < 0 && guard < n * 4) {
+    const k = guard % n
+    if (out[k]! > mins[k]!) {
+      out[k]! -= 1
+      drift += 1
+    }
+    guard++
+  }
+  return out
+}
 
 export type ViewportSize = { width: number; height: number }
 
@@ -475,19 +543,41 @@ function layoutOneParent(
     const boxW = Math.max(baseColW, maxGroupChildW)
     const colTrackW = boxW + 2 * COL_INSET
 
+    /** Per-row pixel height for this column (groups may shrink to fit the stack band). */
+    const slotHeights: number[] = visibleLayerNodes.map((node, i) =>
+      isLeafBoxNode(node) ? leafH : childSizes[i]!.h,
+    )
+    const allStackedArePackageScope =
+      n > 0 && visibleLayerNodes.every((node) => nodeIsPackageScopeGroup(node))
+    const skipStackShrink =
+      parentId === undefined && numLeaves === 0 && n >= ROOT_PACKAGE_STACK_NO_SHRINK_MIN && allStackedArePackageScope
+
+    if (numLeaves === 0 && n > 0 && !skipStackShrink) {
+      const sumSlots = slotHeights.reduce((a, b) => a + b, 0) + totalGaps
+      if (sumSlots > stackBand) {
+        const avail = Math.max(0, stackBand - totalGaps)
+        const natural = visibleLayerNodes.map((_, i) => childSizes[i]!.h)
+        const mins = visibleLayerNodes.map((node) =>
+          nodeIsPackageScopeGroup(node) ? STACKED_PACKAGE_SCOPE_GROUP_MIN_H : STACKED_OTHER_GROUP_MIN_H,
+        )
+        const fitted = distributeHeightsToBand(avail, natural, mins)
+        for (let i = 0; i < n; i++) slotHeights[i] = fitted[i]!
+      }
+    }
+
     let yCursor = stackTop
     for (let i = 0; i < n; i++) {
       const node = visibleLayerNodes[i]!
       const idx = out.findIndex((x) => x.id === node.id)
       if (idx === -1) {
         // Still advance cursor so subsequent siblings don't collapse onto missing slot.
-        yCursor += (isLeafBoxNode(node) ? leafH : childSizes[i]!.h) + stackGap
+        yCursor += slotHeights[i]! + stackGap
         continue
       }
       const x = xCursor + COL_INSET
       const y = yCursor
       const isLeaf = isLeafBoxNode(node)
-      const childH = isLeaf ? leafH : childSizes[i]!.h
+      const childH = slotHeights[i]!
       const childW = isLeaf ? boxW : Math.max(boxW, childSizes[i]!.w)
 
       const prevStyle = out[idx].style && typeof out[idx].style === 'object' ? { ...out[idx].style } : {}

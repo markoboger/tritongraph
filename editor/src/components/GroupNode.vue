@@ -318,7 +318,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   word-break: break-word;
   overflow-wrap: anywhere;
 }
-@container (max-width: 260px) {
+@container (max-width: 280px) {
   .group-node__pkg-header .banner {
     font-size: 0.86rem;
   }
@@ -326,7 +326,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     font-size: 0.7rem;
   }
 }
-@container (max-width: 190px) {
+@container (max-width: 210px) {
   .group-node__pkg-header .banner {
     font-size: 0.78rem;
   }
@@ -334,7 +334,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     font-size: 0.64rem;
   }
 }
-@container (max-height: 180px) {
+@container (max-height: 200px) {
   .group-node__pkg-header {
     top: 2px;
   }
@@ -345,7 +345,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     font-size: 0.68rem;
   }
 }
-@container (max-height: 145px) {
+@container (max-height: 165px) {
   .group-node__pkg-header {
     top: 1px;
     gap: 5px;
@@ -357,12 +357,13 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     font-size: 0.62rem;
   }
 }
-@container (max-height: 112px) {
-  .group-node__pkg-header .banner-sub {
-    display: none;
-  }
-}
-@container (max-height: 118px) {
+/**
+ * Compact header row: both title and subtitle stay visible with reduced type (one step earlier
+ * than before). Previously a `max-height: 112px` rule hid the subtitle while a later `118px`
+ * block tried to style it — both matched the same band and `display: none` won, so level 8
+ * stacks read as broken.
+ */
+@container (max-height: 138px) {
   .group-node__pkg-header {
     top: 4px;
     left: 8px;
@@ -378,11 +379,12 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     line-height: 1.15;
   }
   .group-node__pkg-header .banner-sub {
+    display: block;
     font-size: 0.58rem;
     line-height: 1.15;
   }
 }
-@container (max-height: 92px) {
+@container (max-height: 108px) {
   .group-node__pkg-header {
     top: 3px;
     left: 6px;
@@ -400,7 +402,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     font-size: 0.52rem;
   }
 }
-@container (max-height: 76px) {
+@container (max-height: 86px) {
   .group-node__pkg-header {
     top: 2px;
     left: 4px;
@@ -412,8 +414,28 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     height: 16px;
   }
   .group-node__pkg-header .banner {
-    font-size: 0.6rem;
+    font-size: 0.58rem;
     line-height: 1.1;
+  }
+  .group-node__pkg-header .banner-sub {
+    font-size: 0.48rem;
+    line-height: 1.1;
+  }
+}
+@container (max-height: 72px) {
+  .group-node__pkg-header {
+    top: 2px;
+    left: 4px;
+    right: 4px;
+    gap: 4px;
+  }
+  .group-node__folder-icon {
+    width: 16px;
+    height: 16px;
+  }
+  .group-node__pkg-header .banner {
+    font-size: 0.56rem;
+    line-height: 1.05;
   }
   .group-node__pkg-header .banner-sub {
     display: none;

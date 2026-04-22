@@ -901,6 +901,26 @@ async function showFullGraph() {
   await fitOverviewCamera()
 }
 
+/**
+ * After the parent replaces the entire node/edge graph (new YAML / dojo count), drop drill
+ * snapshot and focus state without running `fitOverviewCamera` — the workspace applies a
+ * single `fitToViewport` so the camera never “zooms out to everything” and then corrects.
+ */
+function resetNavigationAfterDocReplace() {
+  if (clickTimer) {
+    clearTimeout(clickTimer)
+    clickTimer = null
+  }
+  layerSnapshot.value = null
+  layerDrillId.value = null
+  layerDrillReturnFocusId.value = null
+  focusedId.value = null
+  if (graphFocusUi) {
+    graphFocusUi.containerFocusId = null
+  }
+  applyDimming(null)
+}
+
 function containerHasChildren(nodeId: string): boolean {
   return getNodes.value.some((n) => String(n.parentNode) === nodeId)
 }
@@ -1033,6 +1053,7 @@ defineExpose({
   focusedId,
   layerDrillId,
   showFullGraph,
+  resetNavigationAfterDocReplace,
   zoomIntoContainer,
   clearLayerDrill,
   reapplyLayerDrill,
