@@ -437,6 +437,7 @@ type InnerEdgeDraw = {
   stroke: string
   from: string
   to: string
+  overlay: boolean
 }
 
 const innerArtefactDiagramRef = ref<HTMLElement | null>(null)
@@ -491,8 +492,13 @@ const crossPackagePreviewActive = computed(() => {
   return ids !== null && ids.size > 0
 })
 
-const emphasizedInnerEdgeDraws = computed(() => innerEdgeDraws.value.filter((draw) => innerEdgeEmphasized(draw)))
-const normalInnerEdgeDraws = computed(() => innerEdgeDraws.value.filter((draw) => !innerEdgeEmphasized(draw)))
+const routedOverlayInnerEdgeDraws = computed(() => innerEdgeDraws.value.filter((draw) => draw.overlay))
+const emphasizedInnerEdgeDraws = computed(() =>
+  innerEdgeDraws.value.filter((draw) => !draw.overlay && innerEdgeEmphasized(draw)),
+)
+const normalInnerEdgeDraws = computed(() =>
+  innerEdgeDraws.value.filter((draw) => !draw.overlay && !innerEdgeEmphasized(draw)),
+)
 
 // Trigger Vue Flow layout recalculation when cross-package preview becomes active
 watch(crossPackagePreviewActive, async (newValue, oldValue) => {
@@ -541,6 +547,7 @@ function onInnerArtefactSlotLeave(artId: string) {
 function bindInnerArtefactSlotEl(artId: string, el: unknown) {
   if (el instanceof HTMLElement) innerArtefactSlotEls.set(artId, el)
   else innerArtefactSlotEls.delete(artId)
+  scheduleInnerEdgeRefreshSettled()
 }
 
 function artefactPackageId(artefactId: string): string {
@@ -558,6 +565,20 @@ type BridgeRelation = {
   to: string
   label: string
   wrapperName?: string
+}
+
+type PortEndpoint = {
+  id: string
+  side: 'left' | 'right'
+}
+
+type RoutedInnerRelation = {
+  from: string
+  to: string
+  label: string
+  wrapperName?: string
+  displayLabel?: string
+  overlay?: boolean
 }
 
 type BoundaryStubRelation = {
@@ -682,17 +703,145 @@ const crossPackageExternalEndpoints = computed(() => {
   }
 })
 
+function childPackagePortId(packageId: string, side: 'left' | 'right'): string {
+  return `__port:child:${side}:${packageId}`
+}
+
+function rootPackagePortId(side: 'left' | 'right'): string {
+  return `__port:root:${side}:${props.boxId}`
+}
+
+const childPackagePorts = computed(() => {
+  const out: PortEndpoint[] = []
+  const seen = new Set<string>()
+  for (const rel of crossPackageBridgeRelations.value) {
+    const childPackageId = rel.from
+    const localId = rel.to
+    const childToLocal = props.innerPackages.some((pkg) => pkg.id === childPackageId)
+      && props.innerArtefacts.some((art) => art.id === localId)
+    if (childToLocal) {
+      const id = childPackagePortId(childPackageId, 'right')
+      if (!seen.has(id)) {
+        seen.add(id)
+        out.push({ id, side: 'right' })
+      }
+      continue
+    }
+    if (props.innerArtefacts.some((art) => art.id === rel.from) && props.innerPackages.some((pkg) => pkg.id === rel.to)) {
+      const id = childPackagePortId(rel.to, 'left')
+      if (!seen.has(id)) {
+        seen.add(id)
+        out.push({ id, side: 'left' })
+      }
+    }
+  }
+  return out
+})
+
+const childPackagePortsById = computed(() => {
+  const out = new Map<string, PortEndpoint>()
+  for (const port of childPackagePorts.value) out.set(port.id, port)
+  return out
+})
+
+const rootPackagePorts = computed(() => {
+  const out: PortEndpoint[] = []
+  const needLeft = crossPackageBridgeRelations.value.some(
+    (rel) => props.innerPackages.some((pkg) => pkg.id === rel.from) && props.innerArtefacts.some((art) => art.id === rel.to),
+  )
+  const needRight = crossPackageBridgeRelations.value.some(
+    (rel) => props.innerArtefacts.some((art) => art.id === rel.from) && props.innerPackages.some((pkg) => pkg.id === rel.to),
+  )
+  if (needLeft) out.push({ id: rootPackagePortId('left'), side: 'left' })
+  if (needRight) out.push({ id: rootPackagePortId('right'), side: 'right' })
+  return out
+})
+
+const rootPackagePortsLeft = computed(() => rootPackagePorts.value.filter((p) => p.side === 'left'))
+const rootPackagePortsRight = computed(() => rootPackagePorts.value.filter((p) => p.side === 'right'))
+
+const routedCrossPackageBridgeRelations = computed((): readonly RoutedInnerRelation[] => {
+  if (!props.focused) {
+    return crossPackageBridgeRelations.value.map((rel) => ({
+      from: rel.from,
+      to: rel.to,
+      label: rel.label,
+      wrapperName: rel.wrapperName,
+      displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
+      overlay: false,
+    }))
+  }
+  const out: RoutedInnerRelation[] = []
+  for (const rel of crossPackageBridgeRelations.value) {
+    const fromIsChildPackage = props.innerPackages.some((pkg) => pkg.id === rel.from)
+    const toIsChildPackage = props.innerPackages.some((pkg) => pkg.id === rel.to)
+    const fromIsLocalArtefact = props.innerArtefacts.some((art) => art.id === rel.from)
+    const toIsLocalArtefact = props.innerArtefacts.some((art) => art.id === rel.to)
+
+    if (fromIsChildPackage && toIsLocalArtefact) {
+      const childPortId = childPackagePortId(rel.from, 'right')
+      const rootPortId = rootPackagePortId('left')
+      out.push({ from: rel.from, to: childPortId, label: rel.label, wrapperName: rel.wrapperName, overlay: true })
+      out.push({
+        from: childPortId,
+        to: rootPortId,
+        label: rel.label,
+        wrapperName: rel.wrapperName,
+        displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
+        overlay: true,
+      })
+      out.push({ from: rootPortId, to: rel.to, label: rel.label, wrapperName: rel.wrapperName, overlay: true })
+      continue
+    }
+
+    if (fromIsLocalArtefact && toIsChildPackage) {
+      const rootPortId = rootPackagePortId('right')
+      const childPortId = childPackagePortId(rel.to, 'left')
+      out.push({ from: rel.from, to: rootPortId, label: rel.label, wrapperName: rel.wrapperName, overlay: true })
+      out.push({
+        from: rootPortId,
+        to: childPortId,
+        label: rel.label,
+        wrapperName: rel.wrapperName,
+        displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
+        overlay: true,
+      })
+      out.push({ from: childPortId, to: rel.to, label: rel.label, wrapperName: rel.wrapperName, overlay: true })
+      continue
+    }
+
+    out.push({
+      from: rel.from,
+      to: rel.to,
+      label: rel.label,
+      wrapperName: rel.wrapperName,
+      displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
+      overlay: false,
+    })
+  }
+  return out
+})
+
 function refreshInnerArtefactEdges() {
   const root = innerArtefactDiagramRef.value
-  const rels = [
-    ...crossPackageBridgeRelations.value,
+  const rels: RoutedInnerRelation[] = [
+    ...routedCrossPackageBridgeRelations.value,
     ...crossPackageBoundaryStubRelations.value.map((rel) => ({
       from: rel.side === 'left' ? rel.externalId : rel.localId,
       to: rel.side === 'left' ? rel.localId : rel.externalId,
       label: rel.label,
       wrapperName: rel.wrapperName,
+      displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
+      overlay: false,
     })),
-    ...innerArtefactRelationList.value,
+    ...innerArtefactRelationList.value.map((rel) => ({
+      from: rel.from,
+      to: rel.to,
+      label: rel.label,
+      wrapperName: rel.wrapperName,
+      displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
+      overlay: false,
+    })),
   ]
   if (!root || !rels.length) {
     innerEdgeDraws.value = []
@@ -718,23 +867,26 @@ function refreshInnerArtefactEdges() {
       labelX: geom.labelX,
       labelY: geom.labelY,
       relationLabel: rel.label,
-      displayLabel: innerArtefactEdgeDisplayLabel(kind, rel.wrapperName),
+      displayLabel: rel.displayLabel ?? '',
       kind,
       stroke,
       from: geom.from,
       to: geom.to,
+      overlay: !!rel.overlay,
     })
   }
   innerEdgeDraws.value = out
 }
 
 let innerArtefactRo: ResizeObserver | null = null
+let innerArtefactHostRo: ResizeObserver | null = null
 let innerEdgeRaf = 0
 
 /** Matches flex / gap transitions on `.package-box__inner-artefact-*` so edges use final anchor rects. */
 const INNER_EDGE_LAYOUT_SETTLE_MS = 480
 
 let innerEdgeSettleTimer: ReturnType<typeof setTimeout> | null = null
+const innerEdgeBurstTimers = new Set<ReturnType<typeof setTimeout>>()
 
 function scheduleInnerEdgeRefresh() {
   if (innerEdgeRaf) return
@@ -750,6 +902,8 @@ function scheduleInnerEdgeRefreshSettled() {
     clearTimeout(innerEdgeSettleTimer)
     innerEdgeSettleTimer = null
   }
+  for (const timer of innerEdgeBurstTimers) clearTimeout(timer)
+  innerEdgeBurstTimers.clear()
   void nextTick(() => {
     scheduleInnerEdgeRefresh()
     requestAnimationFrame(() => {
@@ -757,6 +911,13 @@ function scheduleInnerEdgeRefreshSettled() {
       requestAnimationFrame(() => scheduleInnerEdgeRefresh())
     })
   })
+  for (const delay of [120, 240, 360, 520]) {
+    const timer = setTimeout(() => {
+      innerEdgeBurstTimers.delete(timer)
+      refreshInnerArtefactEdges()
+    }, delay)
+    innerEdgeBurstTimers.add(timer)
+  }
   innerEdgeSettleTimer = setTimeout(() => {
     innerEdgeSettleTimer = null
     refreshInnerArtefactEdges()
@@ -951,6 +1112,8 @@ onUnmounted(() => {
   ro = null
   innerArtefactRo?.disconnect()
   innerArtefactRo = null
+  innerArtefactHostRo?.disconnect()
+  innerArtefactHostRo = null
   if (innerEdgeRaf) {
     cancelAnimationFrame(innerEdgeRaf)
     innerEdgeRaf = 0
@@ -959,6 +1122,8 @@ onUnmounted(() => {
     clearTimeout(innerEdgeSettleTimer)
     innerEdgeSettleTimer = null
   }
+  for (const timer of innerEdgeBurstTimers) clearTimeout(timer)
+  innerEdgeBurstTimers.clear()
   innerHoverEdgeId.value = null
   innerHoverArtId.value = null
 })
@@ -990,6 +1155,16 @@ watch(innerArtefactDiagramRef, (el) => {
   if (el) {
     innerArtefactRo = new ResizeObserver(() => scheduleInnerEdgeRefresh())
     innerArtefactRo.observe(el)
+    scheduleInnerEdgeRefreshSettled()
+  }
+})
+
+watch(rootEl, (el) => {
+  innerArtefactHostRo?.disconnect()
+  innerArtefactHostRo = null
+  if (el) {
+    innerArtefactHostRo = new ResizeObserver(() => scheduleInnerEdgeRefreshSettled())
+    innerArtefactHostRo.observe(el)
   }
 })
 
@@ -1127,6 +1302,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       :accent="accent"
       :title="label"
       :subtitle="declaration || subtitle"
+      :allow-overflow="true"
       :title-tooltip="isScalaLeaf ? String(label ?? '') : 'Double-click to rename / edit description'"
       :pinned="pinned"
       :show-pin-tool="showPinTool"
@@ -1329,21 +1505,57 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                 <div
                   v-for="child in topLevelInnerPackages"
                   :key="child.id"
-                  :ref="(el) => bindInnerArtefactSlotEl(child.id, el)"
-                  class="package-box__inner-slot package-box__inner-slot--clickable package-box__inner-slot--inner-package"
-                  @click.stop="onInnerCardClick(child.id)"
+                  class="package-box__inner-package-row"
                 >
-                  <PackageBox
-                    embedded
-                    :box-id="child.id"
-                    :label="child.name"
-                    :subtitle="child.subtitle ?? ''"
-                    :focused="false"
-                    :pinned="false"
-                    :show-pin-tool="false"
-                    :show-color-tool="false"
-                  />
+                  <div
+                    v-if="childPackagePortsById.get(childPackagePortId(child.id, 'left'))"
+                    class="package-box__inner-package-port-anchor package-box__inner-package-port-anchor--left"
+                    aria-hidden="true"
+                  >
+                    <div
+                      :ref="(el) => bindInnerArtefactSlotEl(childPackagePortId(child.id, 'left'), el)"
+                      class="package-box__port package-box__port--left"
+                    />
+                  </div>
+                  <div
+                    :ref="(el) => bindInnerArtefactSlotEl(child.id, el)"
+                    class="package-box__inner-slot package-box__inner-slot--clickable package-box__inner-slot--inner-package"
+                    @click.stop="onInnerCardClick(child.id)"
+                  >
+                    <PackageBox
+                      embedded
+                      :box-id="child.id"
+                      :label="child.name"
+                      :subtitle="child.subtitle ?? ''"
+                      :focused="false"
+                      :pinned="false"
+                      :show-pin-tool="false"
+                      :show-color-tool="false"
+                    />
+                  </div>
+                  <div
+                    v-if="childPackagePortsById.get(childPackagePortId(child.id, 'right'))"
+                    class="package-box__inner-package-port-anchor package-box__inner-package-port-anchor--right"
+                    aria-hidden="true"
+                  >
+                    <div
+                      :ref="(el) => bindInnerArtefactSlotEl(childPackagePortId(child.id, 'right'), el)"
+                      class="package-box__port package-box__port--right"
+                    />
+                  </div>
                 </div>
+              </div>
+              <div
+                v-if="rootPackagePortsLeft.length"
+                class="package-box__root-ports package-box__root-ports--left"
+              >
+                <div
+                  v-for="port in rootPackagePortsLeft"
+                  :key="port.id"
+                  :ref="(el) => bindInnerArtefactSlotEl(port.id, el)"
+                  class="package-box__port package-box__port--left"
+                  aria-hidden="true"
+                />
               </div>
               <div
                 v-if="crossPackageExternalEndpoints.left.length"
@@ -1352,11 +1564,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                 <div
                   v-for="ep in crossPackageExternalEndpoints.left"
                   :key="ep.id"
-                  :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
                   class="package-box__external-endpoint"
                 >
-                  <span class="package-box__artefact-anchor package-box__artefact-anchor--out" aria-hidden="true" />
                   <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
+                  <span
+                    :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
+                    class="package-box__port package-box__port--external package-box__port--right"
+                    aria-hidden="true"
+                  />
                 </div>
               </div>
               <div
@@ -1472,17 +1687,32 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                 </template>
               </div>
               <div
+                v-if="rootPackagePortsRight.length"
+                class="package-box__root-ports package-box__root-ports--right"
+              >
+                <div
+                  v-for="port in rootPackagePortsRight"
+                  :key="port.id"
+                  :ref="(el) => bindInnerArtefactSlotEl(port.id, el)"
+                  class="package-box__port package-box__port--right"
+                  aria-hidden="true"
+                />
+              </div>
+              <div
                 v-if="crossPackageExternalEndpoints.right.length"
                 class="package-box__external-endpoints package-box__external-endpoints--right"
               >
                 <div
                   v-for="ep in crossPackageExternalEndpoints.right"
                   :key="ep.id"
-                  :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
                   class="package-box__external-endpoint package-box__external-endpoint--right"
                 >
                   <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
-                  <span class="package-box__artefact-anchor package-box__artefact-anchor--in" aria-hidden="true" />
+                  <span
+                    :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
+                    class="package-box__port package-box__port--external package-box__port--left"
+                    aria-hidden="true"
+                  />
                 </div>
               </div>
             </div>
@@ -1537,7 +1767,41 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                   <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--creates" />
                 </marker>
               </defs>
-              <g v-for="e in emphasizedInnerEdgeDraws" :key="e.id" class="package-box__inner-edge-group">
+              <g v-for="bridge in routedOverlayInnerEdgeDraws" :key="bridge.id" class="package-box__inner-edge-group">
+                <path
+                  :d="bridge.path"
+                  class="package-box__inner-edge-hit"
+                  fill="none"
+                  @mouseenter="onInnerEdgeEnter(bridge)"
+                  @mouseleave="onInnerEdgeLeave(bridge)"
+                />
+                <path
+                  :d="bridge.path"
+                  :class="[
+                    'package-box__inner-edge-path',
+                    'package-box__inner-edge-path--bridge',
+                    { 'package-box__inner-edge-path--emph': innerEdgeEmphasized(bridge) },
+                    bridge.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
+                    bridge.kind === 'creates' ? 'package-box__inner-edge-path--creates' : null,
+                  ]"
+                  fill="none"
+                  :style="{ stroke: bridge.stroke }"
+                  :marker-end="`url(#${innerEdgeMarkerId}-overlay-${innerEdgeMarkerSuffix(bridge.kind)})`"
+                />
+                <text
+                  v-if="bridge.displayLabel"
+                  :x="bridge.labelX"
+                  :y="bridge.labelY - 15"
+                  class="package-box__inner-edge-label package-box__inner-edge-label--bridge"
+                  :class="{ 'package-box__inner-edge-label--emph': innerEdgeEmphasized(bridge) }"
+                  :style="innerEdgeLabelSvgStyleFor(bridge)"
+                  text-anchor="middle"
+                  dominant-baseline="middle"
+                >
+                  {{ bridge.displayLabel }}
+                </text>
+              </g>
+              <g v-for="e in emphasizedInnerEdgeDraws" :key="`emph-${e.id}`" class="package-box__inner-edge-group">
                 <path
                   :d="e.path"
                   class="package-box__inner-edge-hit"
@@ -1860,11 +2124,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
           <div
             v-for="ep in crossPackageExternalEndpoints.left"
             :key="ep.id"
-            :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
             class="package-box__external-endpoint"
           >
-            <span class="package-box__artefact-anchor package-box__artefact-anchor--out" aria-hidden="true" />
             <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
+            <span
+              :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
+              class="package-box__port package-box__port--external package-box__port--right"
+              aria-hidden="true"
+            />
           </div>
         </div>
         <div
@@ -1914,11 +2181,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
           <div
             v-for="ep in crossPackageExternalEndpoints.right"
             :key="ep.id"
-            :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
             class="package-box__external-endpoint package-box__external-endpoint--right"
           >
             <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
-            <span class="package-box__artefact-anchor package-box__artefact-anchor--in" aria-hidden="true" />
+            <span
+              :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
+              class="package-box__port package-box__port--external package-box__port--left"
+              aria-hidden="true"
+            />
           </div>
         </div>
       </div>
@@ -2342,7 +2612,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   padding: 0;
   border: 0;
   background: transparent;
-  overflow: auto;
+  overflow: visible;
 }
 .package-box--focused-layout .package-box__inner-diagram {
   padding-bottom: 0;
@@ -2356,6 +2626,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  overflow: visible;
   transition:
     flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     min-height 0.45s cubic-bezier(0.4, 0, 0.2, 1);
@@ -2423,6 +2694,10 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   stroke-width: 2.75;
   opacity: 1;
 }
+.package-box__inner-edge-path--bridge {
+  stroke-width: 2.15;
+  opacity: 0.96;
+}
 .package-box__inner-edge-marker-shape {
   fill: var(--box-accent, #64748b);
 }
@@ -2464,6 +2739,9 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   opacity: 1 !important;
   font-weight: 600 !important;
 }
+.package-box__inner-edge-label--bridge {
+  opacity: 0.98;
+}
 .package-box__inner-artefact-cols {
   position: relative;
   z-index: 0;
@@ -2478,6 +2756,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   min-width: 0;
   width: 100%;
   padding: 4px 0 10px;
+  overflow: visible;
   transition:
     flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     min-height 0.45s cubic-bezier(0.4, 0, 0.2, 1),
@@ -2517,39 +2796,134 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   align-items: stretch;
   justify-content: stretch;
   gap: 10px;
+  overflow: visible;
+}
+.package-box__inner-package-row {
+  position: relative;
+  flex: 1 1 0;
+  min-height: clamp(132px, 24cqh, 240px);
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 0;
+  overflow: visible;
+}
+.package-box__inner-package-port-anchor {
+  position: absolute;
+  top: 50%;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 2;
+}
+.package-box__inner-package-port-anchor--left {
+  left: 0;
+}
+.package-box__inner-package-port-anchor--right {
+  right: 0;
 }
 .package-box__inner-slot--inner-package {
   flex: 1 1 0;
-  min-height: clamp(132px, 24cqh, 240px);
+  min-height: 0;
   height: 100%;
+  overflow: visible;
 }
 .package-box__inner-slot--inner-package > .package-box.package-box--embedded {
   min-height: 100%;
 }
+.package-box__root-ports {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+  z-index: 2;
+}
+.package-box__root-ports--left {
+  left: 0;
+}
+.package-box__root-ports--right {
+  right: 0;
+}
+.package-box__port {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--box-accent, #64748b) 22%, #ffffff);
+  border: 1.5px solid color-mix(in srgb, var(--box-accent, #64748b) 76%, #0f172a);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.92);
+  opacity: 0.94;
+  z-index: 2;
+}
+.package-box__port--external {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.package-box__port--left {
+  align-self: center;
+}
+.package-box__port--right {
+  align-self: center;
+}
+.package-box__inner-package-port-anchor > .package-box__port--left {
+  transform: translate(-50%, -50%);
+}
+.package-box__inner-package-port-anchor > .package-box__port--right {
+  transform: translate(50%, -50%);
+}
+.package-box__root-ports > .package-box__port--left {
+  transform: translate(-50%, 0);
+}
+.package-box__root-ports > .package-box__port--right {
+  transform: translate(50%, 0);
+}
 .package-box__external-endpoints {
-  flex: 0 0 96px;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  overflow: visible;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 10px;
-  align-self: stretch;
   min-width: 0;
+  z-index: 2;
+  pointer-events: none;
 }
 .package-box__external-endpoints--left {
+  left: 0;
   align-items: flex-end;
 }
 .package-box__external-endpoints--right {
+  right: 0;
   align-items: flex-start;
 }
 .package-box__external-endpoint {
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
+  justify-content: flex-start;
+  gap: 3px;
   min-width: 0;
+  pointer-events: none;
+}
+.package-box__external-endpoint--right {
+  justify-content: flex-start;
 }
 .package-box__external-endpoint-chip {
   max-width: 88px;
-  padding: 3px 8px;
+  padding: 3px 7px;
   border: 1px dashed color-mix(in srgb, var(--box-accent) 24%, rgb(148 163 184));
   border-radius: 999px;
   background: rgb(255 255 255 / 0.92);
@@ -2560,6 +2934,21 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  position: relative;
+  z-index: 2;
+  transform: translateY(-1px);
+}
+.package-box__external-endpoints--left .package-box__external-endpoint-chip {
+  transform: translate(14px, -1px);
+}
+.package-box__external-endpoints--right .package-box__external-endpoint-chip {
+  transform: translate(-14px, -1px);
+}
+.package-box__external-endpoints--left .package-box__port--external {
+  transform: translate(-50%, 0);
+}
+.package-box__external-endpoints--right .package-box__port--external {
+  transform: translate(50%, 0);
 }
 .package-box__inner-artefact-col {
   display: flex;
@@ -2571,6 +2960,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   min-width: 0;
   min-height: min-content;
   max-width: min(100%, 220px);
+  overflow: visible;
   transition:
     flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     max-width 0.45s cubic-bezier(0.4, 0, 0.2, 1),
@@ -2608,6 +2998,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  overflow: visible;
 }
 .package-box__inner-slot > .package-box {
   flex: 1 1 0;

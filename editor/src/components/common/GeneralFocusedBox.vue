@@ -16,6 +16,7 @@ defineProps<{
   issueLevel?: 'none' | 'minor' | 'major' | 'blocking'
   pinTitle: string
   pinAriaLabel: string
+  allowOverflow?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -34,6 +35,7 @@ const emit = defineEmits<{
       'general-focused-box--pin-only': showPinTool && !showColorTool,
       'general-focused-box--has-metrics':
         hasCoverage || technicalDebtPercent != null || issueCount != null,
+      'general-focused-box--allow-overflow': allowOverflow,
     }"
     :style="{ '--box-accent': accent }"
   >
@@ -132,6 +134,10 @@ const emit = defineEmits<{
     outline 0.45s ease;
 }
 
+.general-focused-box--allow-overflow {
+  overflow: visible;
+}
+
 .general-focused-box__shell {
   flex: 1 1 0;
   min-height: 0;
@@ -170,6 +176,10 @@ const emit = defineEmits<{
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.general-focused-box--allow-overflow .general-focused-box__body {
+  overflow: visible;
 }
 
 .general-focused-box__tools {

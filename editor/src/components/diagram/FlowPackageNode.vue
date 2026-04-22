@@ -8,7 +8,7 @@
  * links yet — re-add the `tritonEmitLinkAction` injection here when that changes).
  */
 import { useVueFlow } from '@vue-flow/core'
-import { computed, inject, nextTick, ref, watch } from 'vue'
+import { computed, inject, nextTick, onUnmounted, ref, watch } from 'vue'
 import { boxColorForId, nextNamedBoxColor } from '../../graph/boxColors'
 import type { ModuleAnchorTops } from '../../graph/layoutDependencyLayers'
 import {
@@ -391,6 +391,13 @@ watch(
     await refreshOwnNodeDimensionsSettled()
   },
 )
+
+onUnmounted(() => {
+  if (nodeDimensionSettleTimer != null) {
+    clearTimeout(nodeDimensionSettleTimer)
+    nodeDimensionSettleTimer = null
+  }
+})
 </script>
 
 <template>
