@@ -330,6 +330,14 @@ const innerArtefactRelationList = computed((): readonly TritonInnerArtefactRelat
   )
 })
 
+/** Cross-package relations currently visible in the UI after applying the relation-type checkboxes. */
+const visibleCrossArtefactRelations = computed((): readonly TritonInnerArtefactRelationSpec[] => {
+  const visibility = relationTypeVisibilityRef.value
+  return (props.crossArtefactRelations ?? []).filter(
+    (rel) => !shouldHideEdgeForRelationFilter({ label: rel.label }, visibility),
+  )
+})
+
 function innerSimulatedMetrics(id: string) {
   return simulatedMetricsForBox(id)
 }
@@ -616,7 +624,7 @@ const crossPackageBridgeRelations = computed((): readonly BridgeRelation[] => {
 
   const out: BridgeRelation[] = []
   const seen = new Set<string>()
-  for (const rel of props.crossArtefactRelations ?? []) {
+  for (const rel of visibleCrossArtefactRelations.value) {
     const fromLocal = localArtefactIds.has(rel.from)
     const toLocal = localArtefactIds.has(rel.to)
     if (fromLocal === toLocal) continue
@@ -655,7 +663,7 @@ const crossPackageBoundaryStubRelations = computed((): readonly BoundaryStubRela
 
   const out: BoundaryStubRelation[] = []
   const seen = new Set<string>()
-  for (const rel of props.crossArtefactRelations ?? []) {
+  for (const rel of visibleCrossArtefactRelations.value) {
     const fromLocal = localArtefactIds.has(rel.from)
     const toLocal = localArtefactIds.has(rel.to)
     if (fromLocal === toLocal) continue
@@ -2876,16 +2884,16 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   align-self: center;
 }
 .package-box__inner-package-port-anchor > .package-box__port--left {
-  transform: translate(-50%, -50%);
+  transform: translate(125%, -50%);
 }
 .package-box__inner-package-port-anchor > .package-box__port--right {
-  transform: translate(50%, -50%);
+  transform: translate(-125%, -50%);
 }
 .package-box__root-ports > .package-box__port--left {
-  transform: translate(-50%, 0);
+  transform: translate(125%, 0);
 }
 .package-box__root-ports > .package-box__port--right {
-  transform: translate(50%, 0);
+  transform: translate(-125%, 0);
 }
 .package-box__external-endpoints {
   position: absolute;
@@ -2945,10 +2953,10 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   transform: translate(-14px, -1px);
 }
 .package-box__external-endpoints--left .package-box__port--external {
-  transform: translate(-50%, 0);
+  transform: translate(125%, 0);
 }
 .package-box__external-endpoints--right .package-box__port--external {
-  transform: translate(50%, 0);
+  transform: translate(-125%, 0);
 }
 .package-box__inner-artefact-col {
   display: flex;
