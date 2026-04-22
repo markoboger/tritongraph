@@ -20,6 +20,42 @@ async function viewportZoom(page: Page): Promise<number> {
   })
 }
 
+async function stackPackageHeaderState(page: Page, id = 'stack-package-1'): Promise<{
+  compactHeader: boolean
+  stackTopLeft: boolean
+  titleFound: boolean
+  subtitleFound: boolean
+  titleVisible: boolean
+  subtitleVisible: boolean
+}> {
+  return page.evaluate((nodeId) => {
+    const node = document.querySelector(`[data-testid="diagram-node-${nodeId}"]`) as HTMLElement | null
+    const box = node?.querySelector('.package-box') as HTMLElement | null
+    const title = box?.querySelector('.title') as HTMLElement | null
+    const subtitle = box?.querySelector('.subtitle') as HTMLElement | null
+    const nodeRect = node?.getBoundingClientRect()
+    const titleRect = title?.getBoundingClientRect()
+    const subtitleRect = subtitle?.getBoundingClientRect()
+    const isVisible = (rect?: DOMRect | null) =>
+      !!rect &&
+      rect.width > 2 &&
+      rect.height > 2 &&
+      !!nodeRect &&
+      rect.left >= nodeRect.left - 1 &&
+      rect.top >= nodeRect.top - 1 &&
+      rect.right <= nodeRect.right + 1 &&
+      rect.bottom <= nodeRect.bottom + 1
+    return {
+      compactHeader: !!box?.classList.contains('package-box--compact-header'),
+      stackTopLeft: !!box?.classList.contains('package-box--stack-top-left'),
+      titleFound: !!title,
+      subtitleFound: !!subtitle,
+      titleVisible: isVisible(titleRect),
+      subtitleVisible: isVisible(subtitleRect),
+    }
+  }, id)
+}
+
 async function rootPackageViewportFill(page: Page): Promise<{ widthRatio: number; heightRatio: number }> {
   return page.evaluate(() => {
     const wrap = document.querySelector('.flow-wrap') as HTMLElement | null
@@ -363,6 +399,44 @@ test.describe('dojo fixtures', () => {
     expect(zoomAt12).toBeGreaterThan(0.98)
     expect(zoomAt13).toBeGreaterThan(0.98)
     expect(Math.abs(zoomAt13 - zoomAt12)).toBeLessThan(0.03)
+  })
+
+  test('package stacking dojo keeps title and subtitle visible from depth 7 through 14', async ({ page }) => {
+    await page.goto('/?tab=dojo:package-stacking&dojoDepth=7')
+
+    for (let depth = 7; depth <= 14; depth++) {
+      await page.getByLabel('Package stacking count').fill(String(depth))
+      await expect(page.getByLabel('Package stacking count')).toHaveValue(String(depth))
+
+      const header = await stackPackageHeaderState(page)
+      expect(header.titleFound, `stack-package-1 should have a title at depth ${depth}`).toBe(true)
+      expect(header.subtitleFound, `stack-package-1 should have a subtitle at depth ${depth}`).toBe(true)
+      expect(header.titleVisible, `stack-package-1 title should stay visible at depth ${depth}`).toBe(true)
+      expect(header.subtitleVisible, `stack-package-1 subtitle should stay visible at depth ${depth}`).toBe(true)
+
+      if (depth >= 8) {
+        expect(
+          header.stackTopLeft || header.compactHeader,
+          `stack-package-1 should have switched away from centered-stack by depth ${depth}`,
+        ).toBe(true)
+      }
+    }
+  })
+
+  test('package tree dojo exposes a node-count slider and regenerates the tree', async ({ page }) => {
+    await page.goto('/?tab=dojo:package-tree&dojoDepth=1')
+
+    await expect(page.getByRole('tab', { name: /package-tree\.ilograph\.yaml/i })).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Dojo' })).toBeVisible()
+    await expect(page.getByLabel('Package tree node count')).toHaveValue('1')
+    await expect(page.getByText('tree-package-1', { exact: true })).toBeVisible()
+    await expect(page.locator('.vue-flow__edge-path')).toHaveCount(0)
+
+    await page.getByLabel('Package tree node count').fill('128')
+
+    await expect(page.getByLabel('Package tree node count')).toHaveValue('128')
+    await expect.poll(() => diagramNodeCount(page)).toBeGreaterThanOrEqual(128)
+    await expect(page.locator('.vue-flow__edge-path')).toHaveCount(127)
   })
 
   test('outermost nesting package keeps filling the viewport across depths and resizes', async ({ page }) => {

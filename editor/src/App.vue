@@ -182,6 +182,7 @@ const sidePanelTab = ref<'yaml' | 'prompt' | 'templates' | 'dojo'>('yaml')
 const PACKAGE_NESTING_DOJO_ID = 'package-nesting'
 const PACKAGE_STACKING_DOJO_ID = 'package-stacking'
 const PACKAGE_IMPORT_CHAIN_DOJO_ID = 'package-import-chain'
+const PACKAGE_TREE_DOJO_ID = 'package-tree'
 
 function clampDojoDepth(raw: number): number {
   if (!Number.isFinite(raw)) return 4
@@ -193,9 +194,15 @@ function clampDojoStackCount(raw: number): number {
   return Math.min(40, Math.max(1, Math.round(raw)))
 }
 
+function clampDojoTreeCount(raw: number): number {
+  if (!Number.isFinite(raw)) return 8
+  return Math.min(128, Math.max(1, Math.round(raw)))
+}
+
 const dojoNestingDepth = ref(clampDojoDepth(initialRequestedDojoDepth))
 const dojoStackCount = ref(clampDojoStackCount(initialRequestedDojoDepth))
 const dojoImportChainLength = ref(clampDojoStackCount(initialRequestedDojoDepth))
+const dojoTreeCount = ref(clampDojoTreeCount(initialRequestedDojoDepth))
 
 /** All bundled examples (`build.sbt` files) across every registered examples-root. */
 const sbtExamplesAll = listSbtExamples()
@@ -221,6 +228,7 @@ const dojoExamples = computed(() => [
   { id: PACKAGE_NESTING_DOJO_ID, title: 'Package nesting' },
   { id: PACKAGE_STACKING_DOJO_ID, title: 'Package stacking' },
   { id: PACKAGE_IMPORT_CHAIN_DOJO_ID, title: 'Package import chain' },
+  { id: PACKAGE_TREE_DOJO_ID, title: 'Package tree' },
   ...dojoFixtures.map((fixture) => ({ id: fixture.id, title: fixture.title })),
 ])
 
@@ -829,6 +837,44 @@ function buildPackageStackingDojoDocument(count: number): IlographDocument {
   }
 }
 
+function buildPackageTreeDojoDocument(count: number): IlographDocument {
+  const n = clampDojoTreeCount(count)
+  const resources = Array.from({ length: n }, (_, index) => {
+    const level = index + 1
+    const depth = Math.floor(Math.log2(level)) + 1
+    return {
+      id: `tree-package-${level}`,
+      name: `tree-package-${level}`,
+      subtitle: `depth ${depth}`,
+      'x-triton-package-scope': true,
+      'x-triton-preferred-leaf-height': 52,
+      ...(level === 1 ? { 'x-triton-package-language': 'scala' } : {}),
+    }
+  })
+  const relations = Array.from({ length: n }, (_, index) => {
+    const parent = index + 1
+    const left = parent * 2
+    const right = left + 1
+    const edges: Array<{ from: string; to: string; label: string }> = []
+    if (left <= n) edges.push({ from: `tree-package-${parent}`, to: `tree-package-${left}`, label: 'imports' })
+    if (right <= n) edges.push({ from: `tree-package-${parent}`, to: `tree-package-${right}`, label: 'imports' })
+    return edges
+  }).flat()
+  return {
+    description:
+      'Dojo for a breadth-first binary package tree. Increase the node count to inspect how package-scope containers scale across both depth columns and sibling stacks at once.',
+    resources,
+    perspectives: [
+      {
+        id: 'dependencies',
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        relations,
+      },
+    ],
+  }
+}
+
 async function loadPackageNestingDojo(depth: number) {
   const normalizedDepth = clampDojoDepth(depth)
   dojoNestingDepth.value = normalizedDepth
@@ -873,6 +919,22 @@ async function loadPackageImportChainDojo(chainLen: number, prevLen?: number) {
   status.value = `Loaded dojo fixture ${PACKAGE_IMPORT_CHAIN_DOJO_ID} with chain length ${n}.`
 }
 
+async function loadPackageTreeDojo(nodeCount: number, prevCount?: number) {
+  const n = clampDojoTreeCount(nodeCount)
+  const treeShrunk = typeof prevCount === 'number' && n < prevCount
+  dojoTreeCount.value = n
+  sourcePath.value = `dojo/${PACKAGE_TREE_DOJO_ID}.ilograph.yaml`
+  await applyDoc(
+    stringifyIlographYaml(buildPackageTreeDojoDocument(n)),
+    `${PACKAGE_TREE_DOJO_ID}.ilograph.yaml`,
+    false,
+    { moduleNodeType: 'package', ...(treeShrunk ? { recenterStackShrink: true } : {}) },
+  )
+  if (activeTab.value) activeTab.value.dojoDepth = n
+  syncUrlFromState()
+  status.value = `Loaded dojo fixture ${PACKAGE_TREE_DOJO_ID} with ${n} packages.`
+}
+
 async function loadDojoFixture(id: string) {
   if (id === PACKAGE_NESTING_DOJO_ID) {
     await loadPackageNestingDojo(dojoNestingDepth.value)
@@ -884,6 +946,10 @@ async function loadDojoFixture(id: string) {
   }
   if (id === PACKAGE_IMPORT_CHAIN_DOJO_ID) {
     await loadPackageImportChainDojo(dojoImportChainLength.value)
+    return
+  }
+  if (id === PACKAGE_TREE_DOJO_ID) {
+    await loadPackageTreeDojo(dojoTreeCount.value)
     return
   }
   const fixture = getDojoFixture(id)
@@ -906,6 +972,8 @@ async function openDojoTab(id: string): Promise<void> {
         ? `${PACKAGE_STACKING_DOJO_ID}.ilograph.yaml`
         : id === PACKAGE_IMPORT_CHAIN_DOJO_ID
           ? `${PACKAGE_IMPORT_CHAIN_DOJO_ID}.ilograph.yaml`
+          : id === PACKAGE_TREE_DOJO_ID
+            ? `${PACKAGE_TREE_DOJO_ID}.ilograph.yaml`
           : fixture?.fileName ?? `${id}.ilograph.yaml`
   await openOrActivateTab(
     { key: `dojo:${id}`, title, iconUrl: cubeIconUrl },
@@ -914,7 +982,8 @@ async function openDojoTab(id: string): Promise<void> {
   if (
     id === PACKAGE_NESTING_DOJO_ID ||
     id === PACKAGE_STACKING_DOJO_ID ||
-    id === PACKAGE_IMPORT_CHAIN_DOJO_ID
+    id === PACKAGE_IMPORT_CHAIN_DOJO_ID ||
+    id === PACKAGE_TREE_DOJO_ID
   ) {
     showYamlEditor.value = true
     sidePanelTab.value = 'dojo'
@@ -956,6 +1025,9 @@ function syncUrlFromState(): void {
   }
   if (key === `dojo:${PACKAGE_IMPORT_CHAIN_DOJO_ID}`) {
     params.set('dojoDepth', String(clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoImportChainLength.value)))
+  }
+  if (key === `dojo:${PACKAGE_TREE_DOJO_ID}`) {
+    params.set('dojoDepth', String(clampDojoTreeCount(activeTab.value?.dojoDepth ?? dojoTreeCount.value)))
   }
 
   const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}${window.location.hash}`
@@ -1848,7 +1920,8 @@ const showDojoPanel = computed(
   () =>
     activeDojoId.value === PACKAGE_NESTING_DOJO_ID ||
     activeDojoId.value === PACKAGE_STACKING_DOJO_ID ||
-    activeDojoId.value === PACKAGE_IMPORT_CHAIN_DOJO_ID,
+    activeDojoId.value === PACKAGE_IMPORT_CHAIN_DOJO_ID ||
+    activeDojoId.value === PACKAGE_TREE_DOJO_ID,
 )
 
 watch(activeTabId, () => {
@@ -1860,6 +1933,10 @@ watch(activeTabId, () => {
   }
   if (activeDojoId.value === PACKAGE_IMPORT_CHAIN_DOJO_ID) {
     dojoImportChainLength.value = clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoImportChainLength.value)
+    return
+  }
+  if (activeDojoId.value === PACKAGE_TREE_DOJO_ID) {
+    dojoTreeCount.value = clampDojoTreeCount(activeTab.value?.dojoDepth ?? dojoTreeCount.value)
   }
 })
 
@@ -1900,6 +1977,20 @@ watch(dojoImportChainLength, (len, prev) => {
   if (normalized === prev) return
   if (activeDojoId.value !== PACKAGE_IMPORT_CHAIN_DOJO_ID) return
   void loadPackageImportChainDojo(normalized, prev).then(() => {
+    snapshotActiveTab()
+    syncUrlFromState()
+  })
+})
+
+watch(dojoTreeCount, (count, prev) => {
+  const normalized = clampDojoTreeCount(count)
+  if (normalized !== count) {
+    dojoTreeCount.value = normalized
+    return
+  }
+  if (normalized === prev) return
+  if (activeDojoId.value !== PACKAGE_TREE_DOJO_ID) return
+  void loadPackageTreeDojo(normalized, prev).then(() => {
     snapshotActiveTab()
     syncUrlFromState()
   })
@@ -2344,6 +2435,32 @@ onUnmounted(() => {
               <div class="dojo-panel__scale">
                 <span>1</span>
                 <span>40</span>
+              </div>
+            </div>
+            <div v-else-if="activeDojoId === PACKAGE_TREE_DOJO_ID" class="dojo-panel">
+              <div class="dojo-panel__header">
+                <div class="dojo-panel__title">Package tree</div>
+                <div class="dojo-panel__meta">Node count {{ dojoTreeCount }}</div>
+              </div>
+              <p class="dojo-panel__hint">
+                Each package imports up to two children in a breadth-first tree, so the diagram grows in both width and height at the same time.
+              </p>
+              <label class="dojo-panel__control" for="dojo-package-tree-count">
+                <span class="dojo-panel__label">Node count</span>
+                <input
+                  id="dojo-package-tree-count"
+                  v-model.number="dojoTreeCount"
+                  class="dojo-panel__slider"
+                  type="range"
+                  min="1"
+                  max="128"
+                  step="1"
+                  aria-label="Package tree node count"
+                />
+              </label>
+              <div class="dojo-panel__scale">
+                <span>1</span>
+                <span>128</span>
               </div>
             </div>
           </div>
