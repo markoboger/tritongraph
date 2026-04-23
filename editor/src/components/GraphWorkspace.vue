@@ -432,7 +432,7 @@ const diagramModel = computed(() => {
   return buildDiagramRootModel(nodes.value, edges.value, { x: 0, y: 0, width: vp.width, height: vp.height })
 })
 
-async function relayoutViewport(opts?: { skipDrillReapply?: boolean }) {
+async function relayoutViewport(opts?: { skipDrillReapply?: boolean; preserveFitToViewport?: boolean }) {
   if (!nodes.value.length) return
   await nextTick()
   await doubleRaf()
@@ -461,7 +461,10 @@ async function relayoutViewport(opts?: { skipDrillReapply?: boolean }) {
     if (hasSingletonRootPackageScopeOverview()) {
       await fitOverviewSingletonPackageScope(0)
     } else {
-      await fitToViewport({ duration: 0 })
+      await fitToViewport({
+        duration: 0,
+        preserveViewportPosition: opts?.preserveFitToViewport === true,
+      })
     }
   }
 }
@@ -469,7 +472,7 @@ async function relayoutViewport(opts?: { skipDrillReapply?: boolean }) {
 provide('tritonRelayoutViewport', relayoutViewport)
 
 /** Re-run depth layout after layer drill-out so snapshot geometry does not shrink pinned modules. */
-provide('tritonAfterLayerDrillOut', relayoutViewport)
+provide('tritonAfterLayerDrillOut', () => relayoutViewport({ preserveFitToViewport: true }))
 
 /**
  * Update a node's `data` directly on the v-model array. `useVueFlow().updateNodeData(...)`
@@ -956,11 +959,17 @@ function resetNavigationAfterDocReplace() {
  * zoom-out-then-correct). Vue Flow’s MiniMap uses a translucent viewport mask (`maskColor`);
  * the vertical rail slider follows that same transparent aesthetic.
  *
- * Stacking dojo: when {@link opts.recenterStackShrink} is set (fewer top-level packages than
- * before), re-center the camera — vertical-rail mode uses the middle of the allowed y-range;
- * non-rail mode uses a slightly roomier `fitView` padding so the graph is not left offset.
+ * Stacking dojo: when {@link opts.recenterStackShrink} is **strictly** `true` (fewer top-level
+ * packages than before), align the camera to the **top** of the laid-out bounds (`tyTop`) so the
+ * first column stays pinned under the chrome; vertical-rail slider is set to `0` (top). Uses
+ * `=== true` so incidental truthy values never trigger this path (breaks nesting dojo layout tests).
  */
-async function fitToViewport(opts?: { duration?: number; recenterStackShrink?: boolean }) {
+async function fitToViewport(opts?: {
+  duration?: number
+  recenterStackShrink?: boolean
+  /** When true, keep the current pan position inside updated pan rails (used after layer-drill-out). */
+  preserveViewportPosition?: boolean
+}) {
   await nextTick()
   await doubleRaf()
   const duration = opts?.duration ?? 220
@@ -1039,9 +1048,17 @@ async function fitToViewport(opts?: { duration?: number; recenterStackShrink?: b
   // (xMin+xMax)/2 == txCenter and (yMin+yMax)/2 == tyCenter — always, regardless of overflow.
   const txCenter = (xMin + xMax) / 2
   const tyCenter = (yMin + yMax) / 2
+  const stackShrinkRecenter = opts?.recenterStackShrink === true
+
+  const preserveViewportPosition = opts?.preserveViewportPosition === true
 
   if (!useHorizontalPanRail && !useVerticalPanRail) {
     resetVerticalScrollChrome()
+    if (preserveViewportPosition) {
+      const cur = viewport.value ?? { x: 0, y: 0, zoom: 1 }
+      await setViewport({ x: cur.x, y: cur.y, zoom: cur.zoom }, { duration })
+      return
+    }
     await setViewport({ x: txCenter, y: tyCenter, zoom: 1 }, { duration })
     return
   }
@@ -1060,17 +1077,33 @@ async function fitToViewport(opts?: { duration?: number; recenterStackShrink?: b
   panBounds = { xMin, xMax, yMin, yMax, zoom }
   horizontalScrollChrome.value = useHorizontalPanRail
   verticalScrollChrome.value = useVerticalPanRail
-  horizontalScrollSlider.value = opts?.recenterStackShrink ? 500 : hSlider
-  verticalScrollSlider.value = opts?.recenterStackShrink ? 500 : vSlider
+  horizontalScrollSlider.value = preserveViewportPosition ? hSlider : stackShrinkRecenter ? 500 : hSlider
+  verticalScrollSlider.value = preserveViewportPosition ? vSlider : stackShrinkRecenter ? 0 : vSlider
   // Thumb size = fraction of diagram visible at once in each axis.
   verticalThumbFraction.value = vSpan > 0 ? vp.height / (vp.height + vSpan) : 1
   horizontalThumbFraction.value = hSpan > 0 ? vp.width / (vp.width + hSpan) : 1
 
   setTranslateExtent(translateExtentForPan(xMin, xMax, yMin, yMax))
-  const finalX = opts?.recenterStackShrink ? txCenter : startX
-  const finalY = opts?.recenterStackShrink ? tyCenter : startY
+  const finalX = stackShrinkRecenter ? txCenter : startX
+  const finalY = stackShrinkRecenter ? tyTop : startY
   // Non-panning axis always centers; panning axis uses preserved (or recentered) position.
-  await setViewport({ x: useHorizontalPanRail ? finalX : txCenter, y: useVerticalPanRail ? finalY : tyCenter, zoom }, { duration })
+  const xViewport = preserveViewportPosition
+    ? useHorizontalPanRail
+      ? startX
+      : txCenter
+    : useHorizontalPanRail
+      ? finalX
+      : txCenter
+  const yViewport = preserveViewportPosition
+    ? useVerticalPanRail
+      ? startY
+      : tyCenter
+    : stackShrinkRecenter
+      ? tyTop
+      : useVerticalPanRail
+        ? finalY
+        : tyCenter
+  await setViewport({ x: xViewport, y: yViewport, zoom }, { duration })
 }
 
 function onVerticalScrollSliderInput(ev: Event) {

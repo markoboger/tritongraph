@@ -216,6 +216,11 @@ const focusedLegacyCompartments = computed<readonly BoxCompartment[]>(() => {
 })
 
 const isScalaLeaf = computed(() => props.leafVisual === 'artefact')
+/** Stacking / import-chain / tree dojos in `App.vue` — used for compact thresholds + tall icon-slot CSS. */
+const shortBandDojoPackage = computed(() => {
+  const id = String(props.boxId ?? '')
+  return id.startsWith('stack-package-') || id.startsWith('import-link-') || id.startsWith('tree-package-')
+})
 const preferCenteredStackLayout = computed(
   () =>
     !props.embedded &&
@@ -1092,9 +1097,9 @@ function measure() {
     if (!root) return
     const w = root.clientWidth
     const h = root.clientHeight
-    /** Only the shortest rows use micro-compact; normal stacked leaf heights stay centered. */
-    const STACK_ULTRA_COMPACT_ENTER = 58
-    const STACK_ULTRA_COMPACT_EXIT = 70
+    const narrowBandPreferred = shortBandDojoPackage.value
+    const STACK_ULTRA_COMPACT_ENTER = narrowBandPreferred ? 118 : 58
+    const STACK_ULTRA_COMPACT_EXIT = narrowBandPreferred ? 132 : 70
     if (compactHeaderLayout.value) {
       compactHeaderLayout.value = h <= STACK_ULTRA_COMPACT_EXIT
     } else {
@@ -2093,6 +2098,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       'package-box--editing': editing,
       'package-box--has-metrics': true,
       'package-box--cross-preview': crossPackagePreviewActive,
+      'package-box--short-band-dojo': shortBandDojoPackage,
       'package-box--centered-stack': preferCenteredStackLayout,
       'package-box--compact-header': compactHeaderLayout,
       'package-box--stack-top-left': stackTopLeftLayout,
@@ -2695,6 +2701,20 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 
 .package-box--centered-stack .lang-icon-slot {
   margin-bottom: clamp(8px, 1.7cqh, 18px);
+}
+
+/**
+ * Tall stacked leaves (e.g. stacking dojo count → 1): scoped to short-band fixtures only — the same
+ * `height:auto` rule on generic nested `centered-stack` packages disturbed layout measurement in
+ * the nesting dojo e2e (`centered-stack` class dropped).
+ */
+.package-box--short-band-dojo.package-box--centered-stack:not(.package-box--compact-header):not(
+    .package-box--stack-top-left
+  )
+  .lang-icon-slot {
+  height: auto;
+  max-height: min(160px, min(30cqw, 28cqh));
+  align-items: flex-start;
 }
 
 .package-box--centered-stack .package-box__body {

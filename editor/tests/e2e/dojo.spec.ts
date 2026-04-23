@@ -388,6 +388,35 @@ test.describe('dojo fixtures', () => {
       .toBeGreaterThan(0)
   })
 
+  test('package stacking dojo pins stack-package-1 to the top when count shrinks to one', async ({ page }) => {
+    await page.setViewportSize({ width: 1120, height: 760 })
+    await page.goto('/?tab=dojo:package-stacking&dojoDepth=8')
+    await expect(page.getByLabel('Package stacking count')).toHaveValue('8')
+    await page.getByLabel('Package stacking count').fill('1')
+    await expect(page.getByLabel('Package stacking count')).toHaveValue('1')
+    await expect(page.getByText('stack-package-1', { exact: true })).toBeVisible()
+
+    const metrics = await page.evaluate(() => {
+      const wrap = document.querySelector('.flow-wrap') as HTMLElement | null
+      const node = document.querySelector('[data-testid="diagram-node-stack-package-1"]') as HTMLElement | null
+      const box = node?.querySelector('.package-box') as HTMLElement | null
+      const iconSlot = box?.querySelector('.lang-icon-slot') as HTMLElement | null
+      const icon = box?.querySelector('.lang-icon-slot .lang-svg') as HTMLElement | null
+      const wrapRect = wrap?.getBoundingClientRect()
+      const nodeRect = node?.getBoundingClientRect()
+      const slotRect = iconSlot?.getBoundingClientRect()
+      const iconRect = icon?.getBoundingClientRect()
+      return {
+        nodeTopInWrap: wrapRect && nodeRect ? nodeRect.top - wrapRect.top : 9999,
+        gapIconTopMinusNodeTop: nodeRect && iconRect ? iconRect.top - nodeRect.top : 9999,
+        iconBandSlackTop: iconRect && slotRect ? iconRect.top - slotRect.top : 9999,
+      }
+    })
+    expect(metrics.nodeTopInWrap).toBeLessThan(72)
+    expect(metrics.gapIconTopMinusNodeTop).toBeLessThan(140)
+    expect(metrics.iconBandSlackTop).toBeLessThan(24)
+  })
+
   test('package stacking dojo spends stack spacing before zooming out at depth 13', async ({ page }) => {
     await page.goto('/?tab=dojo:package-stacking&dojoDepth=12')
 
