@@ -1,0 +1,264 @@
+description: |
+  Large fintech-platform monorepo — 60 modules across 5 dependency layers.
+
+  Purpose: stress-test the drill-in interaction. Clicking any module expands it to fill
+  its column; the runtime must classify every sibling, determine which columns contain
+  pinned modules, and hide the rest. At this scale fix #7 (O(n×k) → O(n+k) pin checks)
+  makes the drill-in visibly snappier: ~60 nodes × ~40 region participants drops from
+  ~7 µs to ~0.8 µs per drill call.
+
+  Architecture: a layered sbt monorepo for a hypothetical fintech product.
+    Depth 0 — core libraries (no deps inside the diagram)
+    Depth 1 — platform layer (depends on core)
+    Depth 2 — domain model (depends on platform)
+    Depth 3 — services (depends on domain)
+    Depth 4 — gateways + workers (depends on services)
+
+  Try clicking a module to focus it, then Shift-click another to pin it alongside.
+
+resources:
+  # depth 0 — core (10)
+  - name: core-types
+    subtitle: shared value types and enumerations
+  - name: core-utils
+    subtitle: collection helpers and retry logic
+  - name: core-crypto
+    subtitle: hashing, signing, key derivation
+  - name: core-db
+    subtitle: JDBC pool + migration runner
+  - name: core-http
+    subtitle: HTTP client + server primitives
+  - name: core-queue
+    subtitle: message broker abstractions
+  - name: core-metrics
+    subtitle: Prometheus instrumentation
+  - name: core-tracing
+    subtitle: OpenTelemetry span helpers
+  - name: core-config
+    subtitle: typesafe-config + environment binding
+  - name: core-testing
+    subtitle: shared test fixtures and generators
+
+  # depth 1 — platform (12)
+  - name: platform-auth
+    subtitle: JWT issuance + token validation
+  - name: platform-cache
+    subtitle: Redis client with circuit breaker
+  - name: platform-rate-limit
+    subtitle: sliding-window rate limiter
+  - name: platform-audit
+    subtitle: immutable audit-log writer
+  - name: platform-feature-flags
+    subtitle: LaunchDarkly + static fallback
+  - name: platform-storage
+    subtitle: S3-compatible object store client
+  - name: platform-event-bus
+    subtitle: Kafka producer + consumer wrappers
+  - name: platform-scheduler
+    subtitle: distributed cron + one-shot tasks
+  - name: platform-search
+    subtitle: Elasticsearch query builder
+  - name: platform-notify-client
+    subtitle: push, email and SMS dispatch gateway
+  - name: platform-secrets
+    subtitle: Vault dynamic-secret leasing
+  - name: platform-idempotency
+    subtitle: request deduplication via Redis
+
+  # depth 2 — domain (12)
+  - name: domain-accounts
+    subtitle: user profile, KYC state machine
+  - name: domain-wallet
+    subtitle: multi-currency balance ledger
+  - name: domain-cards
+    subtitle: card issuance and controls
+  - name: domain-payments
+    subtitle: payment intent + charge lifecycle
+  - name: domain-transfers
+    subtitle: internal and external fund moves
+  - name: domain-fx
+    subtitle: FX rate feed and conversion engine
+  - name: domain-loans
+    subtitle: credit underwriting and repayment
+  - name: domain-compliance
+    subtitle: AML screening and sanctions checks
+  - name: domain-reporting
+    subtitle: regulatory report aggregations
+  - name: domain-fraud
+    subtitle: real-time fraud signal scoring
+  - name: domain-disputes
+    subtitle: chargeback and dispute workflow
+  - name: domain-rewards
+    subtitle: cashback and points accumulation
+
+  # depth 3 — services (14)
+  - name: svc-onboarding
+    subtitle: new-customer registration flow
+  - name: svc-auth
+    subtitle: login, MFA and session management
+  - name: svc-accounts
+    subtitle: profile reads + KYC orchestration
+  - name: svc-cards
+    subtitle: card lifecycle REST API
+  - name: svc-payments
+    subtitle: payment intake + routing
+  - name: svc-transfers
+    subtitle: transfer initiation + status
+  - name: svc-fx
+    subtitle: rate quotes and conversion
+  - name: svc-loans
+    subtitle: loan origination + servicing
+  - name: svc-compliance
+    subtitle: continuous screening daemon
+  - name: svc-fraud
+    subtitle: decision engine + case management
+  - name: svc-disputes
+    subtitle: dispute intake and resolution
+  - name: svc-rewards
+    subtitle: points ledger and redemption
+  - name: svc-reporting
+    subtitle: statement and report generation
+  - name: svc-notifications
+    subtitle: event-driven user messaging
+
+  # depth 4 — gateways and workers (11)
+  - name: gw-mobile-api
+    subtitle: public REST API for mobile clients
+  - name: gw-web-api
+    subtitle: BFF for the web dashboard
+  - name: gw-partner-api
+    subtitle: B2B integration surface
+  - name: gw-admin-api
+    subtitle: internal operations console
+  - name: worker-settlement
+    subtitle: daily settlement batch
+  - name: worker-reconcile
+    subtitle: ledger vs. processor reconciliation
+  - name: worker-regulatory
+    subtitle: automated regulatory filings
+  - name: worker-fraud-retrain
+    subtitle: ML model retraining pipeline
+  - name: worker-notify-dispatch
+    subtitle: fan-out notification delivery
+  - name: worker-rewards-calc
+    subtitle: periodic cashback calculation
+  - name: triton-root
+    subtitle: sbt root — aggregates all subprojects
+
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: |
+      Click any module to focus it (it expands to fill its column). Shift-click a sibling
+      to pin it alongside the focused module. With 60 nodes and ~40 region participants, the
+      fix #7 reduction from O(n×k) to O(n+k) pin checks makes each drill-in ~8× faster.
+    relations:
+      # platform → core
+      - { from: platform-auth,         to: core-crypto,    label: depends on }
+      - { from: platform-auth,         to: core-db,        label: depends on }
+      - { from: platform-auth,         to: core-http,      label: depends on }
+      - { from: platform-auth,         to: core-config,    label: depends on }
+      - { from: platform-cache,        to: core-utils,     label: depends on }
+      - { from: platform-cache,        to: core-config,    label: depends on }
+      - { from: platform-rate-limit,   to: core-utils,     label: depends on }
+      - { from: platform-audit,        to: core-db,        label: depends on }
+      - { from: platform-audit,        to: core-types,     label: depends on }
+      - { from: platform-feature-flags,to: core-http,      label: depends on }
+      - { from: platform-feature-flags,to: core-config,    label: depends on }
+      - { from: platform-storage,      to: core-http,      label: depends on }
+      - { from: platform-event-bus,    to: core-queue,     label: depends on }
+      - { from: platform-event-bus,    to: core-metrics,   label: depends on }
+      - { from: platform-scheduler,    to: core-db,        label: depends on }
+      - { from: platform-scheduler,    to: core-utils,     label: depends on }
+      - { from: platform-search,       to: core-http,      label: depends on }
+      - { from: platform-notify-client,to: core-http,      label: depends on }
+      - { from: platform-secrets,      to: core-http,      label: depends on }
+      - { from: platform-secrets,      to: core-crypto,    label: depends on }
+      - { from: platform-idempotency,  to: core-types,     label: depends on }
+
+      # domain → platform
+      - { from: domain-accounts,   to: platform-auth,         label: depends on }
+      - { from: domain-accounts,   to: platform-cache,        label: depends on }
+      - { from: domain-accounts,   to: platform-audit,        label: depends on }
+      - { from: domain-accounts,   to: platform-secrets,      label: depends on }
+      - { from: domain-wallet,     to: platform-cache,        label: depends on }
+      - { from: domain-wallet,     to: platform-event-bus,    label: depends on }
+      - { from: domain-wallet,     to: platform-idempotency,  label: depends on }
+      - { from: domain-cards,      to: platform-auth,         label: depends on }
+      - { from: domain-cards,      to: platform-audit,        label: depends on }
+      - { from: domain-payments,   to: platform-idempotency,  label: depends on }
+      - { from: domain-payments,   to: platform-event-bus,    label: depends on }
+      - { from: domain-payments,   to: platform-audit,        label: depends on }
+      - { from: domain-transfers,  to: platform-idempotency,  label: depends on }
+      - { from: domain-transfers,  to: platform-event-bus,    label: depends on }
+      - { from: domain-fx,         to: platform-cache,        label: depends on }
+      - { from: domain-fx,         to: platform-event-bus,    label: depends on }
+      - { from: domain-loans,      to: platform-audit,        label: depends on }
+      - { from: domain-loans,      to: platform-scheduler,    label: depends on }
+      - { from: domain-compliance, to: platform-event-bus,    label: depends on }
+      - { from: domain-compliance, to: platform-search,       label: depends on }
+      - { from: domain-fraud,      to: platform-event-bus,    label: depends on }
+      - { from: domain-fraud,      to: platform-feature-flags,label: depends on }
+      - { from: domain-reporting,  to: platform-storage,      label: depends on }
+      - { from: domain-reporting,  to: platform-scheduler,    label: depends on }
+      - { from: domain-disputes,   to: platform-audit,        label: depends on }
+      - { from: domain-rewards,    to: platform-scheduler,    label: depends on }
+
+      # services → domain
+      - { from: svc-onboarding,    to: domain-accounts,   label: depends on }
+      - { from: svc-onboarding,    to: domain-compliance, label: depends on }
+      - { from: svc-auth,          to: domain-accounts,   label: depends on }
+      - { from: svc-accounts,      to: domain-accounts,   label: depends on }
+      - { from: svc-cards,         to: domain-cards,      label: depends on }
+      - { from: svc-cards,         to: domain-wallet,     label: depends on }
+      - { from: svc-payments,      to: domain-payments,   label: depends on }
+      - { from: svc-payments,      to: domain-fraud,      label: depends on }
+      - { from: svc-payments,      to: domain-wallet,     label: depends on }
+      - { from: svc-transfers,     to: domain-transfers,  label: depends on }
+      - { from: svc-transfers,     to: domain-wallet,     label: depends on }
+      - { from: svc-fx,            to: domain-fx,         label: depends on }
+      - { from: svc-loans,         to: domain-loans,      label: depends on }
+      - { from: svc-loans,         to: domain-compliance, label: depends on }
+      - { from: svc-compliance,    to: domain-compliance, label: depends on }
+      - { from: svc-fraud,         to: domain-fraud,      label: depends on }
+      - { from: svc-disputes,      to: domain-disputes,   label: depends on }
+      - { from: svc-disputes,      to: domain-payments,   label: depends on }
+      - { from: svc-rewards,       to: domain-rewards,    label: depends on }
+      - { from: svc-reporting,     to: domain-reporting,  label: depends on }
+      - { from: svc-notifications, to: platform-notify-client, label: depends on }
+
+      # gateways + workers → services
+      - { from: gw-mobile-api,          to: svc-auth,          label: depends on }
+      - { from: gw-mobile-api,          to: svc-accounts,      label: depends on }
+      - { from: gw-mobile-api,          to: svc-cards,         label: depends on }
+      - { from: gw-mobile-api,          to: svc-payments,      label: depends on }
+      - { from: gw-mobile-api,          to: svc-transfers,     label: depends on }
+      - { from: gw-web-api,             to: svc-auth,          label: depends on }
+      - { from: gw-web-api,             to: svc-accounts,      label: depends on }
+      - { from: gw-web-api,             to: svc-reporting,     label: depends on }
+      - { from: gw-web-api,             to: svc-rewards,       label: depends on }
+      - { from: gw-partner-api,         to: svc-payments,      label: depends on }
+      - { from: gw-partner-api,         to: svc-transfers,     label: depends on }
+      - { from: gw-partner-api,         to: svc-fx,            label: depends on }
+      - { from: gw-admin-api,           to: svc-compliance,    label: depends on }
+      - { from: gw-admin-api,           to: svc-fraud,         label: depends on }
+      - { from: gw-admin-api,           to: svc-loans,         label: depends on }
+      - { from: worker-settlement,      to: svc-payments,      label: depends on }
+      - { from: worker-settlement,      to: svc-transfers,     label: depends on }
+      - { from: worker-reconcile,       to: svc-payments,      label: depends on }
+      - { from: worker-regulatory,      to: svc-compliance,    label: depends on }
+      - { from: worker-regulatory,      to: svc-reporting,     label: depends on }
+      - { from: worker-fraud-retrain,   to: svc-fraud,         label: depends on }
+      - { from: worker-notify-dispatch, to: svc-notifications, label: depends on }
+      - { from: worker-rewards-calc,    to: svc-rewards,       label: depends on }
+
+      # root aggregates
+      - { from: triton-root, to: gw-mobile-api,        label: aggregate }
+      - { from: triton-root, to: gw-web-api,           label: aggregate }
+      - { from: triton-root, to: gw-partner-api,       label: aggregate }
+      - { from: triton-root, to: gw-admin-api,         label: aggregate }
+      - { from: triton-root, to: worker-settlement,    label: aggregate }
+      - { from: triton-root, to: worker-reconcile,     label: aggregate }
+      - { from: triton-root, to: worker-regulatory,    label: aggregate }
+      - { from: triton-root, to: worker-fraud-retrain, label: aggregate }
