@@ -11,7 +11,7 @@ import {
   useVueFlow,
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
-import { computed, nextTick, provide, reactive, ref, unref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, unref, watch } from 'vue'
 import DiagramContainerView from './diagram/DiagramContainerView.vue'
 import GraphDrillIn from './GraphDrillIn.vue'
 import { buildDiagramRootModel } from '../diagram/model/buildRootDiagram'
@@ -30,13 +30,10 @@ import { languageIconForId } from '../graph/languages'
 import { strokeColorForFlowEdge } from '../graph/relationKinds'
 import { drillNoteForModuleId } from '../graph/sbtStyleDrillNotes'
 
-/** Root-level stacked package-scope groups beyond this use width-fit zoom + vertical pan rail. */
-const VERTICAL_SCROLL_PACKAGE_STACK_MIN = 18
-/** Also enable vertical pan when fitting height would force zoom below this (width still allows more zoom). */
-const VERTICAL_SCROLL_MAX_ZOOM_HEIGHT_FIT = 0.88
-
 const MODULE_LAYOUT_W = 200
 const MODULE_LAYOUT_H = 72
+const PACKAGE_SCOPE_GROUP_MIN_LAYOUT_H = 40
+const OTHER_GROUP_MIN_LAYOUT_H = 76
 
 const nodes = defineModel<any[]>('nodes', { required: true })
 const edges = defineModel<any[]>('edges', { required: true })
@@ -69,6 +66,7 @@ const {
   updateNodeInternals,
   setViewport,
   setTranslateExtent,
+  viewport,
 } = useVueFlow(WORKSPACE_FLOW_ID)
 
 /** Default: pan is unconstrained (see Vue Flow store initial `translateExtent`). */
@@ -79,22 +77,55 @@ const UNBOUNDED_TRANSLATE_EXTENT: CoordinateExtent = [
 const drillRef = ref<InstanceType<typeof GraphDrillIn> | null>(null)
 
 const verticalScrollChrome = ref(false)
+const horizontalScrollChrome = ref(false)
 /** 0 = show top of graph, 1000 = show bottom — only meaningful when {@link verticalScrollChrome}. */
 const verticalScrollSlider = ref(0)
-let vPan: { x: number; yMin: number; yMax: number; zoom: number } = { x: 0, yMin: 0, yMax: 0, zoom: 1 }
-let verticalSliderSync = false
-
-function countTopLevelPackageScopeGroups(arr: readonly any[]): number {
-  let c = 0
-  for (const n of arr) {
-    if (n.parentNode) continue
-    if ((n as { hidden?: boolean }).hidden) continue
-    if (String(n.type ?? '') !== 'group') continue
-    const d = n.data as Record<string, unknown> | undefined
-    if (d?.packageScope === true) c++
-  }
-  return c
+/** 0 = show left of graph, 1000 = show right — only meaningful when {@link horizontalScrollChrome}. */
+const horizontalScrollSlider = ref(0)
+let panBounds: { xMin: number; xMax: number; yMin: number; yMax: number; zoom: number } = {
+  xMin: 0,
+  xMax: 0,
+  yMin: 0,
+  yMax: 0,
+  zoom: 1,
 }
+let verticalSliderSync = false
+let horizontalSliderSync = false
+/**
+ * Fraction of the rail that the thumb occupies = fraction of the diagram visible at once.
+ * 1 means the entire diagram fits in the viewport (no scrolling needed).
+ * Clamped to [0.06, 1] so there is always a grabbable handle.
+ */
+const verticalThumbFraction = ref(1)
+const horizontalThumbFraction = ref(1)
+const panePanSuppressUntil = ref(0)
+let panePanDrag:
+  | {
+      startClientX: number
+      startClientY: number
+      startViewportX: number
+      startViewportY: number
+      moved: boolean
+    }
+  | null = null
+
+const verticalScrollThumbStyle = computed(() => {
+  const t = Math.max(0, Math.min(1, verticalScrollSlider.value / 1000))
+  const frac = Math.max(0.06, Math.min(1, verticalThumbFraction.value))
+  return {
+    top: `${(t * (1 - frac) * 100).toFixed(3)}%`,
+    height: `${(frac * 100).toFixed(3)}%`,
+  }
+})
+
+const horizontalScrollThumbStyle = computed(() => {
+  const t = Math.max(0, Math.min(1, horizontalScrollSlider.value / 1000))
+  const frac = Math.max(0.06, Math.min(1, horizontalThumbFraction.value))
+  return {
+    left: `${(t * (1 - frac) * 100).toFixed(3)}%`,
+    width: `${(frac * 100).toFixed(3)}%`,
+  }
+})
 
 function layerDrillActive(): boolean {
   const raw = (drillRef.value as { layerDrillId?: unknown } | null)?.layerDrillId
@@ -103,7 +134,9 @@ function layerDrillActive(): boolean {
 
 function resetVerticalScrollChrome(): void {
   verticalScrollChrome.value = false
+  horizontalScrollChrome.value = false
   verticalScrollSlider.value = 0
+  horizontalScrollSlider.value = 0
   setTranslateExtent(UNBOUNDED_TRANSLATE_EXTENT)
 }
 
@@ -111,11 +144,32 @@ function resetVerticalScrollChrome(): void {
  * Limit viewport pan so the user cannot scroll past the padded diagram bounds (Vue Flow
  * `translateExtent` clamps `setViewport` / wheel-pan the same way `transformViewport` does).
  */
-function translateExtentForVerticalPan(x: number, yMin: number, yMax: number): CoordinateExtent {
+function translateExtentForPan(xMin: number, xMax: number, yMin: number, yMax: number): CoordinateExtent {
   return [
-    [-x, -yMax],
-    [-x, -yMin],
+    [-xMax, -yMax],
+    [-xMin, -yMin],
   ]
+}
+
+function nodePixelHeight(node: any): number {
+  const styleHeight = Number(node?.style?.height)
+  if (Number.isFinite(styleHeight) && styleHeight > 0) return styleHeight
+  if (typeof node?.height === 'number' && Number.isFinite(node.height) && node.height > 0) return node.height
+  return isLeafBoxNode(node) ? MODULE_LAYOUT_H : OTHER_GROUP_MIN_LAYOUT_H
+}
+
+function nodeMinHeight(node: any): number {
+  if (isLeafBoxNode(node)) {
+    const raw =
+      node?.data && typeof node.data === 'object'
+        ? (node.data as Record<string, unknown>).preferredLeafHeight
+        : undefined
+    return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : MODULE_LAYOUT_H
+  }
+  const data = node?.data
+  return data && typeof data === 'object' && (data as Record<string, unknown>).packageScope === true
+    ? PACKAGE_SCOPE_GROUP_MIN_LAYOUT_H
+    : OTHER_GROUP_MIN_LAYOUT_H
 }
 
 const hoveredNodeId = ref<string | null>(null)
@@ -357,6 +411,8 @@ watch(
 /** Synced from GraphDrillIn so module chrome can show the pin only in zoom/layer-focus context. */
 const graphFocusUi = reactive({ containerFocusId: null as string | null })
 provide('tritonGraphFocusUi', graphFocusUi)
+provide('tritonFitToViewport', fitToViewport)
+provide('tritonShouldSuppressPaneClick', () => Date.now() < panePanSuppressUntil.value)
 
 provide('tritonRefreshDimming', () => {
   drillRef.value?.refreshDimming?.()
@@ -653,6 +709,170 @@ function onPaneClickClearHover() {
   hoveredEdgeId.value = null
 }
 
+function paneBackgroundCanStartPan(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  if (target.closest('.flow-v-scroll-rail, .flow-h-scroll-rail')) return false
+  return !!target.closest('.vue-flow__pane, .vue-flow__viewport, .vue-flow')
+}
+
+function clampViewportAxis(value: number, axis: 'x' | 'y'): number {
+  if (axis === 'x') {
+    if (!horizontalScrollChrome.value) return value
+    return Math.min(panBounds.xMax, Math.max(panBounds.xMin, value))
+  }
+  if (!verticalScrollChrome.value) return value
+  return Math.min(panBounds.yMax, Math.max(panBounds.yMin, value))
+}
+
+function syncPanRailsFromViewportTransform(ft: { x: number; y: number; zoom: number }) {
+  if ((!verticalScrollChrome.value && !horizontalScrollChrome.value) || (verticalSliderSync || horizontalSliderSync)) return
+  const { x, y, zoom } = ft
+  if (Math.abs(zoom - panBounds.zoom) > 0.02) return
+  if (horizontalScrollChrome.value) {
+    const spanX = panBounds.xMin - panBounds.xMax
+    if (Number.isFinite(spanX) && Math.abs(spanX) >= 1e-4) {
+      const tX = (x - panBounds.xMax) / spanX
+      horizontalScrollSlider.value = Math.round(Math.max(0, Math.min(1000, tX * 1000)))
+    }
+  }
+  if (verticalScrollChrome.value) {
+    const spanY = panBounds.yMin - panBounds.yMax
+    if (Number.isFinite(spanY) && Math.abs(spanY) >= 1e-4) {
+      const tY = (y - panBounds.yMax) / spanY
+      verticalScrollSlider.value = Math.round(Math.max(0, Math.min(1000, tY * 1000)))
+    }
+  }
+}
+
+function finishPanePanDrag() {
+  if (panePanDrag?.moved) panePanSuppressUntil.value = Date.now() + 260
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('pointermove', onWindowPanePanPointerMove, true)
+    window.removeEventListener('pointerup', onWindowPanePanPointerUp, true)
+    window.removeEventListener('pointercancel', onWindowPanePanPointerCancel, true)
+    window.removeEventListener('mousemove', onWindowPanePanMouseMove, true)
+    window.removeEventListener('mouseup', onWindowPanePanMouseUp, true)
+  }
+  panePanDrag = null
+}
+
+function onPanePanPointerDown(ev: PointerEvent) {
+  beginPanePanDrag(ev.button, ev.clientX, ev.clientY, ev.target)
+}
+
+function beginPanePanDrag(button: number, clientX: number, clientY: number, target: EventTarget | null) {
+  if (button !== 0) return
+  if (!verticalScrollChrome.value && !horizontalScrollChrome.value) return
+  if (!paneBackgroundCanStartPan(target)) return
+  const current = viewport.value ?? { x: 0, y: 0, zoom: 1 }
+  panePanDrag = {
+    startClientX: clientX,
+    startClientY: clientY,
+    startViewportX: current.x,
+    startViewportY: current.y,
+    moved: false,
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pointermove', onWindowPanePanPointerMove, true)
+    window.addEventListener('pointerup', onWindowPanePanPointerUp, true)
+    window.addEventListener('pointercancel', onWindowPanePanPointerCancel, true)
+    window.addEventListener('mousemove', onWindowPanePanMouseMove, true)
+    window.addEventListener('mouseup', onWindowPanePanMouseUp, true)
+  }
+}
+
+function applyPanePanDrag(clientX: number, clientY: number) {
+  if (!panePanDrag) return
+  const dx = clientX - panePanDrag.startClientX
+  const dy = clientY - panePanDrag.startClientY
+  if (!panePanDrag.moved && Math.hypot(dx, dy) >= 4) {
+    panePanDrag.moved = true
+    panePanSuppressUntil.value = Date.now() + 260
+  }
+  if (!panePanDrag.moved) return
+  const x = clampViewportAxis(panePanDrag.startViewportX + dx, 'x')
+  const y = clampViewportAxis(panePanDrag.startViewportY + dy, 'y')
+  void setViewport({ x, y, zoom: panBounds.zoom }, { duration: 0 })
+  syncPanRailsFromViewportTransform({ x, y, zoom: panBounds.zoom })
+}
+
+function onPanePanPointerMove(ev: PointerEvent) {
+  applyPanePanDrag(ev.clientX, ev.clientY)
+  ev.preventDefault()
+}
+
+function onPanePanPointerUp(_ev: PointerEvent) {
+  finishPanePanDrag()
+}
+
+function onPanePanPointerCancel(_ev: PointerEvent) {
+  finishPanePanDrag()
+}
+
+function onWindowPanePanPointerMove(ev: PointerEvent) {
+  onPanePanPointerMove(ev)
+}
+
+function onWindowPanePanPointerUp(ev: PointerEvent) {
+  onPanePanPointerUp(ev)
+}
+
+function onWindowPanePanPointerCancel(ev: PointerEvent) {
+  onPanePanPointerCancel(ev)
+}
+
+function onPanePanMouseDown(ev: MouseEvent) {
+  beginPanePanDrag(ev.button, ev.clientX, ev.clientY, ev.target)
+}
+
+function onWindowPanePanMouseMove(ev: MouseEvent) {
+  applyPanePanDrag(ev.clientX, ev.clientY)
+}
+
+function onWindowPanePanMouseUp() {
+  finishPanePanDrag()
+}
+
+function onGlobalPanePanMouseDown(ev: MouseEvent) {
+  onPanePanMouseDown(ev)
+}
+
+function onGlobalWheel(ev: WheelEvent) {
+  if (!verticalScrollChrome.value && !horizontalScrollChrome.value) return
+  // Don't intercept wheel inside the rail controls themselves (they already .stop it).
+  if (ev.target instanceof Element && ev.target.closest('.flow-v-scroll-rail, .flow-h-scroll-rail')) return
+  // Only act on events that land on the flow canvas area.
+  if (!(ev.target instanceof Element) || !ev.target.closest('.vue-flow__pane, .vue-flow__viewport, .vue-flow, .flow-wrap-shell')) return
+
+  // Convert wheel delta to pixels (DOM deltaMode: 0=px, 1=line≈20px, 2=page≈300px).
+  const lineSize = 20
+  const pageSize = 300
+  const factor = ev.deltaMode === 2 ? pageSize : ev.deltaMode === 1 ? lineSize : 1
+  const dx = ev.deltaX * factor
+  const dy = ev.deltaY * factor
+
+  const current = viewport.value ?? { x: 0, y: 0, zoom: 1 }
+  const x = clampViewportAxis(current.x - dx, 'x')
+  const y = clampViewportAxis(current.y - dy, 'y')
+
+  ev.preventDefault()
+  void setViewport({ x, y, zoom: panBounds.zoom }, { duration: 0 })
+  syncPanRailsFromViewportTransform({ x, y, zoom: panBounds.zoom })
+}
+
+onMounted(() => {
+  if (typeof window === 'undefined') return
+  window.addEventListener('mousedown', onGlobalPanePanMouseDown, true)
+  window.addEventListener('wheel', onGlobalWheel, { capture: true, passive: false })
+})
+
+onUnmounted(() => {
+  if (typeof window === 'undefined') return
+  window.removeEventListener('mousedown', onGlobalPanePanMouseDown, true)
+  window.removeEventListener('wheel', onGlobalWheel, true)
+  finishPanePanDrag()
+})
+
 function onEdgeMouseEnter(ev: { edge: { id: string } }) {
   hoveredEdgeId.value = String(ev.edge.id)
 }
@@ -744,13 +964,33 @@ async function fitToViewport(opts?: { duration?: number; recenterStackShrink?: b
   await nextTick()
   await doubleRaf()
   const duration = opts?.duration ?? 220
+  const vp = readFlowViewport()
   if (hasSingletonRootPackageScopeOverview()) {
     await fitOverviewSingletonPackageScope(duration)
     return
   }
   if (layerDrillActive()) {
     resetVerticalScrollChrome()
-    await fitView({ padding: 0.05, duration, maxZoom: 2.2, minZoom: 0.05 })
+    const visibleRoots = nodes.value.filter((n) => !n.parentNode && !(n as { hidden?: boolean }).hidden)
+    if (!visibleRoots.length) {
+      await setViewport({ x: 0, y: 0, zoom: 1 }, { duration })
+      return
+    }
+    const rect = getRectOfNodes(visibleRoots as any)
+    if (
+      !Number.isFinite(rect.width) ||
+      rect.width <= 2 ||
+      !Number.isFinite(rect.height) ||
+      rect.height <= 2 ||
+      !Number.isFinite(rect.x) ||
+      !Number.isFinite(rect.y)
+    ) {
+      await setViewport({ x: 0, y: 0, zoom: 1 }, { duration })
+      return
+    }
+    const x = vp.width / 2 - (rect.x + rect.width / 2)
+    const y = vp.height / 2 - (rect.y + rect.height / 2)
+    await setViewport({ x, y, zoom: 1 }, { duration })
     return
   }
 
@@ -775,51 +1015,62 @@ async function fitToViewport(opts?: { duration?: number; recenterStackShrink?: b
     return
   }
 
-  const vp = readFlowViewport()
   const pad = 0.05
   const px = vp.width * pad * 2
   const py = vp.height * pad * 2
   const usableW = Math.max(80, vp.width - px)
   const usableH = Math.max(80, vp.height - py)
-  const zoomW = usableW / rect.width
-  const zoomH = usableH / rect.height
-  const manyPk = countTopLevelPackageScopeGroups(nodes.value)
-  const heightBound = zoomH < zoomW - 1e-6
-  const wouldSquashZoom = zoomH < VERTICAL_SCROLL_MAX_ZOOM_HEIGHT_FIT
-  const useVerticalPanRail =
-    (heightBound && wouldSquashZoom) || manyPk >= VERTICAL_SCROLL_PACKAGE_STACK_MIN
+  const widthOverflow = rect.width > usableW + 1
+  const heightOverflow = rect.height > usableH + 1
+  const visibleNodes = nodes.value.filter((n) => !(n as { hidden?: boolean }).hidden)
+  const heightMinReached = visibleNodes.some((node) => nodePixelHeight(node) <= nodeMinHeight(node) + 1)
+  const useHorizontalPanRail = widthOverflow
+  const useVerticalPanRail = heightOverflow && heightMinReached
 
-  if (!useVerticalPanRail) {
+  const zoom = 1
+  const txLeft = vp.width * pad - rect.x * zoom
+  const txRight = vp.width * (1 - pad) - (rect.x + rect.width) * zoom
+  const tyTop = vp.height * pad - rect.y * zoom
+  const tyBot = vp.height * (1 - pad) - (rect.y + rect.height) * zoom
+  const xMax = Math.max(txLeft, txRight)
+  const xMin = Math.min(txLeft, txRight)
+  const yMax = Math.max(tyTop, tyBot)
+  const yMin = Math.min(tyTop, tyBot)
+  // (xMin+xMax)/2 == txCenter and (yMin+yMax)/2 == tyCenter — always, regardless of overflow.
+  const txCenter = (xMin + xMax) / 2
+  const tyCenter = (yMin + yMax) / 2
+
+  if (!useHorizontalPanRail && !useVerticalPanRail) {
     resetVerticalScrollChrome()
-    /**
-     * After packages are removed from the stacking dojo, re-fit from defaults so the camera
-     * does not inherit a stale pan offset from the wider/taller graph.
-     */
-    await fitView({
-      padding: opts?.recenterStackShrink ? 0.08 : 0.05,
-      duration,
-      maxZoom: 2.2,
-      minZoom: 0.05,
-    })
+    await setViewport({ x: txCenter, y: tyCenter, zoom: 1 }, { duration })
     return
   }
 
-  const zoom = Math.min(2.2, Math.max(0.05, zoomW))
-  const cx = rect.x + rect.width / 2
-  const x = vp.width / 2 - cx * zoom
-  const tyTop = vp.height * pad - rect.y * zoom
-  const tyBot = vp.height * (1 - pad) - (rect.y + rect.height) * zoom
-  const yMax = Math.max(tyTop, tyBot)
-  const yMin = Math.min(tyTop, tyBot)
-  /** Fewer stacked packages → re-center vertically in the pan band (mid-scroll), not top-pinned. */
-  const yStart = opts?.recenterStackShrink ? (yMin + yMax) / 2 : yMax
+  // Clamp the current viewport position to the new pan bounds so panning activating does not
+  // cause a visible slip: when the diagram was centered, its position is already inside the
+  // pan range, so the clamped value equals the centered position → no jump.
+  const curVp = viewport.value ?? { x: 0, y: 0, zoom: 1 }
+  const startX = Math.min(xMax, Math.max(xMin, curVp.x))
+  const startY = Math.min(yMax, Math.max(yMin, curVp.y))
+  const hSpan = xMax - xMin
+  const vSpan = yMax - yMin
+  const hSlider = hSpan > 0.5 ? Math.round(1000 * (xMax - startX) / hSpan) : 0
+  const vSlider = vSpan > 0.5 ? Math.round(1000 * (yMax - startY) / vSpan) : 0
 
-  vPan = { x, yMin, yMax, zoom }
-  verticalScrollChrome.value = true
-  verticalScrollSlider.value = opts?.recenterStackShrink ? 500 : 0
+  panBounds = { xMin, xMax, yMin, yMax, zoom }
+  horizontalScrollChrome.value = useHorizontalPanRail
+  verticalScrollChrome.value = useVerticalPanRail
+  horizontalScrollSlider.value = opts?.recenterStackShrink ? 500 : hSlider
+  verticalScrollSlider.value = opts?.recenterStackShrink ? 500 : vSlider
+  // Thumb size = fraction of diagram visible at once in each axis.
+  verticalThumbFraction.value = vSpan > 0 ? vp.height / (vp.height + vSpan) : 1
+  horizontalThumbFraction.value = hSpan > 0 ? vp.width / (vp.width + hSpan) : 1
 
-  setTranslateExtent(translateExtentForVerticalPan(x, yMin, yMax))
-  await setViewport({ x, y: yStart, zoom }, { duration })
+  setTranslateExtent(translateExtentForPan(xMin, xMax, yMin, yMax))
+  const finalX = opts?.recenterStackShrink ? txCenter : startX
+  const finalY = opts?.recenterStackShrink ? tyCenter : startY
+  // Non-panning axis always centers; panning axis uses preserved (or recentered) position.
+  await setViewport({ x: useHorizontalPanRail ? finalX : txCenter, y: useVerticalPanRail ? finalY : tyCenter, zoom }, { duration })
 }
 
 function onVerticalScrollSliderInput(ev: Event) {
@@ -828,27 +1079,36 @@ function onVerticalScrollSliderInput(ev: Event) {
   if (!el) return
   const v = Number(el.value)
   verticalScrollSlider.value = Number.isFinite(v) ? Math.round(v) : 0
-  const span = vPan.yMin - vPan.yMax
+  const span = panBounds.yMin - panBounds.yMax
   if (!Number.isFinite(span) || Math.abs(span) < 1e-4) return
   const t = verticalScrollSlider.value / 1000
-  const y = Math.min(vPan.yMax, Math.max(vPan.yMin, vPan.yMax + t * span))
+  const y = Math.min(panBounds.yMax, Math.max(panBounds.yMin, panBounds.yMax + t * span))
   verticalSliderSync = true
-  void setViewport({ x: vPan.x, y, zoom: vPan.zoom }, { duration: 0 }).finally(() => {
+  void setViewport({ x: panBounds.xMax + (horizontalScrollSlider.value / 1000) * (panBounds.xMin - panBounds.xMax), y, zoom: panBounds.zoom }, { duration: 0 }).finally(() => {
     verticalSliderSync = false
   })
 }
 
+function onHorizontalScrollSliderInput(ev: Event) {
+  if (!horizontalScrollChrome.value) return
+  const el = ev.target as HTMLInputElement | null
+  if (!el) return
+  const v = Number(el.value)
+  horizontalScrollSlider.value = Number.isFinite(v) ? Math.round(v) : 0
+  const span = panBounds.xMin - panBounds.xMax
+  if (!Number.isFinite(span) || Math.abs(span) < 1e-4) return
+  const t = horizontalScrollSlider.value / 1000
+  const x = Math.min(panBounds.xMax, Math.max(panBounds.xMin, panBounds.xMax + t * span))
+  horizontalSliderSync = true
+  void setViewport({ x, y: panBounds.yMax + (verticalScrollSlider.value / 1000) * (panBounds.yMin - panBounds.yMax), zoom: panBounds.zoom }, { duration: 0 }).finally(() => {
+    horizontalSliderSync = false
+  })
+}
+
 function onFlowMoveEnd(ev: unknown) {
-  if (!verticalScrollChrome.value || verticalSliderSync) return
   const ft = (ev as { flowTransform?: { x: number; y: number; zoom: number } } | null)?.flowTransform
   if (!ft) return
-  const { x, y, zoom } = ft
-  if (Math.abs(zoom - vPan.zoom) > 0.02) return
-  vPan.x = x
-  const span = vPan.yMin - vPan.yMax
-  if (!Number.isFinite(span) || Math.abs(span) < 1e-4) return
-  const t = (y - vPan.yMax) / span
-  verticalScrollSlider.value = Math.round(Math.max(0, Math.min(1000, t * 1000)))
+  syncPanRailsFromViewportTransform(ft)
 }
 
 defineExpose({
@@ -862,7 +1122,18 @@ defineExpose({
 
 <template>
   <DiagramContainerView :model="diagramModel" class="diagram-root-wrap">
-    <div class="flow-wrap-shell" :class="{ 'flow-wrap-shell--vscroll': verticalScrollChrome }">
+    <div
+      class="flow-wrap-shell"
+      :class="{
+        'flow-wrap-shell--vscroll': verticalScrollChrome,
+        'flow-wrap-shell--hscroll': horizontalScrollChrome,
+      }"
+      @mousedown.capture="onPanePanMouseDown"
+      @pointerdown.capture="onPanePanPointerDown"
+      @pointermove.capture="onPanePanPointerMove"
+      @pointerup.capture="onPanePanPointerUp"
+      @pointercancel.capture="onPanePanPointerCancel"
+    >
       <VueFlow
         :id="WORKSPACE_FLOW_ID"
         v-model:nodes="nodes"
@@ -883,7 +1154,7 @@ defineExpose({
         :zoom-on-pinch="false"
         :zoom-on-double-click="false"
         :pan-on-drag="false"
-        :pan-on-scroll="verticalScrollChrome"
+        :pan-on-scroll="false"
         :pan-on-scroll-mode="PanOnScrollMode.Vertical"
         delete-key-code="Delete"
         @connect="handleConnect"
@@ -894,6 +1165,7 @@ defineExpose({
         @edge-mouse-enter="onEdgeMouseEnter"
         @edge-mouse-leave="onEdgeMouseLeave"
         @pane-click="onPaneClickClearHover"
+        @move="onFlowMoveEnd"
         @move-end="onFlowMoveEnd"
       >
         <GraphDrillIn ref="drillRef" />
@@ -919,6 +1191,28 @@ defineExpose({
           title="Scroll vertically"
           @input="onVerticalScrollSliderInput"
         />
+        <div class="flow-v-scroll-rail__thumb" :style="verticalScrollThumbStyle" aria-hidden="true" />
+      </aside>
+      <aside
+        v-if="horizontalScrollChrome"
+        class="flow-h-scroll-rail"
+        aria-label="Horizontal diagram scroll"
+        @pointerdown.stop
+        @wheel.stop
+      >
+        <input
+          class="flow-h-scroll-rail__slider"
+          type="range"
+          min="0"
+          max="1000"
+          :value="horizontalScrollSlider"
+          aria-valuemin="0"
+          aria-valuemax="1000"
+          :aria-valuenow="horizontalScrollSlider"
+          title="Scroll horizontally"
+          @input="onHorizontalScrollSliderInput"
+        />
+        <div class="flow-h-scroll-rail__thumb" :style="horizontalScrollThumbStyle" aria-hidden="true" />
       </aside>
     </div>
   </DiagramContainerView>
@@ -938,6 +1232,14 @@ defineExpose({
   width: calc(100% - 32px);
   height: 100%;
 }
+.flow-wrap-shell--hscroll .flow {
+  width: 100%;
+  height: calc(100% - 32px);
+}
+.flow-wrap-shell--vscroll.flow-wrap-shell--hscroll .flow {
+  width: calc(100% - 32px);
+  height: calc(100% - 32px);
+}
 .flow {
   width: 100%;
   height: 100%;
@@ -954,6 +1256,23 @@ defineExpose({
   justify-content: center;
   pointer-events: auto;
 }
+.flow-v-scroll-rail::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 4px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
+}
+.flow-v-scroll-rail:hover::before {
+  background: rgba(148, 163, 184, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+}
+.flow-wrap-shell--hscroll .flow-v-scroll-rail {
+  bottom: 36px;
+}
 /**
  * Translucent rail in the spirit of Vue Flow MiniMap `maskColor` / `maskStrokeColor`
  * (see https://vueflow.dev/guide/components/minimap.html).
@@ -968,43 +1287,136 @@ defineExpose({
   background: transparent;
   accent-color: transparent;
   writing-mode: vertical-lr;
-  direction: rtl;
+  position: relative;
+  z-index: 2;
+  opacity: 0;
 }
 .flow-v-scroll-rail__slider::-webkit-slider-runnable-track {
-  width: 5px;
-  margin-inline: auto;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.2);
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.28);
+  background: transparent;
 }
 .flow-v-scroll-rail__slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 13px;
-  height: 13px;
-  margin-inline-start: -4px;
-  border-radius: 50%;
-  cursor: grab;
-  background: rgba(59, 130, 246, 0.32);
-  border: 2px solid rgba(59, 130, 246, 0.55);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+  width: 14px;
+  height: 14px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 .flow-v-scroll-rail__slider::-moz-range-track {
-  width: 5px;
-  height: 100%;
-  margin-inline: auto;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.2);
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.28);
+  background: transparent;
 }
 .flow-v-scroll-rail__slider::-moz-range-thumb {
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
+  width: 14px;
+  height: 14px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.flow-v-scroll-rail__thumb {
+  position: absolute;
+  left: 50%;
+  width: 6px;
+  /* height is set via inline style as a % of the rail to reflect visible fraction */
+  min-height: 20px;
+  margin-left: -3px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  box-shadow: none;
+  pointer-events: none;
+  z-index: 1;
+  box-sizing: border-box;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.flow-v-scroll-rail:hover .flow-v-scroll-rail__thumb {
+  background: rgba(59, 130, 246, 0.22);
+  border-color: rgba(59, 130, 246, 0.40);
+}
+.flow-h-scroll-rail {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 4px;
+  height: 28px;
+  z-index: 24;
+  display: flex;
+  align-items: center;
+  justify-content: stretch;
+  pointer-events: auto;
+}
+.flow-h-scroll-rail::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
+}
+.flow-h-scroll-rail:hover::before {
+  background: rgba(148, 163, 184, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+}
+.flow-wrap-shell--vscroll .flow-h-scroll-rail {
+  right: 36px;
+}
+.flow-h-scroll-rail__slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 24px;
+  min-width: 120px;
+  margin: 0;
   cursor: grab;
-  border: 2px solid rgba(59, 130, 246, 0.55);
-  background: rgba(59, 130, 246, 0.32);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+  background: transparent;
+  accent-color: transparent;
+  position: relative;
+  z-index: 2;
+  opacity: 0;
+}
+.flow-h-scroll-rail__slider::-webkit-slider-runnable-track {
+  background: transparent;
+}
+.flow-h-scroll-rail__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.flow-h-scroll-rail__slider::-moz-range-track {
+  background: transparent;
+}
+.flow-h-scroll-rail__slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.flow-h-scroll-rail__thumb {
+  position: absolute;
+  top: 50%;
+  /* width is set via inline style as a % of the rail to reflect visible fraction */
+  min-width: 20px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  box-shadow: none;
+  pointer-events: none;
+  z-index: 1;
+  box-sizing: border-box;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.flow-h-scroll-rail:hover .flow-h-scroll-rail__thumb {
+  background: rgba(59, 130, 246, 0.22);
+  border-color: rgba(59, 130, 246, 0.40);
 }
 </style>
 

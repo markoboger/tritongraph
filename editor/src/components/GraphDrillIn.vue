@@ -31,15 +31,24 @@ const {
   onNodeClick,
   onNodeDoubleClick,
   onPaneClick,
+  onMoveStart,
+  onMoveEnd,
   updateNodeInternals,
 } = useVueFlow()
 
 const graphFocusUi = inject<{ containerFocusId: string | null } | undefined>('tritonGraphFocusUi', undefined)
 const afterLayerDrillOut = inject<(() => void | Promise<void>) | undefined>('tritonAfterLayerDrillOut', undefined)
+const shouldSuppressPaneClick =
+  inject<(() => boolean) | undefined>('tritonShouldSuppressPaneClick', undefined)
+const fitWorkspaceViewport = inject<((opts?: { duration?: number; recenterStackShrink?: boolean }) => Promise<void>) | undefined>(
+  'tritonFitToViewport',
+  undefined,
+)
 
 /** Container (group) zoom drill */
 const focusedId = ref<string | null>(null)
 let clickTimer: ReturnType<typeof setTimeout> | null = null
+let suppressPaneClickUntil = 0
 
 /** Module layer drill: one depth column focus */
 const layerDrillId = ref<string | null>(null)
@@ -234,7 +243,11 @@ async function fitOverviewCamera(): Promise<void> {
       await setViewport({ x: 0, y: 0, zoom: 1 }, { duration: FIT_DURATION_MS })
       return
     }
-    await fitView({ padding: 0.05, duration: FIT_DURATION_MS, maxZoom: 1.8, minZoom: 0.05 })
+    if (fitWorkspaceViewport) {
+      await fitWorkspaceViewport({ duration: FIT_DURATION_MS })
+      return
+    }
+    await setViewport({ x: 0, y: 0, zoom: 1 }, { duration: FIT_DURATION_MS })
   })
 }
 
@@ -271,7 +284,11 @@ async function fitCameraAfterLayerDrillClear(): Promise<void> {
       await setViewport({ x: 0, y: 0, zoom: 1 }, { duration: FIT_DURATION_MS })
       return
     }
-    await fitView({ padding: 0.05, duration: FIT_DURATION_MS, maxZoom: 1.8, minZoom: 0.05 })
+    if (fitWorkspaceViewport) {
+      await fitWorkspaceViewport({ duration: FIT_DURATION_MS })
+      return
+    }
+    await setViewport({ x: 0, y: 0, zoom: 1 }, { duration: FIT_DURATION_MS })
   })
 }
 
@@ -703,6 +720,10 @@ async function applyLayerDrill(moduleId: string) {
   } else {
     ;({ top: diagramTop, height: diagramH } = diagramModuleVerticalSpan(nodes, regionParent))
   }
+  // When panning is active the diagram exceeds the viewport; clamp the focused box so it
+  // never grows beyond what the viewport can show (same 2×MARGIN_Y buffer as the top-level
+  // verticalBandForLayerDrill path: 2 × 36 = 72).
+  diagramH = Math.min(diagramH, Math.max(80, vp.height - 72))
   const baseW = typeof target.width === 'number' ? target.width : 200
   const preferredFocusWidth =
     target.data && typeof target.data === 'object' && typeof (target.data as Record<string, unknown>).preferredFocusWidth === 'number'
@@ -996,7 +1017,17 @@ onNodeDoubleClick(() => {
   }
 })
 
+onMoveStart(() => {
+  suppressPaneClickUntil = Date.now() + 220
+})
+
+onMoveEnd(() => {
+  suppressPaneClickUntil = Date.now() + 220
+})
+
 onPaneClick(() => {
+  if (shouldSuppressPaneClick?.()) return
+  if (Date.now() < suppressPaneClickUntil) return
   if (clickTimer) {
     clearTimeout(clickTimer)
     clickTimer = null

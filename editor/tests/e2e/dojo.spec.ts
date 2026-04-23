@@ -439,6 +439,50 @@ test.describe('dojo fixtures', () => {
     await expect(page.locator('.vue-flow__edge-path')).toHaveCount(127)
   })
 
+  test('package tree does not zoom out under the 128-node stress case', async ({ page }) => {
+    await page.goto('/?tab=dojo:package-tree&dojoDepth=128')
+
+    expect(await viewportZoom(page)).toBeGreaterThan(0.98)
+  })
+
+  test('package tree background reset and viewport resize do not trigger zoom-out', async ({ page }) => {
+    await page.goto('/?tab=dojo:package-tree&dojoDepth=128')
+
+    expect(await viewportZoom(page)).toBeGreaterThan(0.98)
+    await page.locator('.vue-flow__pane').click({ position: { x: 40, y: 40 } })
+    expect(await viewportZoom(page)).toBeGreaterThan(0.98)
+
+    await page.setViewportSize({ width: 1120, height: 760 })
+    expect(await viewportZoom(page)).toBeGreaterThan(0.98)
+  })
+
+  test('package stacking pan rail starts at the visible edge and mouse panning updates it', async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 620 })
+    await page.goto('/?tab=dojo:package-stacking&dojoDepth=40')
+
+    const verticalRail = page.locator('.flow-v-scroll-rail__slider')
+    await expect(verticalRail).toBeVisible()
+    await expect(verticalRail).toHaveAttribute('aria-valuenow', '0')
+
+    const pane = page.locator('.vue-flow__pane')
+    const box = await pane.boundingBox()
+    expect(box).not.toBeNull()
+    if (!box) return
+
+    const startX = box.x + Math.max(32, box.width - 60)
+    const startY = box.y + 56
+    await page.mouse.move(startX, startY)
+    await page.mouse.down()
+    await page.mouse.move(startX, Math.max(box.y + 20, startY - 180), {
+      steps: 12,
+    })
+    await page.mouse.up()
+
+    await expect
+      .poll(async () => Number((await verticalRail.getAttribute('aria-valuenow')) ?? '0'))
+      .toBeGreaterThan(0)
+  })
+
   test('outermost nesting package keeps filling the viewport across depths and resizes', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 980 })
     await page.goto('/?tab=dojo:package-nesting&dojoDepth=1')

@@ -55,13 +55,6 @@ const STACKED_OTHER_GROUP_MIN_H = 76
 /** Small inset so handles are not flush with column boundary */
 const COL_INSET = 3
 
-/**
- * Root column of many package-scope groups: keep natural stack heights so the camera can use
- * width-fit zoom + vertical pan (see `GraphWorkspace.vue`) instead of crushing every row into the
- * viewport band.
- */
-const ROOT_PACKAGE_STACK_NO_SHRINK_MIN = 18
-
 function nodeIsPackageScopeGroup(node: { type?: string; data?: unknown }): boolean {
   if (String(node.type ?? '') !== 'group') return false
   const d = node.data
@@ -547,12 +540,7 @@ function layoutOneParent(
     const slotHeights: number[] = visibleLayerNodes.map((node, i) =>
       isLeafBoxNode(node) ? leafH : childSizes[i]!.h,
     )
-    const allStackedArePackageScope =
-      n > 0 && visibleLayerNodes.every((node) => nodeIsPackageScopeGroup(node))
-    const skipStackShrink =
-      parentId === undefined && numLeaves === 0 && n >= ROOT_PACKAGE_STACK_NO_SHRINK_MIN && allStackedArePackageScope
-
-    if (numLeaves === 0 && n > 0 && !skipStackShrink) {
+    if (numLeaves === 0 && n > 0) {
       const sumSlots = slotHeights.reduce((a, b) => a + b, 0) + totalGaps
       if (sumSlots > stackBand) {
         const avail = Math.max(0, stackBand - totalGaps)
@@ -971,6 +959,36 @@ export function annotateParallelAggregateEdgeOffsets(
 }
 
 const AGG_LANE_STAGGER_PX = 5
+const STRAIGHT_EDGE_MIN_VERTICAL_OVERLAP = 18
+
+function worldNodeBounds(nodeId: string, byId: Map<string, any>): { left: number; right: number; top: number; bottom: number } | null {
+  const node = byId.get(nodeId)
+  if (!node) return null
+  const topLeft = worldTopLeft(nodeId, byId)
+  const { w, h } = sizeOf(node)
+  return {
+    left: topLeft.x,
+    right: topLeft.x + w,
+    top: topLeft.y,
+    bottom: topLeft.y + h,
+  }
+}
+
+function straightHorizontalRelationY(
+  sourceId: string,
+  targetId: string,
+  byId: Map<string, any>,
+): number | undefined {
+  const src = worldNodeBounds(sourceId, byId)
+  const tgt = worldNodeBounds(targetId, byId)
+  if (!src || !tgt) return undefined
+  if (src.left > tgt.left) return undefined
+  const overlapTop = Math.max(src.top, tgt.top)
+  const overlapBottom = Math.min(src.bottom, tgt.bottom)
+  if (!Number.isFinite(overlapTop) || !Number.isFinite(overlapBottom)) return undefined
+  if (overlapBottom - overlapTop < STRAIGHT_EDGE_MIN_VERTICAL_OVERLAP) return undefined
+  return roundWorldY((overlapTop + overlapBottom) / 2)
+}
 
 /**
  * Route depth-relation smoothstep edges through the region’s top/bottom padding lanes (outside the
@@ -1038,7 +1056,17 @@ export function annotateAggregateVerticalPaths(
     /** Skip lane detour when a single shallow edge can run straight; use lanes when skipping columns or fanning parallels. */
     const needDetour = (depthOk && depthDelta >= 2) || parallelCount > 1
     if (!needDetour) {
-      return stripRoutingFromEdge({ ...edge })
+      const straightY = straightHorizontalRelationY(String(src.id), String(tgt.id), byId)
+      if (straightY !== undefined) {
+        const baseOpts = edge.pathOptions && typeof edge.pathOptions === 'object' ? { ...edge.pathOptions } : {}
+        return {
+          ...stripRoutingFromEdge({ ...edge, pathOptions: { ...baseOpts, centerY: straightY } }),
+          type: 'straight',
+        }
+      }
+      const plain = stripRoutingFromEdge({ ...edge })
+      const { type: _t, ...rest } = plain
+      return { ...rest }
     }
 
     const regionH =
@@ -1062,6 +1090,7 @@ export function annotateAggregateVerticalPaths(
     const baseOpts = edge.pathOptions && typeof edge.pathOptions === 'object' ? { ...edge.pathOptions } : {}
     return {
       ...edge,
+      type: 'smoothstep',
       pathOptions: { ...baseOpts, centerY },
     }
   })
@@ -1173,7 +1202,9 @@ export function applyHandleAnchorAlignment(nodes: readonly any[], edges: readonl
     if (!isLayerDrillBoxNode(src) || !isLayerDrillBoxNode(tgt)) continue
     if (parentKey(src) !== parentKey(tgt)) continue
 
-    const midY = roundWorldY((worldCenterYForNode(s, byId) + worldCenterYForNode(t, byId)) / 2)
+    const midY =
+      straightHorizontalRelationY(s, t, byId) ??
+      roundWorldY((worldCenterYForNode(s, byId) + worldCenterYForNode(t, byId)) / 2)
 
     const sh = String((e as { sourceHandle?: string }).sourceHandle ?? '')
     const tm = String((e as { targetHandle?: string }).targetHandle ?? '').match(/^agg-in-(\d+)$/)
