@@ -271,6 +271,7 @@ function computePackageRelationVisibleNodeIds(): Set<string> | null {
 
 function applyPackageRelationFocusVisibility(): boolean {
   const visibleIds = computePackageRelationVisibleNodeIds()
+  let changed = false
   const nextNodes = nodes.value.map((n) => {
     const data = { ...((n.data ?? {}) as Record<string, unknown>) }
     const managed = data.__packageRelationFocusManaged === true
@@ -283,28 +284,26 @@ function applyPackageRelationFocusVisibility(): boolean {
       if (!managed) return n
       delete data.__packageRelationFocusManaged
       delete data.__packageRelationFocusBaseHidden
-      return {
-        ...n,
-        hidden: baseHidden,
-        data,
-      }
+      changed = true
+      return { ...n, hidden: baseHidden, data }
     }
 
     const shouldHide = !visibleIds.has(String(n.id))
+    const newHidden = baseHidden || shouldHide
+    if (
+      (n as { hidden?: boolean }).hidden === newHidden &&
+      managed &&
+      data.__packageRelationFocusBaseHidden === baseHidden
+    ) return n
+    changed = true
     return {
       ...n,
-      hidden: baseHidden || shouldHide,
-      data: {
-        ...data,
-        __packageRelationFocusManaged: true,
-        __packageRelationFocusBaseHidden: baseHidden,
-      },
+      hidden: newHidden,
+      data: { ...data, __packageRelationFocusManaged: true, __packageRelationFocusBaseHidden: baseHidden },
     }
   })
 
-  const prevSig = nodes.value.map((n) => `${String(n.id)}:${Boolean(n.hidden) ? 1 : 0}`).join('|')
-  const nextSig = nextNodes.map((n) => `${String(n.id)}:${Boolean(n.hidden) ? 1 : 0}`).join('|')
-  if (prevSig === nextSig) return false
+  if (!changed) return false
   nodes.value = nextNodes
   return true
 }
@@ -373,25 +372,33 @@ watch(
 )
 
 watch(
-  () =>
-    nodes.value
-      .map((n) => `${String((n as { id: string }).id)}:${(n as { hidden?: boolean }).hidden === true ? 1 : 0}`)
-      .join('|'),
+  () => {
+    // Only serialize hidden nodes — produces a much shorter string than serializing all N nodes,
+    // and the string comparison Vue does is proportionally faster.
+    let sig = ''
+    for (const n of nodes.value) {
+      if ((n as { hidden?: boolean }).hidden === true) sig += ',' + String(n.id)
+    }
+    return sig
+  },
   () => void nextTick(() => syncEdgeVisualState()),
 )
 
 watch(
-  () =>
-    nodes.value
-      .map((n) => {
-        const d = (n.data ?? {}) as Record<string, unknown>
-        const focus = typeof d.innerArtefactFocusId === 'string' ? d.innerArtefactFocusId : ''
-        const innerArts = Array.isArray(d.innerArtefacts) ? d.innerArtefacts.length : 0
-        const cross = Array.isArray(d.crossArtefactRelations) ? d.crossArtefactRelations.length : 0
-        const inner = Array.isArray(d.innerArtefactRelations) ? d.innerArtefactRelations.length : 0
-        return `${String(n.id)}:${focus}:${innerArts}:${cross}:${inner}`
-      })
-      .join('|'),
+  () => {
+    // Only include nodes that carry inner-artefact data — skips the majority of nodes on each tick.
+    let sig = ''
+    for (const n of nodes.value) {
+      const d = (n.data ?? {}) as Record<string, unknown>
+      const focus = typeof d.innerArtefactFocusId === 'string' ? d.innerArtefactFocusId : ''
+      const innerArts = Array.isArray(d.innerArtefacts) ? d.innerArtefacts.length : 0
+      const cross = Array.isArray(d.crossArtefactRelations) ? d.crossArtefactRelations.length : 0
+      const inner = Array.isArray(d.innerArtefactRelations) ? d.innerArtefactRelations.length : 0
+      if (focus || innerArts || cross || inner)
+        sig += `${String(n.id)}:${focus}:${innerArts}:${cross}:${inner}|`
+    }
+    return sig
+  },
   () => void nextTick(() => applyPackageRelationFocusVisibilityAndRelayout()),
 )
 
