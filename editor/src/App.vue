@@ -460,6 +460,10 @@ function scheduleRelayoutFromResize() {
   resizeTimer = setTimeout(() => {
     resizeTimer = null
     if (!nodes.value.length) return
+    // Skip layout while a drill click is pending or active — the drill owns both layout geometry
+    // and camera; running layoutDepthInViewport here would overwrite drill positions, and
+    // fitToViewport would snap singleton-scope diagrams (animal-fruit) to {x:0,y:0}.
+    if (graphRef.value?.layerDrillBusy?.()) return
     void (async () => {
       await waitFrameLayout()
       const vp = readFlowViewport()

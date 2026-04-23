@@ -132,6 +132,15 @@ function layerDrillActive(): boolean {
   return !!unref(raw)
 }
 
+/** True when a drill is active OR a click-timer is pending (i.e. the drill is about to fire).
+ * Used to suppress viewport resets (resize-relayout, singleton-scope snap) that would race the
+ * drill animation — without this guard the viewport jumps to {x:0,y:0} before applyLayerDrill. */
+function layerDrillBusy(): boolean {
+  if (layerDrillActive()) return true
+  const pending = (drillRef.value as { layerDrillPending?: unknown } | null)?.layerDrillPending
+  return !!unref(pending)
+}
+
 function resetVerticalScrollChrome(): void {
   verticalScrollChrome.value = false
   horizontalScrollChrome.value = false
@@ -455,9 +464,8 @@ async function relayoutViewport(opts?: { skipDrillReapply?: boolean; preserveFit
    */
   const reapplied = opts?.skipDrillReapply ? false : ((await drillRef.value?.reapplyLayerDrill?.()) ?? false)
   if (reapplied) return
-  /** Keep the full graph in view after geometry changes; skip while layer drill owns the camera. */
-  const layerDrill = drillRef.value && 'layerDrillId' in drillRef.value ? (drillRef.value as any).layerDrillId : null
-  if (!unref(layerDrill)) {
+  /** Keep the full graph in view after geometry changes; skip while drill is active or pending. */
+  if (!layerDrillBusy()) {
     if (hasSingletonRootPackageScopeOverview()) {
       await fitOverviewSingletonPackageScope(0)
     } else {
@@ -975,9 +983,11 @@ async function fitToViewport(opts?: {
   const duration = opts?.duration ?? 220
   const vp = readFlowViewport()
   // Layer drill always takes priority — even a singleton package-scope root must not snap
-  // the viewport to origin while a drill is active (that causes the jump-to-right-bottom bug
-  // in diagrams like animal-fruit that have one root group with packageScope: true).
-  if (layerDrillActive()) {
+  // the viewport to origin while a drill is active or pending (that causes the jump-to-right-bottom
+  // bug in diagrams like animal-fruit that have one root group with packageScope: true).
+  if (layerDrillBusy()) {
+    // When only pending (click timer started, drill not yet active), hold the camera steady.
+    if (!layerDrillActive()) return
     resetVerticalScrollChrome()
     const visibleRoots = nodes.value.filter((n) => !n.parentNode && !(n as { hidden?: boolean }).hidden)
     if (!visibleRoots.length) {
@@ -1154,6 +1164,7 @@ defineExpose({
   fitToViewport,
   relayoutViewport,
   refreshEdgeEmphasis: syncEdgeVisualState,
+  layerDrillBusy,
 })
 </script>
 

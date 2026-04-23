@@ -53,6 +53,10 @@ const fitWorkspaceViewport = inject<
 /** Container (group) zoom drill */
 const focusedId = ref<string | null>(null)
 let clickTimer: ReturnType<typeof setTimeout> | null = null
+/** True from the moment a click-timer is set until it fires or is cancelled. Used by the parent
+ * workspace to suppress viewport resets (e.g. resize-triggered relayout) that would race the
+ * drill animation — without this guard the viewport snaps to {x:0,y:0} before applyLayerDrill. */
+const layerDrillPending = ref(false)
 let suppressPaneClickUntil = 0
 
 /** Module layer drill: one depth column focus */
@@ -977,10 +981,7 @@ async function showFullGraph() {
  * single `fitToViewport` so the camera never “zooms out to everything” and then corrects.
  */
 function resetNavigationAfterDocReplace() {
-  if (clickTimer) {
-    clearTimeout(clickTimer)
-    clickTimer = null
-  }
+  cancelClickTimer()
   layerSnapshot.value = null
   layerDrillId.value = null
   layerDrillReturnFocusId.value = null
@@ -997,6 +998,24 @@ function containerHasChildren(nodeId: string): boolean {
 
 const MODULE_CLICK_DELAY_MS = 280
 
+function startClickTimer(fn: () => void, delay = MODULE_CLICK_DELAY_MS): void {
+  cancelClickTimer()
+  layerDrillPending.value = true
+  clickTimer = setTimeout(() => {
+    clickTimer = null
+    layerDrillPending.value = false
+    fn()
+  }, delay)
+}
+
+function cancelClickTimer(): void {
+  if (clickTimer) {
+    clearTimeout(clickTimer)
+    clickTimer = null
+    layerDrillPending.value = false
+  }
+}
+
 /**
  * Click semantics share the same "scale this box to its layer" intent across leaf project
  * boxes and group package containers. Both go through `applyLayerDrill`: clicking a box
@@ -1006,10 +1025,7 @@ const MODULE_CLICK_DELAY_MS = 280
  * depth-layered region (e.g. legacy ilograph documents without dependency edges).
  */
 onNodeClick(({ node }) => {
-  if (clickTimer) {
-    clearTimeout(clickTimer)
-    clickTimer = null
-  }
+  cancelClickTimer()
 
   if (isLeafBoxNode(node)) {
     if (layerDrillId.value === node.id) {
@@ -1020,10 +1036,7 @@ onNodeClick(({ node }) => {
       void applyLayerDrill(node.id)
       return
     }
-    clickTimer = setTimeout(() => {
-      clickTimer = null
-      void applyLayerDrill(node.id)
-    }, MODULE_CLICK_DELAY_MS)
+    startClickTimer(() => void applyLayerDrill(node.id))
     return
   }
 
@@ -1046,24 +1059,15 @@ onNodeClick(({ node }) => {
    * scaling identical to ProjectBox scaling.
    */
   if (node.type === 'group') {
-    clickTimer = setTimeout(() => {
-      clickTimer = null
-      void applyLayerDrill(node.id)
-    }, MODULE_CLICK_DELAY_MS)
+    startClickTimer(() => void applyLayerDrill(node.id))
     return
   }
 
-  clickTimer = setTimeout(() => {
-    clickTimer = null
-    void zoomIntoContainer(node.id)
-  }, 320)
+  startClickTimer(() => void zoomIntoContainer(node.id), 320)
 })
 
 onNodeDoubleClick(() => {
-  if (clickTimer) {
-    clearTimeout(clickTimer)
-    clickTimer = null
-  }
+  cancelClickTimer()
 })
 
 onMoveStart(() => {
@@ -1077,20 +1081,14 @@ onMoveEnd(() => {
 onPaneClick(() => {
   if (shouldSuppressPaneClick?.()) return
   if (Date.now() < suppressPaneClickUntil) return
-  if (clickTimer) {
-    clearTimeout(clickTimer)
-    clickTimer = null
-  }
+  cancelClickTimer()
   void showFullGraph()
 })
 
 function onKeydown(ev: KeyboardEvent) {
   if (ev.key === 'Escape') {
     ev.preventDefault()
-    if (clickTimer) {
-      clearTimeout(clickTimer)
-      clickTimer = null
-    }
+    cancelClickTimer()
     void showFullGraph()
   }
 }
@@ -1132,6 +1130,7 @@ async function reapplyLayerDrill(): Promise<boolean> {
 defineExpose({
   focusedId,
   layerDrillId,
+  layerDrillPending,
   showFullGraph,
   resetNavigationAfterDocReplace,
   zoomIntoContainer,
