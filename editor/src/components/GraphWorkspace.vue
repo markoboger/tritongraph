@@ -974,10 +974,9 @@ async function fitToViewport(opts?: {
   await doubleRaf()
   const duration = opts?.duration ?? 220
   const vp = readFlowViewport()
-  if (hasSingletonRootPackageScopeOverview()) {
-    await fitOverviewSingletonPackageScope(duration)
-    return
-  }
+  // Layer drill always takes priority — even a singleton package-scope root must not snap
+  // the viewport to origin while a drill is active (that causes the jump-to-right-bottom bug
+  // in diagrams like animal-fruit that have one root group with packageScope: true).
   if (layerDrillActive()) {
     resetVerticalScrollChrome()
     const visibleRoots = nodes.value.filter((n) => !n.parentNode && !(n as { hidden?: boolean }).hidden)
@@ -1000,6 +999,11 @@ async function fitToViewport(opts?: {
     const x = vp.width / 2 - (rect.x + rect.width / 2)
     const y = vp.height / 2 - (rect.y + rect.height / 2)
     await setViewport({ x, y, zoom: 1 }, { duration })
+    return
+  }
+
+  if (hasSingletonRootPackageScopeOverview()) {
+    await fitOverviewSingletonPackageScope(duration)
     return
   }
 
