@@ -360,18 +360,29 @@ function mergeNodeClass(existing: string | undefined, add: string): string | und
   return s || undefined
 }
 
-function descendantIds(parentId: string): string[] {
-  const nodes = getNodes.value
+function buildChildrenMap(nodes: { id: string; parentNode?: unknown }[]): Map<string, string[]> {
+  const m = new Map<string, string[]>()
+  for (const n of nodes) {
+    if (n.parentNode) {
+      const pid = String(n.parentNode)
+      let arr = m.get(pid)
+      if (!arr) { arr = []; m.set(pid, arr) }
+      arr.push(n.id)
+    }
+  }
+  return m
+}
+
+function descendantIds(parentId: string, childrenMap?: Map<string, string[]>): string[] {
+  const map = childrenMap ?? buildChildrenMap(getNodes.value)
   const out: string[] = [parentId]
   let frontier: string[] = [parentId]
   while (frontier.length) {
     const next: string[] = []
     for (const id of frontier) {
-      for (const n of nodes) {
-        if (String(n.parentNode) === id) {
-          out.push(n.id)
-          next.push(n.id)
-        }
+      const children = map.get(id)
+      if (children) {
+        for (const cid of children) { out.push(cid); next.push(cid) }
       }
     }
     frontier = next
@@ -734,20 +745,34 @@ async function applyLayerDrill(moduleId: string) {
   const regionParticipants = collectRegionParticipants(nodes, regionParent, depths)
 
   const fd = depths.get(moduleId) ?? 0
+
+  // Build pinned set once — isModulePinnedIn does nodes.find() per call, so O(n × k) without this.
+  const pinnedIds = new Set<string>()
+  for (const n of nodes) {
+    const d = n.data && typeof n.data === 'object' ? (n.data as Record<string, unknown>) : null
+    if (d?.pinned === true) pinnedIds.add(String(n.id))
+  }
+
   /** Pin semantics only apply to leaf modules today; groups are never pinned. */
   const depthsWithPinned = new Set<number>()
   for (const m of regionParticipants) {
-    if (isModulePinnedIn(nodes, m.id)) depthsWithPinned.add(m.depth)
+    if (pinnedIds.has(m.id)) depthsWithPinned.add(m.depth)
   }
 
+  // Single pass: derive hiddenSiblingIds, wideAtFocusDepthIds, layoutParticipants, and the
+  // anyHiddenSibling flag (replaces the separate .some() scan).
   const hiddenSiblingIds = new Set<string>()
+  const wideAtFocusDepthIds = new Set<string>()
+  const layoutParticipants: typeof regionParticipants = []
+  let anyHiddenSibling = false
   for (const m of regionParticipants) {
-    if (m.id === moduleId) continue
-    if (m.depth === fd && !isModulePinnedIn(nodes, m.id)) {
+    if (m.id !== moduleId &&
+        ((m.depth === fd || depthsWithPinned.has(m.depth)) && !pinnedIds.has(m.id))) {
       hiddenSiblingIds.add(m.id)
-    }
-    if (depthsWithPinned.has(m.depth) && !isModulePinnedIn(nodes, m.id)) {
-      hiddenSiblingIds.add(m.id)
+      anyHiddenSibling = true
+    } else {
+      layoutParticipants.push(m)
+      if (m.depth === fd && pinnedIds.has(m.id)) wideAtFocusDepthIds.add(m.id)
     }
   }
 
@@ -755,21 +780,15 @@ async function applyLayerDrill(moduleId: string) {
    * Hiding a group also hides every node nested inside it; otherwise the descendants would
    * remain rendered in flow space and overlap the focused box.
    */
-  if (targetIsGroup || regionParticipants.some((m) => hiddenSiblingIds.has(m.id))) {
+  if (targetIsGroup || anyHiddenSibling) {
+    const childrenMap = buildChildrenMap(nodes)
     const expand = new Set(hiddenSiblingIds)
     for (const id of expand) {
-      for (const desc of descendantIds(id)) {
+      for (const desc of descendantIds(id, childrenMap)) {
         if (desc !== id) hiddenSiblingIds.add(desc)
       }
     }
   }
-
-  const wideAtFocusDepthIds = new Set(
-    regionParticipants.filter((m) => m.depth === fd && isModulePinnedIn(nodes, m.id)).map((m) => m.id),
-  )
-
-  /** Same-layer peers are hidden — omit them from width conservation so the focus column can grow. */
-  const layoutParticipants = regionParticipants.filter((m) => !hiddenSiblingIds.has(m.id))
 
   const geoMap = computeLayerDrillColumnLayout({
     regionModules: layoutParticipants,
@@ -831,7 +850,7 @@ async function applyLayerDrill(moduleId: string) {
     }
 
     /** Pinned modules in other layers stay full diagram height alongside the current drill focus. */
-    if (isModulePinnedIn(nodes, n.id)) {
+    if (pinnedIds.has(String(n.id))) {
       delete prevData.layerDrillFocus
       const prevStyle = geo.style && typeof geo.style === 'object' ? { ...(geo.style as Styles) } : {}
       return {

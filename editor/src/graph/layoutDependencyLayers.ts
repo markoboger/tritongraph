@@ -1710,7 +1710,13 @@ function stretchPackageScopeGroupChildrenToFillBounds(
   const innerTop = geo.stackTop
   /** Symmetric with left inset — avoid `GROUP_WRAP` slack on right/bottom for this outer card. */
   const innerW = Math.max(120, bounds.width - 2 * INNER_PAD_X)
-  const innerH = Math.max(80, bounds.height - innerTop - INNER_PAD_Y)
+  /**
+   * Match {@link layoutOneParent}: children occupy the stack band between `stackTop` and the
+   * bottom routing lane + inner pad. Using only `INNER_PAD_Y` here omitted the bottom lane and
+   * stretched children ~`laneEach` too tall, pinching the bottom gutter vs. left/right insets.
+   */
+  const innerBottomPad = geo.laneEach + geo.padBottom
+  const innerH = Math.max(80, bounds.height - innerTop - innerBottomPad)
 
   let minX = Infinity
   let minY = Infinity
