@@ -214,15 +214,6 @@ function mergeEdgeEmphClass(existing: string | undefined, emph: boolean): string
   return out || undefined
 }
 
-function edgeVisualSignature(arr: typeof edges.value): string {
-  return arr
-    .map(
-      (e) =>
-        `${String(e.id)}:${(e as { hidden?: boolean }).hidden === true ? 1 : 0}:${(e as { class?: string }).class ?? ''}`,
-    )
-    .join('\n')
-}
-
 function packageFocusState() {
   for (const n of nodes.value) {
     const data = (n.data ?? {}) as Record<string, unknown>
@@ -340,6 +331,7 @@ function syncEdgeVisualState() {
   const heid = hoveredEdgeId.value
   const hiddenIds = new Set(nodes.value.filter((n) => n.hidden).map((n) => String(n.id)))
 
+  let changed = false
   const next = edges.value.map((e) => {
     const id = String(e.id)
     const emph = heid ? id === heid : !!(hid && (e.source === hid || e.target === hid))
@@ -365,9 +357,10 @@ function syncEdgeVisualState() {
       prevLabelStyle.fontSize === newLabelStyle.fontSize &&
       prevLabelStyle.transform === newLabelStyle.transform
     if (newClass === prevC && newHidden === prevH && prevZ === newZIndex && sameLabelStyle) return e
+    changed = true
     return { ...e, class: newClass, hidden: newHidden, zIndex: newZIndex, labelStyle: newLabelStyle }
   })
-  if (edgeVisualSignature(next) === edgeVisualSignature(edges.value)) return
+  if (!changed) return
   edges.value = next
 }
 

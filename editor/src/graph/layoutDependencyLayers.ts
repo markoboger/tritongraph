@@ -462,6 +462,10 @@ function layoutOneParent(
   const children = out.filter((n) => (parentId ? String(n.parentNode) === parentId : !n.parentNode))
   if (!children.length) return
 
+  // Pre-build id→index map so all findIndex calls below are O(1) instead of O(n).
+  // Elements are replaced in-place (out[idx] = {...}), so indices stay stable.
+  const outIdxById = new Map<string, number>(out.map((n, i) => [String(n.id), i]))
+
   const childIds = new Set(children.map((c) => c.id))
   const internal = edges.filter(
     (e) => childIds.has(e.source) && childIds.has(e.target) && edgeContributesToClasspathDepth(e),
@@ -556,7 +560,7 @@ function layoutOneParent(
     let yCursor = stackTop
     for (let i = 0; i < n; i++) {
       const node = visibleLayerNodes[i]!
-      const idx = out.findIndex((x) => x.id === node.id)
+      const idx = outIdxById.get(String(node.id)) ?? -1
       if (idx === -1) {
         // Still advance cursor so subsequent siblings don't collapse onto missing slot.
         yCursor += slotHeights[i]! + stackGap
@@ -587,7 +591,7 @@ function layoutOneParent(
 
     for (const node of layerNodes) {
       if (!(node as { hidden?: boolean }).hidden) continue
-      const idx = out.findIndex((x) => x.id === node.id)
+      const idx = outIdxById.get(String(node.id)) ?? -1
       if (idx === -1) continue
       const prevStyle = out[idx].style && typeof out[idx].style === 'object' ? { ...out[idx].style } : {}
       out[idx] = {
@@ -611,13 +615,13 @@ function layoutOneParent(
     let maxR = 0
     let maxB = 0
     for (const c of children) {
-      const n = out.find((x) => x.id === c.id)
+      const n = out[outIdxById.get(String(c.id)) ?? -1]
       if (!n) continue
       const { w, h } = sizeOf(n)
       maxR = Math.max(maxR, n.position.x + w)
       maxB = Math.max(maxB, n.position.y + h)
     }
-    const pidx = out.findIndex((n) => n.id === parentId)
+    const pidx = outIdxById.get(String(parentId)) ?? -1
     if (pidx !== -1) {
       const prev = out[pidx].style ?? {}
       /** Outer Scala package frame: match left inset on the right/bottom (no extra `GROUP_WRAP`). */
@@ -1688,8 +1692,10 @@ function stretchPackageScopeGroupChildrenToFillBounds(
   edges: readonly { source: string; target: string; label?: unknown }[],
   bounds: ViewportSize,
 ): any[] {
+  // Pre-build id→index map for O(1) lookups in both child loops below.
+  const outIdxById = new Map<string, number>(out.map((n, i) => [String(n.id), i]))
   let nextOut = out
-  const gidx = nextOut.findIndex((n) => n.id === rootGroupId)
+  const gidx = outIdxById.get(String(rootGroupId)) ?? -1
   if (gidx === -1) return nextOut
   const group = nextOut[gidx] as { data?: Record<string, unknown> }
   if (group.data?.packageScope !== true) return nextOut
@@ -1711,7 +1717,7 @@ function stretchPackageScopeGroupChildrenToFillBounds(
   let maxX = -Infinity
   let maxY = -Infinity
   for (const c of children) {
-    const n = out.find((x) => x.id === c.id) as any
+    const n = out[outIdxById.get(String(c.id)) ?? -1] as any
     if (!n) continue
     const w = readNodePixelDim(n.style?.width, n.width, MODULE_W)
     const h = readNodePixelDim(n.style?.height, n.height, MODULE_H)
@@ -1729,7 +1735,7 @@ function stretchPackageScopeGroupChildrenToFillBounds(
   const resizedChildGroups: Array<{ id: string; width: number; height: number }> = []
 
   for (const c of children) {
-    const idx = nextOut.findIndex((x) => x.id === c.id)
+    const idx = outIdxById.get(String(c.id)) ?? -1
     if (idx === -1) continue
     const n = nextOut[idx] as any
     const w = readNodePixelDim(n.style?.width, n.width, MODULE_W)
