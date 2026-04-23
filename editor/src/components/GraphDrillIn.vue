@@ -360,18 +360,29 @@ function mergeNodeClass(existing: string | undefined, add: string): string | und
   return s || undefined
 }
 
-function descendantIds(parentId: string): string[] {
-  const nodes = getNodes.value
+function buildChildrenMap(nodes: { id: string; parentNode?: unknown }[]): Map<string, string[]> {
+  const m = new Map<string, string[]>()
+  for (const n of nodes) {
+    if (n.parentNode) {
+      const pid = String(n.parentNode)
+      let arr = m.get(pid)
+      if (!arr) { arr = []; m.set(pid, arr) }
+      arr.push(n.id)
+    }
+  }
+  return m
+}
+
+function descendantIds(parentId: string, childrenMap?: Map<string, string[]>): string[] {
+  const map = childrenMap ?? buildChildrenMap(getNodes.value)
   const out: string[] = [parentId]
   let frontier: string[] = [parentId]
   while (frontier.length) {
     const next: string[] = []
     for (const id of frontier) {
-      for (const n of nodes) {
-        if (String(n.parentNode) === id) {
-          out.push(n.id)
-          next.push(n.id)
-        }
+      const children = map.get(id)
+      if (children) {
+        for (const cid of children) { out.push(cid); next.push(cid) }
       }
     }
     frontier = next
@@ -756,9 +767,10 @@ async function applyLayerDrill(moduleId: string) {
    * remain rendered in flow space and overlap the focused box.
    */
   if (targetIsGroup || regionParticipants.some((m) => hiddenSiblingIds.has(m.id))) {
+    const childrenMap = buildChildrenMap(nodes)
     const expand = new Set(hiddenSiblingIds)
     for (const id of expand) {
-      for (const desc of descendantIds(id)) {
+      for (const desc of descendantIds(id, childrenMap)) {
         if (desc !== id) hiddenSiblingIds.add(desc)
       }
     }
