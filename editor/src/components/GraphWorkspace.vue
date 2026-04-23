@@ -1421,6 +1421,18 @@ defineExpose({
 </style>
 
 <style>
+/* Promote the pan/zoom pane to its own compositor layer — avoids repaints on every frame. */
+.vue-flow__transformationpane {
+  will-change: transform;
+}
+
+/* Promote individual nodes only while they are being animated (layout or FLIP).
+   Unconditional will-change on all nodes would waste GPU memory at rest. */
+.flow.tg-depth-layout-animate .vue-flow__node,
+.flow.tg-layer-flip-animate .vue-flow__node {
+  will-change: transform;
+}
+
 /* Smooth node bounds (layer drill + layout) and dimming */
 .vue-flow__node {
   transition:
