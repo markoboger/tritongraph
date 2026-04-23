@@ -959,7 +959,7 @@ async function loadDojoFixture(id: string) {
     return
   }
   sourcePath.value = `dojo/${fixture.fileName}`
-  await applyDoc(fixture.yaml, fixture.fileName, false)
+  await applyDoc(fixture.yaml, fixture.fileName, false, { moduleNodeType: 'package' })
   status.value = `Loaded dojo fixture ${fixture.id}.`
 }
 
