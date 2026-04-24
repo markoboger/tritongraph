@@ -2519,7 +2519,8 @@ const showDojoPanel = computed(
     activeDojoId.value === PACKAGE_NESTING_DOJO_ID ||
     activeDojoId.value === PACKAGE_STACKING_DOJO_ID ||
     activeDojoId.value === PACKAGE_IMPORT_CHAIN_DOJO_ID ||
-    activeDojoId.value === PACKAGE_TREE_DOJO_ID,
+    activeDojoId.value === PACKAGE_TREE_DOJO_ID ||
+    activeDojoId.value === ARTEFACT_HIERARCHY_DOJO_ID,
 )
 
 watch(activeTabId, () => {
