@@ -461,6 +461,14 @@ type InnerEdgeDraw = {
 }
 
 const innerArtefactDiagramRef = ref<HTMLElement | null>(null)
+// ── inner diagram scroll state ────────────────────────────────────────────
+const innerDiagramColsRef = ref<HTMLElement | null>(null)
+const innerScrollX = ref(0)
+const innerScrollY = ref(0)
+const innerContentW = ref(0)
+const innerViewportW = ref(0)
+const innerContentH = ref(0)
+const innerViewportH = ref(0)
 const innerEdgeDraws = ref<InnerEdgeDraw[]>([])
 const innerArtefactSlotEls = new Map<string, HTMLElement>()
 const innerHoverEdgeId = ref<string | null>(null)
@@ -941,7 +949,107 @@ function scheduleInnerEdgeRefreshSettled() {
   innerEdgeSettleTimer = setTimeout(() => {
     innerEdgeSettleTimer = null
     refreshInnerArtefactEdges()
+    updateInnerScrollMetrics()
   }, INNER_EDGE_LAYOUT_SETTLE_MS)
+}
+
+// ── inner diagram scroll / pan ────────────────────────────────────────────
+function updateInnerScrollMetrics() {
+  const cols = innerDiagramColsRef.value
+  const container = innerArtefactDiagramRef.value
+  if (!cols || !container) return
+  innerViewportW.value = container.clientWidth
+  innerViewportH.value = container.clientHeight
+  innerContentW.value = cols.scrollWidth
+  innerContentH.value = cols.scrollHeight
+  const maxX = Math.max(0, innerContentW.value - innerViewportW.value)
+  const maxY = Math.max(0, innerContentH.value - innerViewportH.value)
+  if (-innerScrollX.value > maxX) innerScrollX.value = -maxX
+  if (-innerScrollY.value > maxY) innerScrollY.value = -maxY
+}
+
+const innerHScrollNeeded = computed(() => innerContentW.value > innerViewportW.value + 4)
+const innerVScrollNeeded = computed(() => innerContentH.value > innerViewportH.value + 4)
+
+const innerHThumbFraction = computed(() =>
+  !innerHScrollNeeded.value ? 1 : Math.max(0.06, innerViewportW.value / innerContentW.value),
+)
+const innerVThumbFraction = computed(() =>
+  !innerVScrollNeeded.value ? 1 : Math.max(0.06, innerViewportH.value / innerContentH.value),
+)
+const innerHScrollRatio = computed(() => {
+  const span = innerContentW.value - innerViewportW.value
+  return span > 0 ? (-innerScrollX.value / span) * 1000 : 0
+})
+const innerVScrollRatio = computed(() => {
+  const span = innerContentH.value - innerViewportH.value
+  return span > 0 ? (-innerScrollY.value / span) * 1000 : 0
+})
+const innerVThumbStyle = computed(() => {
+  const t = innerVScrollRatio.value / 1000
+  const frac = innerVThumbFraction.value
+  return { top: `${(t * (1 - frac) * 100).toFixed(3)}%`, height: `${(frac * 100).toFixed(3)}%` }
+})
+const innerHThumbStyle = computed(() => {
+  const t = innerHScrollRatio.value / 1000
+  const frac = innerHThumbFraction.value
+  return { left: `${(t * (1 - frac) * 100).toFixed(3)}%`, width: `${(frac * 100).toFixed(3)}%` }
+})
+
+function onInnerWheel(ev: WheelEvent) {
+  if (!innerHScrollNeeded.value && !innerVScrollNeeded.value) return
+  ev.preventDefault()
+  ev.stopPropagation()
+  const factor = ev.deltaMode === 2 ? 300 : ev.deltaMode === 1 ? 20 : 1
+  const dx = ev.deltaX * factor
+  const dy = ev.deltaY * factor
+  const maxX = Math.max(0, innerContentW.value - innerViewportW.value)
+  const maxY = Math.max(0, innerContentH.value - innerViewportH.value)
+  innerScrollX.value = Math.max(-maxX, Math.min(0, innerScrollX.value - dx))
+  innerScrollY.value = Math.max(-maxY, Math.min(0, innerScrollY.value - dy))
+}
+
+let innerPanDrag: { startX: number; startY: number; startScrollX: number; startScrollY: number } | null = null
+
+function onInnerPointerDown(ev: PointerEvent) {
+  if (ev.button !== 0) return
+  if (!(ev.target instanceof Element)) return
+  if (ev.target.closest('.package-box__inner-slot')) return
+  if (!innerHScrollNeeded.value && !innerVScrollNeeded.value) return
+  innerPanDrag = {
+    startX: ev.clientX,
+    startY: ev.clientY,
+    startScrollX: innerScrollX.value,
+    startScrollY: innerScrollY.value,
+  }
+  window.addEventListener('pointermove', onInnerPointerMove, { capture: true })
+  window.addEventListener('pointerup', onInnerPointerUp, { capture: true })
+}
+
+function onInnerPointerMove(ev: PointerEvent) {
+  if (!innerPanDrag) return
+  const dx = ev.clientX - innerPanDrag.startX
+  const dy = ev.clientY - innerPanDrag.startY
+  const maxX = Math.max(0, innerContentW.value - innerViewportW.value)
+  const maxY = Math.max(0, innerContentH.value - innerViewportH.value)
+  innerScrollX.value = Math.max(-maxX, Math.min(0, innerPanDrag.startScrollX + dx))
+  innerScrollY.value = Math.max(-maxY, Math.min(0, innerPanDrag.startScrollY + dy))
+}
+
+function onInnerPointerUp() {
+  innerPanDrag = null
+  window.removeEventListener('pointermove', onInnerPointerMove, true)
+  window.removeEventListener('pointerup', onInnerPointerUp, true)
+}
+
+function onInnerHSliderInput(ev: Event) {
+  const t = Number((ev.target as HTMLInputElement).value) / 1000
+  innerScrollX.value = -Math.max(0, innerContentW.value - innerViewportW.value) * t
+}
+
+function onInnerVSliderInput(ev: Event) {
+  const t = Number((ev.target as HTMLInputElement).value) / 1000
+  innerScrollY.value = -Math.max(0, innerContentH.value - innerViewportH.value) * t
 }
 
 /** Inner-diagram panel: child packages and/or Scala artefacts (artefacts only at top-level inner view). */
@@ -1268,6 +1376,8 @@ onUnmounted(() => {
   innerEdgeBurstTimers.clear()
   innerHoverEdgeId.value = null
   innerHoverArtId.value = null
+  window.removeEventListener('pointermove', onInnerPointerMove, true)
+  window.removeEventListener('pointerup', onInnerPointerUp, true)
 })
 
 watch(
@@ -1295,9 +1405,13 @@ watch(innerArtefactDiagramRef, (el) => {
   innerArtefactRo?.disconnect()
   innerArtefactRo = null
   if (el) {
-    innerArtefactRo = new ResizeObserver(() => scheduleInnerEdgeRefresh())
+    innerArtefactRo = new ResizeObserver(() => {
+      scheduleInnerEdgeRefresh()
+      updateInnerScrollMetrics()
+    })
     innerArtefactRo.observe(el)
     scheduleInnerEdgeRefreshSettled()
+    updateInnerScrollMetrics()
   }
 })
 
@@ -1361,6 +1475,13 @@ watch(innerDrillPathArr, (p, prev) => {
 })
 
 watch(crossPackagePreviewActive, () => void nextTick(() => scheduleInnerEdgeRefreshSettled()))
+
+watch(innerDiagramColsRef, () => void nextTick(() => updateInnerScrollMetrics()))
+
+watch([innerArtefactLayerColumns, () => props.focusedInnerArtefactId], () => {
+  innerScrollX.value = 0
+  innerScrollY.value = 0
+})
 
 const editing = ref(false)
 const draftLabel = ref('')
@@ -1547,6 +1668,8 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
             ref="innerArtefactDiagramRef"
             class="package-box__inner-artefact-diagram"
             :class="{ 'package-box__inner-artefact-diagram--artefact-focus': innerArtefactFocusActive }"
+            @wheel.prevent.stop="onInnerWheel"
+            @pointerdown="onInnerPointerDown"
           >
             <!--
               Base edge SVG comes first in DOM so it paints below the artefact cols.
@@ -1651,11 +1774,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
               and subclasses (right columns). Inheritance edges keep drawing throughout.
             -->
             <div
+              ref="innerDiagramColsRef"
               class="package-box__inner-artefact-cols"
               :class="{
                 'package-box__inner-artefact-cols--artefact-focus': innerArtefactFocusActive,
                 'package-box__inner-artefact-cols--with-packages': topLevelInnerPackages.length > 0,
               }"
+              :style="innerScrollX || innerScrollY ? { transform: `translate(${innerScrollX}px,${innerScrollY}px)` } : undefined"
             >
               <div
                 v-if="topLevelInnerPackages.length"
@@ -1875,6 +2000,43 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
                 </div>
               </div>
             </div>
+            <aside
+              v-if="innerVScrollNeeded"
+              class="inner-v-rail"
+              aria-label="Scroll inner diagram vertically"
+              @pointerdown.stop
+              @wheel.stop
+            >
+              <input
+                class="inner-v-rail__slider"
+                type="range"
+                min="0"
+                max="1000"
+                :value="innerVScrollRatio"
+                aria-orientation="vertical"
+                title="Scroll inner diagram vertically"
+                @input="onInnerVSliderInput"
+              />
+              <div class="inner-v-rail__thumb" :style="innerVThumbStyle" aria-hidden="true" />
+            </aside>
+            <aside
+              v-if="innerHScrollNeeded"
+              class="inner-h-rail"
+              aria-label="Scroll inner diagram horizontally"
+              @pointerdown.stop
+              @wheel.stop
+            >
+              <input
+                class="inner-h-rail__slider"
+                type="range"
+                min="0"
+                max="1000"
+                :value="innerHScrollRatio"
+                title="Scroll inner diagram horizontally"
+                @input="onInnerHSliderInput"
+              />
+              <div class="inner-h-rail__thumb" :style="innerHThumbStyle" aria-hidden="true" />
+            </aside>
             <svg class="package-box__inner-artefact-edges package-box__inner-artefact-edges--overlay" aria-hidden="true">
               <defs>
                 <marker
@@ -3017,14 +3179,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .package-box__inner-artefact-diagram {
   position: relative;
-  flex: 1 1 auto;
-  min-height: min-content;
+  flex: 1 1 0;
+  min-height: 0;
   min-width: 0;
   width: 100%;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  overflow: visible;
+  overflow: hidden;
   transition:
     flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     min-height 0.45s cubic-bezier(0.4, 0, 0.2, 1);
@@ -3149,11 +3311,11 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   align-items: flex-start;
   justify-content: center;
   gap: clamp(18px, 5.5cqw, 36px);
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-height: min-content;
   min-width: 0;
-  width: 100%;
-  padding: 4px 0 10px;
+  /* 6px horizontal inset keeps anchor dots (left: -5px / right: -5px) inside the clip container */
+  padding: 4px 6px 10px;
   overflow: visible;
   transition:
     flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
@@ -3626,6 +3788,185 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     max-height: 32px;
   }
 }
+/** Very narrow: suppress metric strip to avoid overlap with vertical title. */
+@container pkg-artefact-row (max-width: 80px) {
+  .package-box__artefact-metrics {
+    display: none;
+  }
+  .package-box__artefact-row--has-metrics {
+    padding-top: 6px;
+  }
+  .package-box__artefact-row .lang-icon-slot--artefact {
+    min-height: 22px;
+    max-height: 26px;
+  }
+}
+/** Extreme narrowing: suppress icon entirely, title only. */
+@container pkg-artefact-row (max-width: 60px) {
+  .package-box__artefact-row {
+    padding: 4px 2px 4px 8px;
+    gap: 2px;
+  }
+  .package-box__artefact-row .lang-icon-slot--artefact {
+    display: none;
+  }
+}
+
+/* ── inner diagram scroll rails ──────────────────────────────────────────── */
+.inner-v-rail {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  bottom: 20px; /* leave room for h-rail if both visible */
+  width: 20px;
+  z-index: 8;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  pointer-events: auto;
+}
+.inner-v-rail::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 3px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
+}
+.inner-v-rail:hover::before {
+  background: rgba(148, 163, 184, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+}
+.inner-v-rail__slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  min-height: 60px;
+  margin: 0;
+  cursor: grab;
+  background: transparent;
+  accent-color: transparent;
+  writing-mode: vertical-lr;
+  position: relative;
+  z-index: 2;
+  opacity: 0;
+}
+.inner-v-rail__slider::-webkit-slider-runnable-track { background: transparent; }
+.inner-v-rail__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.inner-v-rail__slider::-moz-range-track { background: transparent; }
+.inner-v-rail__slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.inner-v-rail__thumb {
+  position: absolute;
+  left: 50%;
+  width: 5px;
+  min-height: 16px;
+  margin-left: -2.5px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  pointer-events: none;
+  z-index: 1;
+  box-sizing: border-box;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.inner-v-rail:hover .inner-v-rail__thumb {
+  background: rgba(59, 130, 246, 0.22);
+  border-color: rgba(59, 130, 246, 0.40);
+}
+
+.inner-h-rail {
+  position: absolute;
+  left: 4px;
+  right: 20px; /* leave room for v-rail if both visible */
+  bottom: 2px;
+  height: 18px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: stretch;
+  pointer-events: auto;
+}
+.inner-h-rail::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
+}
+.inner-h-rail:hover::before {
+  background: rgba(148, 163, 184, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+}
+.inner-h-rail__slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 16px;
+  min-width: 60px;
+  margin: 0;
+  cursor: grab;
+  background: transparent;
+  accent-color: transparent;
+  position: relative;
+  z-index: 2;
+  opacity: 0;
+}
+.inner-h-rail__slider::-webkit-slider-runnable-track { background: transparent; }
+.inner-h-rail__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.inner-h-rail__slider::-moz-range-track { background: transparent; }
+.inner-h-rail__slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.inner-h-rail__thumb {
+  position: absolute;
+  top: 50%;
+  min-width: 16px;
+  height: 5px;
+  margin-top: -2.5px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  pointer-events: none;
+  z-index: 1;
+  box-sizing: border-box;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.inner-h-rail:hover .inner-h-rail__thumb {
+  background: rgba(59, 130, 246, 0.22);
+  border-color: rgba(59, 130, 246, 0.40);
+}
+
 .package-box__inner-drill-toolbar {
   display: flex;
   flex-direction: row;
