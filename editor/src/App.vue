@@ -183,6 +183,7 @@ const PACKAGE_NESTING_DOJO_ID = 'package-nesting'
 const PACKAGE_STACKING_DOJO_ID = 'package-stacking'
 const PACKAGE_IMPORT_CHAIN_DOJO_ID = 'package-import-chain'
 const PACKAGE_TREE_DOJO_ID = 'package-tree'
+const ARTEFACT_HIERARCHY_DOJO_ID = 'artefact-hierarchy'
 
 function clampDojoDepth(raw: number): number {
   if (!Number.isFinite(raw)) return 4
@@ -199,10 +200,16 @@ function clampDojoTreeCount(raw: number): number {
   return Math.min(128, Math.max(1, Math.round(raw)))
 }
 
+function clampDojoArtefactLayers(raw: number): number {
+  if (!Number.isFinite(raw)) return 2
+  return Math.min(5, Math.max(1, Math.round(raw)))
+}
+
 const dojoNestingDepth = ref(clampDojoDepth(initialRequestedDojoDepth))
 const dojoStackCount = ref(clampDojoStackCount(initialRequestedDojoDepth))
 const dojoImportChainLength = ref(clampDojoStackCount(initialRequestedDojoDepth))
 const dojoTreeCount = ref(clampDojoTreeCount(initialRequestedDojoDepth))
+const dojoArtefactLayers = ref(clampDojoArtefactLayers(initialRequestedDojoDepth))
 
 /** All bundled examples (`build.sbt` files) across every registered examples-root. */
 const sbtExamplesAll = listSbtExamples()
@@ -229,6 +236,7 @@ const dojoExamples = computed(() => [
   { id: PACKAGE_STACKING_DOJO_ID, title: 'Package stacking' },
   { id: PACKAGE_IMPORT_CHAIN_DOJO_ID, title: 'Package import chain' },
   { id: PACKAGE_TREE_DOJO_ID, title: 'Package tree' },
+  { id: ARTEFACT_HIERARCHY_DOJO_ID, title: 'Artefact hierarchy' },
   ...dojoFixtures.map((fixture) => ({ id: fixture.id, title: fixture.title })),
 ])
 
@@ -879,6 +887,390 @@ function buildPackageTreeDojoDocument(count: number): IlographDocument {
   }
 }
 
+/**
+ * Artefact hierarchy dojo: 4 packages (lifecycle, animals, fruits, registry) connected by
+ * `imports` edges; each package carries `x-triton-inner-artefacts` forming an inheritance tree.
+ * `layers` (1–5) controls how many levels deep the Scala type hierarchy goes:
+ *   1 → root traits + one abstract layer (Animal, Fruit)
+ *   2 → adds Vertebrate / Invertebrate / SeedFruit / FleshedFruit
+ *   3 → adds Mammal / Bird / Insect / PomeFruit / TropicalFruit
+ *   4 → adds concrete case classes (Cat, Dog, Sparrow, Apple, Banana)
+ *   5 → adds final specialisations (PersianCat, GoldenRetriever, GrannySmith, Cavendish)
+ */
+function buildArtefactHierarchyDojoDocument(layers: number): IlographDocument {
+  const n = clampDojoArtefactLayers(layers)
+
+  const LIFECYCLE = 'lifecycle'
+  const ANIMALS = 'animals'
+  const FRUITS = 'fruits'
+  const REGISTRY = 'registry'
+
+  const aid = (pkg: string, kind: string, name: string) =>
+    `${pkg}::${kind.replace(/\s+/g, '-')}:${name}`
+
+  // ── lifecycle ─────────────────────────────────────────────────────────────
+  const lifecycleArts = [
+    {
+      id: aid(LIFECYCLE, 'trait', 'Lifeform'),
+      name: 'Lifeform',
+      subtitle: 'trait',
+      declaration: 'trait Lifeform',
+      methodSignatures: [
+        { signature: 'def isAlive: Boolean', startRow: 1 },
+        { signature: 'def lifespan: Int', startRow: 2 },
+      ],
+    },
+    {
+      id: aid(LIFECYCLE, 'trait', 'Nameable'),
+      name: 'Nameable',
+      subtitle: 'trait',
+      declaration: 'trait Nameable',
+      methodSignatures: [
+        { signature: 'def name: String', startRow: 1 },
+        { signature: 'def displayName: String', startRow: 2 },
+      ],
+    },
+  ]
+
+  // ── animals ───────────────────────────────────────────────────────────────
+  const animalArts: any[] = [
+    {
+      id: aid(ANIMALS, 'abstract class', 'Animal'),
+      name: 'Animal',
+      subtitle: 'abstract class',
+      declaration: 'abstract class Animal extends Lifeform with Nameable',
+      methodSignatures: [
+        { signature: 'def makeSound(): String', startRow: 1 },
+        { signature: 'def move(): Unit', startRow: 2 },
+      ],
+    },
+  ]
+  const animalInnerRels: any[] = []
+  const animalCrossRels: any[] = [
+    { from: aid(ANIMALS, 'abstract class', 'Animal'), to: aid(LIFECYCLE, 'trait', 'Lifeform'), label: 'extends' },
+    { from: aid(ANIMALS, 'abstract class', 'Animal'), to: aid(LIFECYCLE, 'trait', 'Nameable'), label: 'with' },
+  ]
+
+  if (n >= 2) {
+    animalArts.push(
+      {
+        id: aid(ANIMALS, 'abstract class', 'Vertebrate'),
+        name: 'Vertebrate',
+        subtitle: 'abstract class',
+        declaration: 'abstract class Vertebrate extends Animal',
+        methodSignatures: [{ signature: 'def spineCount: Int', startRow: 1 }],
+      },
+      {
+        id: aid(ANIMALS, 'abstract class', 'Invertebrate'),
+        name: 'Invertebrate',
+        subtitle: 'abstract class',
+        declaration: 'abstract class Invertebrate extends Animal',
+        methodSignatures: [{ signature: 'def exoskeleton: Boolean', startRow: 1 }],
+      },
+    )
+    animalInnerRels.push(
+      { from: aid(ANIMALS, 'abstract class', 'Vertebrate'), to: aid(ANIMALS, 'abstract class', 'Animal'), label: 'extends' },
+      { from: aid(ANIMALS, 'abstract class', 'Invertebrate'), to: aid(ANIMALS, 'abstract class', 'Animal'), label: 'extends' },
+    )
+  }
+
+  if (n >= 3) {
+    animalArts.push(
+      {
+        id: aid(ANIMALS, 'abstract class', 'Mammal'),
+        name: 'Mammal',
+        subtitle: 'abstract class',
+        declaration: 'abstract class Mammal extends Vertebrate',
+        methodSignatures: [{ signature: 'def warmBlooded: Boolean', startRow: 1 }],
+      },
+      {
+        id: aid(ANIMALS, 'abstract class', 'Bird'),
+        name: 'Bird',
+        subtitle: 'abstract class',
+        declaration: 'abstract class Bird extends Vertebrate',
+        methodSignatures: [
+          { signature: 'def canFly: Boolean', startRow: 1 },
+          { signature: 'def wingspan: Double', startRow: 2 },
+        ],
+      },
+      {
+        id: aid(ANIMALS, 'abstract class', 'Insect'),
+        name: 'Insect',
+        subtitle: 'abstract class',
+        declaration: 'abstract class Insect extends Invertebrate',
+        methodSignatures: [{ signature: 'def legs: Int', startRow: 1 }],
+      },
+    )
+    animalInnerRels.push(
+      { from: aid(ANIMALS, 'abstract class', 'Mammal'), to: aid(ANIMALS, 'abstract class', 'Vertebrate'), label: 'extends' },
+      { from: aid(ANIMALS, 'abstract class', 'Bird'), to: aid(ANIMALS, 'abstract class', 'Vertebrate'), label: 'extends' },
+      { from: aid(ANIMALS, 'abstract class', 'Insect'), to: aid(ANIMALS, 'abstract class', 'Invertebrate'), label: 'extends' },
+    )
+  }
+
+  if (n >= 4) {
+    animalArts.push(
+      {
+        id: aid(ANIMALS, 'case class', 'Cat'),
+        name: 'Cat',
+        subtitle: 'case class',
+        declaration: 'case class Cat(name: String, indoor: Boolean) extends Mammal',
+        constructorParams: '(name: String, indoor: Boolean)',
+        methodSignatures: [{ signature: 'def makeSound(): String', startRow: 1 }],
+      },
+      {
+        id: aid(ANIMALS, 'case class', 'Dog'),
+        name: 'Dog',
+        subtitle: 'case class',
+        declaration: 'case class Dog(name: String, breed: String) extends Mammal',
+        constructorParams: '(name: String, breed: String)',
+        methodSignatures: [
+          { signature: 'def makeSound(): String', startRow: 1 },
+          { signature: 'def fetch(): Unit', startRow: 2 },
+        ],
+      },
+      {
+        id: aid(ANIMALS, 'case class', 'Sparrow'),
+        name: 'Sparrow',
+        subtitle: 'case class',
+        declaration: 'case class Sparrow(name: String) extends Bird',
+        constructorParams: '(name: String)',
+        methodSignatures: [{ signature: 'def canFly: Boolean', startRow: 1 }],
+      },
+    )
+    animalInnerRels.push(
+      { from: aid(ANIMALS, 'case class', 'Cat'), to: aid(ANIMALS, 'abstract class', 'Mammal'), label: 'extends' },
+      { from: aid(ANIMALS, 'case class', 'Dog'), to: aid(ANIMALS, 'abstract class', 'Mammal'), label: 'extends' },
+      { from: aid(ANIMALS, 'case class', 'Sparrow'), to: aid(ANIMALS, 'abstract class', 'Bird'), label: 'extends' },
+    )
+  }
+
+  if (n >= 5) {
+    animalArts.push(
+      {
+        id: aid(ANIMALS, 'case class', 'PersianCat'),
+        name: 'PersianCat',
+        subtitle: 'case class',
+        declaration: 'case class PersianCat(name: String) extends Cat',
+        constructorParams: '(name: String)',
+        methodSignatures: [],
+      },
+      {
+        id: aid(ANIMALS, 'case class', 'GoldenRetriever'),
+        name: 'GoldenRetriever',
+        subtitle: 'case class',
+        declaration: 'case class GoldenRetriever(name: String) extends Dog',
+        constructorParams: '(name: String)',
+        methodSignatures: [],
+      },
+    )
+    animalInnerRels.push(
+      { from: aid(ANIMALS, 'case class', 'PersianCat'), to: aid(ANIMALS, 'case class', 'Cat'), label: 'extends' },
+      { from: aid(ANIMALS, 'case class', 'GoldenRetriever'), to: aid(ANIMALS, 'case class', 'Dog'), label: 'extends' },
+    )
+  }
+
+  // ── fruits ────────────────────────────────────────────────────────────────
+  const fruitArts: any[] = [
+    {
+      id: aid(FRUITS, 'abstract class', 'Fruit'),
+      name: 'Fruit',
+      subtitle: 'abstract class',
+      declaration: 'abstract class Fruit extends Lifeform with Nameable',
+      methodSignatures: [
+        { signature: 'def sweetness: Double', startRow: 1 },
+        { signature: 'def ripeAt: java.time.LocalDate', startRow: 2 },
+      ],
+    },
+  ]
+  const fruitInnerRels: any[] = []
+  const fruitCrossRels: any[] = [
+    { from: aid(FRUITS, 'abstract class', 'Fruit'), to: aid(LIFECYCLE, 'trait', 'Lifeform'), label: 'extends' },
+    { from: aid(FRUITS, 'abstract class', 'Fruit'), to: aid(LIFECYCLE, 'trait', 'Nameable'), label: 'with' },
+  ]
+
+  if (n >= 2) {
+    fruitArts.push(
+      {
+        id: aid(FRUITS, 'abstract class', 'SeedFruit'),
+        name: 'SeedFruit',
+        subtitle: 'abstract class',
+        declaration: 'abstract class SeedFruit extends Fruit',
+        methodSignatures: [{ signature: 'def seedCount: Int', startRow: 1 }],
+      },
+      {
+        id: aid(FRUITS, 'abstract class', 'FleshedFruit'),
+        name: 'FleshedFruit',
+        subtitle: 'abstract class',
+        declaration: 'abstract class FleshedFruit extends Fruit',
+        methodSignatures: [{ signature: 'def pulpThickness: Double', startRow: 1 }],
+      },
+    )
+    fruitInnerRels.push(
+      { from: aid(FRUITS, 'abstract class', 'SeedFruit'), to: aid(FRUITS, 'abstract class', 'Fruit'), label: 'extends' },
+      { from: aid(FRUITS, 'abstract class', 'FleshedFruit'), to: aid(FRUITS, 'abstract class', 'Fruit'), label: 'extends' },
+    )
+  }
+
+  if (n >= 3) {
+    fruitArts.push(
+      {
+        id: aid(FRUITS, 'abstract class', 'PomeFruit'),
+        name: 'PomeFruit',
+        subtitle: 'abstract class',
+        declaration: 'abstract class PomeFruit extends SeedFruit',
+        methodSignatures: [{ signature: 'def coreSize: Double', startRow: 1 }],
+      },
+      {
+        id: aid(FRUITS, 'abstract class', 'TropicalFruit'),
+        name: 'TropicalFruit',
+        subtitle: 'abstract class',
+        declaration: 'abstract class TropicalFruit extends FleshedFruit',
+        methodSignatures: [{ signature: 'def growthZone: String', startRow: 1 }],
+      },
+    )
+    fruitInnerRels.push(
+      { from: aid(FRUITS, 'abstract class', 'PomeFruit'), to: aid(FRUITS, 'abstract class', 'SeedFruit'), label: 'extends' },
+      { from: aid(FRUITS, 'abstract class', 'TropicalFruit'), to: aid(FRUITS, 'abstract class', 'FleshedFruit'), label: 'extends' },
+    )
+  }
+
+  if (n >= 4) {
+    fruitArts.push(
+      {
+        id: aid(FRUITS, 'case class', 'Apple'),
+        name: 'Apple',
+        subtitle: 'case class',
+        declaration: 'case class Apple(name: String, colour: String) extends PomeFruit',
+        constructorParams: '(name: String, colour: String)',
+        methodSignatures: [{ signature: 'def sweetness: Double', startRow: 1 }],
+      },
+      {
+        id: aid(FRUITS, 'case class', 'Banana'),
+        name: 'Banana',
+        subtitle: 'case class',
+        declaration: 'case class Banana(name: String, curvature: Double) extends TropicalFruit',
+        constructorParams: '(name: String, curvature: Double)',
+        methodSignatures: [{ signature: 'def ripeness: Double', startRow: 1 }],
+      },
+    )
+    fruitInnerRels.push(
+      { from: aid(FRUITS, 'case class', 'Apple'), to: aid(FRUITS, 'abstract class', 'PomeFruit'), label: 'extends' },
+      { from: aid(FRUITS, 'case class', 'Banana'), to: aid(FRUITS, 'abstract class', 'TropicalFruit'), label: 'extends' },
+    )
+  }
+
+  if (n >= 5) {
+    fruitArts.push(
+      {
+        id: aid(FRUITS, 'case class', 'GrannySmith'),
+        name: 'GrannySmith',
+        subtitle: 'case class',
+        declaration: 'case class GrannySmith(name: String) extends Apple',
+        constructorParams: '(name: String)',
+        methodSignatures: [],
+      },
+      {
+        id: aid(FRUITS, 'case class', 'Cavendish'),
+        name: 'Cavendish',
+        subtitle: 'case class',
+        declaration: 'case class Cavendish(name: String) extends Banana',
+        constructorParams: '(name: String)',
+        methodSignatures: [],
+      },
+    )
+    fruitInnerRels.push(
+      { from: aid(FRUITS, 'case class', 'GrannySmith'), to: aid(FRUITS, 'case class', 'Apple'), label: 'extends' },
+      { from: aid(FRUITS, 'case class', 'Cavendish'), to: aid(FRUITS, 'case class', 'Banana'), label: 'extends' },
+    )
+  }
+
+  // ── registry ──────────────────────────────────────────────────────────────
+  const registryCrossRels: any[] = [
+    { from: aid(REGISTRY, 'object', 'Registry'), to: aid(ANIMALS, 'abstract class', 'Animal'), label: 'gets' },
+    { from: aid(REGISTRY, 'object', 'Registry'), to: aid(FRUITS, 'abstract class', 'Fruit'), label: 'gets' },
+  ]
+
+  function subtitleFor(arts: any[]): string {
+    const count = (s: string) => arts.filter((a) => a.subtitle === s).length
+    const parts: string[] = []
+    const t = count('trait')
+    const abs = count('abstract class')
+    const cc = count('case class')
+    const obj = count('object')
+    if (t) parts.push(`${t} trait${t !== 1 ? 's' : ''}`)
+    if (abs) parts.push(`${abs} abstract class${abs !== 1 ? 'es' : ''}`)
+    if (cc) parts.push(`${cc} case class${cc !== 1 ? 'es' : ''}`)
+    if (obj) parts.push(`${obj} object${obj !== 1 ? 's' : ''}`)
+    return parts.join(', ')
+  }
+
+  return {
+    description:
+      'Dojo for Scala artefact hierarchies inside package nodes. Increase layers to grow the inheritance tree across lifecycle, animals, fruits, and registry packages.',
+    resources: [
+      {
+        id: LIFECYCLE,
+        name: 'lifecycle',
+        subtitle: subtitleFor(lifecycleArts),
+        'x-triton-node-type': 'package',
+        'x-triton-inner-artefacts': lifecycleArts,
+      },
+      {
+        id: ANIMALS,
+        name: 'animals',
+        subtitle: subtitleFor(animalArts),
+        'x-triton-node-type': 'package',
+        'x-triton-inner-artefacts': animalArts,
+        ...(animalInnerRels.length ? { 'x-triton-inner-artefact-relations': animalInnerRels } : {}),
+        'x-triton-cross-artefact-relations': animalCrossRels,
+      },
+      {
+        id: FRUITS,
+        name: 'fruits',
+        subtitle: subtitleFor(fruitArts),
+        'x-triton-node-type': 'package',
+        'x-triton-inner-artefacts': fruitArts,
+        ...(fruitInnerRels.length ? { 'x-triton-inner-artefact-relations': fruitInnerRels } : {}),
+        'x-triton-cross-artefact-relations': fruitCrossRels,
+      },
+      {
+        id: REGISTRY,
+        name: 'registry',
+        subtitle: '1 object',
+        'x-triton-node-type': 'package',
+        'x-triton-inner-artefacts': [
+          {
+            id: aid(REGISTRY, 'object', 'Registry'),
+            name: 'Registry',
+            subtitle: 'object',
+            declaration: 'object Registry',
+            methodSignatures: [
+              { signature: 'def register(a: Animal): Unit', startRow: 1 },
+              { signature: 'def register(f: Fruit): Unit', startRow: 2 },
+              { signature: 'def all: List[Lifeform]', startRow: 3 },
+            ],
+          },
+        ],
+        'x-triton-cross-artefact-relations': registryCrossRels,
+      },
+    ],
+    perspectives: [
+      {
+        id: 'dependencies',
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        relations: [
+          { from: ANIMALS, to: LIFECYCLE, label: 'imports' },
+          { from: FRUITS, to: LIFECYCLE, label: 'imports' },
+          { from: REGISTRY, to: ANIMALS, label: 'imports' },
+          { from: REGISTRY, to: FRUITS, label: 'imports' },
+        ],
+      },
+    ],
+  }
+}
+
 async function loadPackageNestingDojo(depth: number) {
   const normalizedDepth = clampDojoDepth(depth)
   dojoNestingDepth.value = normalizedDepth
@@ -939,6 +1331,20 @@ async function loadPackageTreeDojo(nodeCount: number, prevCount?: number) {
   status.value = `Loaded dojo fixture ${PACKAGE_TREE_DOJO_ID} with ${n} packages.`
 }
 
+async function loadArtefactHierarchyDojo(layers: number) {
+  const n = clampDojoArtefactLayers(layers)
+  dojoArtefactLayers.value = n
+  sourcePath.value = `dojo/${ARTEFACT_HIERARCHY_DOJO_ID}.ilograph.yaml`
+  await applyDoc(
+    stringifyIlographYaml(buildArtefactHierarchyDojoDocument(n)),
+    `${ARTEFACT_HIERARCHY_DOJO_ID}.ilograph.yaml`,
+    false,
+    { moduleNodeType: 'package' },
+  )
+  if (activeTab.value) activeTab.value.dojoDepth = n
+  status.value = `Loaded dojo fixture ${ARTEFACT_HIERARCHY_DOJO_ID} at ${n} layer${n !== 1 ? 's' : ''}.`
+}
+
 async function loadDojoFixture(id: string) {
   if (id === PACKAGE_NESTING_DOJO_ID) {
     await loadPackageNestingDojo(dojoNestingDepth.value)
@@ -954,6 +1360,10 @@ async function loadDojoFixture(id: string) {
   }
   if (id === PACKAGE_TREE_DOJO_ID) {
     await loadPackageTreeDojo(dojoTreeCount.value)
+    return
+  }
+  if (id === ARTEFACT_HIERARCHY_DOJO_ID) {
+    await loadArtefactHierarchyDojo(dojoArtefactLayers.value)
     return
   }
   const fixture = getDojoFixture(id)
@@ -978,7 +1388,9 @@ async function openDojoTab(id: string): Promise<void> {
           ? `${PACKAGE_IMPORT_CHAIN_DOJO_ID}.ilograph.yaml`
           : id === PACKAGE_TREE_DOJO_ID
             ? `${PACKAGE_TREE_DOJO_ID}.ilograph.yaml`
-          : fixture?.fileName ?? `${id}.ilograph.yaml`
+            : id === ARTEFACT_HIERARCHY_DOJO_ID
+              ? `${ARTEFACT_HIERARCHY_DOJO_ID}.ilograph.yaml`
+              : fixture?.fileName ?? `${id}.ilograph.yaml`
   await openOrActivateTab(
     { key: `dojo:${id}`, title, iconUrl: cubeIconUrl },
     () => loadDojoFixture(id),
@@ -987,7 +1399,8 @@ async function openDojoTab(id: string): Promise<void> {
     id === PACKAGE_NESTING_DOJO_ID ||
     id === PACKAGE_STACKING_DOJO_ID ||
     id === PACKAGE_IMPORT_CHAIN_DOJO_ID ||
-    id === PACKAGE_TREE_DOJO_ID
+    id === PACKAGE_TREE_DOJO_ID ||
+    id === ARTEFACT_HIERARCHY_DOJO_ID
   ) {
     showYamlEditor.value = true
     sidePanelTab.value = 'dojo'
@@ -2000,6 +2413,20 @@ watch(dojoTreeCount, (count, prev) => {
   })
 })
 
+watch(dojoArtefactLayers, (layers, prev) => {
+  const normalized = clampDojoArtefactLayers(layers)
+  if (normalized !== layers) {
+    dojoArtefactLayers.value = normalized
+    return
+  }
+  if (normalized === prev) return
+  if (activeDojoId.value !== ARTEFACT_HIERARCHY_DOJO_ID) return
+  void loadArtefactHierarchyDojo(normalized).then(() => {
+    snapshotActiveTab()
+    syncUrlFromState()
+  })
+})
+
 watch([activeTabId, perspectiveName], () => {
   syncUrlFromState()
 })
@@ -2465,6 +2892,34 @@ onUnmounted(() => {
               <div class="dojo-panel__scale">
                 <span>1</span>
                 <span>128</span>
+              </div>
+            </div>
+            <div v-else-if="activeDojoId === ARTEFACT_HIERARCHY_DOJO_ID" class="dojo-panel">
+              <div class="dojo-panel__header">
+                <div class="dojo-panel__title">Artefact hierarchy</div>
+                <div class="dojo-panel__meta">{{ dojoArtefactLayers }} layer{{ dojoArtefactLayers !== 1 ? 's' : '' }}</div>
+              </div>
+              <p class="dojo-panel__hint">
+                Each layer deepens the Scala inheritance tree inside the
+                <strong>animals</strong> and <strong>fruits</strong> packages. Drill into any
+                package to see the inner artefact diagram grow as you move the slider.
+              </p>
+              <label class="dojo-panel__control" for="dojo-artefact-layers">
+                <span class="dojo-panel__label">Hierarchy layers</span>
+                <input
+                  id="dojo-artefact-layers"
+                  v-model.number="dojoArtefactLayers"
+                  class="dojo-panel__slider"
+                  type="range"
+                  min="1"
+                  max="5"
+                  step="1"
+                  aria-label="Artefact hierarchy layers"
+                />
+              </label>
+              <div class="dojo-panel__scale">
+                <span>1</span>
+                <span>5</span>
               </div>
             </div>
           </div>
