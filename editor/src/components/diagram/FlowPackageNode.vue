@@ -211,6 +211,7 @@ const isScalaArtefactLeaf = computed(() => getNodes.value.find((n) => n.id === p
 
 const refreshDimming = inject<(() => void) | undefined>('tritonRefreshDimming', undefined)
 const relayoutViewport = inject<(() => void | Promise<void>) | undefined>('tritonRelayoutViewport', undefined)
+const queueViewportStabilize = inject<(() => void) | undefined>('tritonQueueViewportStabilize', undefined)
 const graphFocusUi = inject<{ containerFocusId: string | null } | undefined>('tritonGraphFocusUi', undefined)
 const patchNodeData = inject<((id: string, patch: Record<string, unknown>) => void) | undefined>(
   'tritonPatchNodeData',
@@ -344,6 +345,7 @@ function onLayoutUpdateRequest() {
   // Trigger a window resize event to simulate the user's window resize action
   // This triggers the ResizeObservers which then trigger the proper layout recalculation
   window.dispatchEvent(new Event('resize'))
+  queueViewportStabilize?.()
 }
 
 function refreshOwnNodeDimensions() {
@@ -360,10 +362,12 @@ async function refreshOwnNodeDimensionsSettled() {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
   )
   refreshOwnNodeDimensions()
+  queueViewportStabilize?.()
   if (nodeDimensionSettleTimer != null) clearTimeout(nodeDimensionSettleTimer)
   nodeDimensionSettleTimer = setTimeout(() => {
     nodeDimensionSettleTimer = null
     refreshOwnNodeDimensions()
+    queueViewportStabilize?.()
   }, 520)
 }
 
@@ -379,6 +383,7 @@ watch(
 watch(
   globalFocusedArtefactId,
   async () => {
+    queueViewportStabilize?.()
     if (!crossArtefactRelationsForBox.value.length) return
     await refreshOwnNodeDimensionsSettled()
   },
@@ -387,6 +392,7 @@ watch(
 watch(
   () => props.data.innerArtefactFocusId,
   async () => {
+    queueViewportStabilize?.()
     if (!crossArtefactRelationsForBox.value.length) return
     await refreshOwnNodeDimensionsSettled()
   },

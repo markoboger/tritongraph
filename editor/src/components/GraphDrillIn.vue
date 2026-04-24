@@ -1020,9 +1020,11 @@ function cancelClickTimer(): void {
  * Click semantics share the same "scale this box to its layer" intent across leaf project
  * boxes and group package containers. Both go through `applyLayerDrill`: clicking a box
  * grows it to fill its column / layer (with FLIP animation), clicking the same box again
- * — or the parent group frame — drills back out. Clicking on the empty pane returns to the
- * overview. The fallback `zoomIntoContainer` is only for groups that aren't part of a
- * depth-layered region (e.g. legacy ilograph documents without dependency edges).
+ * — or the parent group frame — drills back out. Clicking the empty pane cancels a pending
+ * single-click drill timer only; camera / pan rails are synced by `GraphWorkspace` without
+ * clearing layer drill or inner focus. Full overview: Escape or `resetView` / `showFullGraph`.
+ * The fallback `zoomIntoContainer` is only for groups that aren't part of a depth-layered
+ * region (e.g. legacy ilograph documents without dependency edges).
  */
 onNodeClick(({ node }) => {
   cancelClickTimer()
@@ -1082,7 +1084,6 @@ onPaneClick(() => {
   if (shouldSuppressPaneClick?.()) return
   if (Date.now() < suppressPaneClickUntil) return
   cancelClickTimer()
-  void showFullGraph()
 })
 
 function onKeydown(ev: KeyboardEvent) {

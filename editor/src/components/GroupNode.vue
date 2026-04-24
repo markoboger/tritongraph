@@ -185,6 +185,13 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   background: rgb(248 250 252 / 0.9);
   box-sizing: border-box;
   position: relative;
+  /**
+   * Without a local size container, `@container` rules resolve against some outer ancestor whose
+   * width can change on focus/chrome/layout — header `right` / language position then jump. Queries
+   * are explicitly tied to this card via `gn-frame`.
+   */
+  container-type: size;
+  container-name: gn-frame;
 }
 .group-node__frame--package-scope {
   border-color: rgb(30 41 59 / 0.72);
@@ -221,7 +228,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   pointer-events: auto;
   z-index: 5;
 }
-@container (max-width: 150px) {
+@container gn-frame (max-width: 150px) {
   .group-node__language {
     top: 42px;
   }
@@ -248,7 +255,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   right: 56px;
   padding-top: 8px;
 }
-@container (max-width: 150px) {
+@container gn-frame (max-width: 150px) {
   .group-node__frame--has-metrics .group-node__pkg-header {
     padding-top: 28px;
   }
@@ -274,6 +281,18 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
 .group-node--focus .group-node__frame {
   border-color: #2563eb;
   box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.45);
+}
+/**
+ * Package-scope chrome uses a left inset shadow; the generic focus rule above would replace the
+ * entire `box-shadow` and drop that inset — titles read as “jumping” right. Keep the accent and
+ * stack the focus ring on top.
+ */
+.group-node--focus .group-node__frame--package-scope {
+  border-color: #2563eb;
+  box-shadow:
+    inset 6px 0 0 0 #64748b,
+    0 1px 3px rgb(15 23 42 / 0.08),
+    0 0 0 1px rgba(37, 99, 235, 0.45);
 }
 .banner {
   position: absolute;
@@ -318,7 +337,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   word-break: break-word;
   overflow-wrap: anywhere;
 }
-@container (max-width: 280px) {
+@container gn-frame (max-width: 280px) {
   .group-node__pkg-header .banner {
     font-size: 0.86rem;
   }
@@ -326,7 +345,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     font-size: 0.7rem;
   }
 }
-@container (max-width: 210px) {
+@container gn-frame (max-width: 210px) {
   .group-node__pkg-header .banner {
     font-size: 0.78rem;
   }
@@ -334,7 +353,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     font-size: 0.64rem;
   }
 }
-@container (max-height: 200px) {
+@container gn-frame (max-height: 200px) {
   .group-node__pkg-header {
     top: 2px;
   }
@@ -345,7 +364,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     font-size: 0.68rem;
   }
 }
-@container (max-height: 165px) {
+@container gn-frame (max-height: 165px) {
   .group-node__pkg-header {
     top: 1px;
     gap: 5px;
@@ -363,7 +382,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
  * block tried to style it — both matched the same band and `display: none` won, so level 8
  * stacks read as broken.
  */
-@container (max-height: 138px) {
+@container gn-frame (max-height: 138px) {
   .group-node__pkg-header {
     top: 4px;
     left: 8px;
@@ -384,7 +403,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     line-height: 1.15;
   }
 }
-@container (max-height: 108px) {
+@container gn-frame (max-height: 108px) {
   .group-node__pkg-header {
     top: 3px;
     left: 6px;
@@ -402,7 +421,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     font-size: 0.52rem;
   }
 }
-@container (max-height: 86px) {
+@container gn-frame (max-height: 86px) {
   .group-node__pkg-header {
     top: 2px;
     left: 4px;
@@ -422,7 +441,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
     line-height: 1.1;
   }
 }
-@container (max-height: 72px) {
+@container gn-frame (max-height: 72px) {
   .group-node__pkg-header {
     top: 2px;
     left: 4px;
