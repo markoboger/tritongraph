@@ -205,11 +205,17 @@ function clampDojoArtefactLayers(raw: number): number {
   return Math.min(5, Math.max(1, Math.round(raw)))
 }
 
+function clampDojoArtefactWidth(raw: number): number {
+  if (!Number.isFinite(raw)) return 1
+  return Math.min(4, Math.max(1, Math.round(raw)))
+}
+
 const dojoNestingDepth = ref(clampDojoDepth(initialRequestedDojoDepth))
 const dojoStackCount = ref(clampDojoStackCount(initialRequestedDojoDepth))
 const dojoImportChainLength = ref(clampDojoStackCount(initialRequestedDojoDepth))
 const dojoTreeCount = ref(clampDojoTreeCount(initialRequestedDojoDepth))
 const dojoArtefactLayers = ref(clampDojoArtefactLayers(initialRequestedDojoDepth))
+const dojoArtefactWidth = ref(1)
 
 /** All bundled examples (`build.sbt` files) across every registered examples-root. */
 const sbtExamplesAll = listSbtExamples()
@@ -890,15 +896,20 @@ function buildPackageTreeDojoDocument(count: number): IlographDocument {
 /**
  * Artefact hierarchy dojo: 4 packages (lifecycle, animals, fruits, registry) connected by
  * `imports` edges; each package carries `x-triton-inner-artefacts` forming an inheritance tree.
- * `layers` (1–5) controls how many levels deep the Scala type hierarchy goes:
+ *
+ * `layers` (1–5) — inheritance depth:
  *   1 → root traits + one abstract layer (Animal, Fruit)
  *   2 → adds Vertebrate / Invertebrate / SeedFruit / FleshedFruit
  *   3 → adds Mammal / Bird / Insect / PomeFruit / TropicalFruit
- *   4 → adds concrete case classes (Cat, Dog, Sparrow, Apple, Banana)
- *   5 → adds final specialisations (PersianCat, GoldenRetriever, GrannySmith, Cavendish)
+ *   4 → adds concrete leaf classes (Cat, Dog, Sparrow, Apple, Banana, …)
+ *   5 → adds final specialisations (PersianCat, Labrador, GrannySmith, …)
+ *
+ * `width` (1–4) — sibling count at each active layer: each step adds more
+ *   parallel artefacts per category so the inner diagram grows laterally.
  */
-function buildArtefactHierarchyDojoDocument(layers: number): IlographDocument {
+function buildArtefactHierarchyDojoDocument(layers: number, width: number): IlographDocument {
   const n = clampDojoArtefactLayers(layers)
+  const w = clampDojoArtefactWidth(width)
 
   const LIFECYCLE = 'lifecycle'
   const ANIMALS = 'animals'
@@ -909,7 +920,8 @@ function buildArtefactHierarchyDojoDocument(layers: number): IlographDocument {
     `${pkg}::${kind.replace(/\s+/g, '-')}:${name}`
 
   // ── lifecycle ─────────────────────────────────────────────────────────────
-  const lifecycleArts = [
+  // Width adds extra shared traits visible across both animals and fruits.
+  const lifecycleArts: any[] = [
     {
       id: aid(LIFECYCLE, 'trait', 'Lifeform'),
       name: 'Lifeform',
@@ -931,6 +943,22 @@ function buildArtefactHierarchyDojoDocument(layers: number): IlographDocument {
       ],
     },
   ]
+  // Extra lifecycle traits added by width >= 2 (shared by animals and fruits via cross-pkg).
+  const extraLifecycleTraits: Array<{ name: string; sig: string }> = [
+    { name: 'Measurable', sig: 'def measure: Double' },
+    { name: 'Observable', sig: 'def observe(): Unit' },
+    { name: 'Categorizable', sig: 'def category: String' },
+  ]
+  for (let i = 0; i < Math.min(w - 1, extraLifecycleTraits.length); i++) {
+    const t = extraLifecycleTraits[i]!
+    lifecycleArts.push({
+      id: aid(LIFECYCLE, 'trait', t.name),
+      name: t.name,
+      subtitle: 'trait',
+      declaration: `trait ${t.name}`,
+      methodSignatures: [{ signature: t.sig, startRow: 1 }],
+    })
+  }
 
   // ── animals ───────────────────────────────────────────────────────────────
   const animalArts: any[] = [
@@ -949,6 +977,18 @@ function buildArtefactHierarchyDojoDocument(layers: number): IlographDocument {
   const animalCrossRels: any[] = [
     { from: aid(ANIMALS, 'abstract class', 'Animal'), to: aid(LIFECYCLE, 'trait', 'Lifeform'), label: 'extends' },
     { from: aid(ANIMALS, 'abstract class', 'Animal'), to: aid(LIFECYCLE, 'trait', 'Nameable'), label: 'with' },
+    // Extra lifecycle traits (width >= 2) wired as `with` mixins on Animal.
+    ...extraLifecycleTraits.slice(0, Math.max(0, w - 1)).map((t) => ({
+      from: aid(ANIMALS, 'abstract class', 'Animal'),
+      to: aid(LIFECYCLE, 'trait', t.name),
+      label: 'with' as const,
+    })),
+  ]
+
+  // Width adds more sibling types at layer 2 (abstractions between Animal and concrete types).
+  const extraAnimalLayer2: Array<{ name: string; parent: string; sig: string }> = [
+    { name: 'Aquatic', parent: 'Animal', sig: 'def swimDepth: Double' },
+    { name: 'Aerial', parent: 'Animal', sig: 'def flightAltitude: Double' },
   ]
 
   if (n >= 2) {
@@ -972,6 +1012,22 @@ function buildArtefactHierarchyDojoDocument(layers: number): IlographDocument {
       { from: aid(ANIMALS, 'abstract class', 'Vertebrate'), to: aid(ANIMALS, 'abstract class', 'Animal'), label: 'extends' },
       { from: aid(ANIMALS, 'abstract class', 'Invertebrate'), to: aid(ANIMALS, 'abstract class', 'Animal'), label: 'extends' },
     )
+    // Extra layer-2 siblings (width >= 3).
+    for (let i = 0; i < Math.min(w - 2, extraAnimalLayer2.length); i++) {
+      const e = extraAnimalLayer2[i]!
+      animalArts.push({
+        id: aid(ANIMALS, 'abstract class', e.name),
+        name: e.name,
+        subtitle: 'abstract class',
+        declaration: `abstract class ${e.name} extends ${e.parent}`,
+        methodSignatures: [{ signature: e.sig, startRow: 1 }],
+      })
+      animalInnerRels.push({
+        from: aid(ANIMALS, 'abstract class', e.name),
+        to: aid(ANIMALS, 'abstract class', e.parent),
+        label: 'extends',
+      })
+    }
   }
 
   if (n >= 3) {
@@ -1009,65 +1065,75 @@ function buildArtefactHierarchyDojoDocument(layers: number): IlographDocument {
   }
 
   if (n >= 4) {
-    animalArts.push(
-      {
-        id: aid(ANIMALS, 'case class', 'Cat'),
-        name: 'Cat',
+    // Pool of leaf mammals and birds; width controls how many are included.
+    type LeafSpec = { name: string; parent: string; ctor: string; sigs: string[] }
+    const mammalPool: LeafSpec[] = [
+      { name: 'Cat', parent: 'Mammal', ctor: '(name: String, indoor: Boolean)', sigs: ['def makeSound(): String'] },
+      { name: 'Dog', parent: 'Mammal', ctor: '(name: String, breed: String)', sigs: ['def makeSound(): String', 'def fetch(): Unit'] },
+      { name: 'Mouse', parent: 'Mammal', ctor: '(name: String)', sigs: ['def makeSound(): String'] },
+      { name: 'Whale', parent: 'Mammal', ctor: '(name: String, length: Double)', sigs: ['def dive(): Unit'] },
+      { name: 'Bat', parent: 'Mammal', ctor: '(name: String)', sigs: ['def echolocate(): Boolean'] },
+      { name: 'Bear', parent: 'Mammal', ctor: '(name: String, weight: Double)', sigs: ['def hibernate(): Unit'] },
+    ]
+    const birdPool: LeafSpec[] = [
+      { name: 'Sparrow', parent: 'Bird', ctor: '(name: String)', sigs: ['def canFly: Boolean'] },
+      { name: 'Eagle', parent: 'Bird', ctor: '(name: String)', sigs: ['def canFly: Boolean', 'def huntRange: Double'] },
+      { name: 'Owl', parent: 'Bird', ctor: '(name: String)', sigs: ['def canFly: Boolean', 'def isNocturnal: Boolean'] },
+      { name: 'Parrot', parent: 'Bird', ctor: '(name: String, speaks: Boolean)', sigs: ['def mimic(): String'] },
+    ]
+    // width=1 → 2 mammals + 1 bird; each +1 width adds 1 more mammal + 1 bird (capped at pool size).
+    const mammalCount = Math.min(2 + (w - 1), mammalPool.length)
+    const birdCount   = Math.min(1 + (w - 1), birdPool.length)
+    const pushLeaf = (spec: LeafSpec) => {
+      animalArts.push({
+        id: aid(ANIMALS, 'case class', spec.name),
+        name: spec.name,
         subtitle: 'case class',
-        declaration: 'case class Cat(name: String, indoor: Boolean) extends Mammal',
-        constructorParams: '(name: String, indoor: Boolean)',
-        methodSignatures: [{ signature: 'def makeSound(): String', startRow: 1 }],
-      },
-      {
-        id: aid(ANIMALS, 'case class', 'Dog'),
-        name: 'Dog',
-        subtitle: 'case class',
-        declaration: 'case class Dog(name: String, breed: String) extends Mammal',
-        constructorParams: '(name: String, breed: String)',
-        methodSignatures: [
-          { signature: 'def makeSound(): String', startRow: 1 },
-          { signature: 'def fetch(): Unit', startRow: 2 },
-        ],
-      },
-      {
-        id: aid(ANIMALS, 'case class', 'Sparrow'),
-        name: 'Sparrow',
-        subtitle: 'case class',
-        declaration: 'case class Sparrow(name: String) extends Bird',
-        constructorParams: '(name: String)',
-        methodSignatures: [{ signature: 'def canFly: Boolean', startRow: 1 }],
-      },
-    )
-    animalInnerRels.push(
-      { from: aid(ANIMALS, 'case class', 'Cat'), to: aid(ANIMALS, 'abstract class', 'Mammal'), label: 'extends' },
-      { from: aid(ANIMALS, 'case class', 'Dog'), to: aid(ANIMALS, 'abstract class', 'Mammal'), label: 'extends' },
-      { from: aid(ANIMALS, 'case class', 'Sparrow'), to: aid(ANIMALS, 'abstract class', 'Bird'), label: 'extends' },
-    )
+        declaration: `case class ${spec.name}${spec.ctor} extends ${spec.parent}`,
+        constructorParams: spec.ctor,
+        methodSignatures: spec.sigs.map((s, i) => ({ signature: s, startRow: i + 1 })),
+      })
+      animalInnerRels.push({
+        from: aid(ANIMALS, 'case class', spec.name),
+        to: aid(ANIMALS, 'abstract class', spec.parent),
+        label: 'extends',
+      })
+    }
+    for (let i = 0; i < mammalCount; i++) pushLeaf(mammalPool[i]!)
+    for (let i = 0; i < birdCount; i++) pushLeaf(birdPool[i]!)
   }
 
   if (n >= 5) {
-    animalArts.push(
-      {
-        id: aid(ANIMALS, 'case class', 'PersianCat'),
-        name: 'PersianCat',
+    // Specialisations — one per parent mammal that's included (capped by width).
+    type SpecSpec = { name: string; parent: string }
+    const specPool: SpecSpec[] = [
+      { name: 'PersianCat', parent: 'Cat' },
+      { name: 'Labrador', parent: 'Dog' },
+      { name: 'FieldMouse', parent: 'Mouse' },
+      { name: 'BlueWhale', parent: 'Whale' },
+      { name: 'FruitBat', parent: 'Bat' },
+      { name: 'PolarBear', parent: 'Bear' },
+    ]
+    // Only emit specialisations whose parent was included at layer 4.
+    const includedMammals = new Set(
+      ['Cat', 'Dog', 'Mouse', 'Whale', 'Bat', 'Bear'].slice(0, Math.min(2 + (w - 1), 6))
+    )
+    for (const s of specPool) {
+      if (!includedMammals.has(s.parent)) continue
+      animalArts.push({
+        id: aid(ANIMALS, 'case class', s.name),
+        name: s.name,
         subtitle: 'case class',
-        declaration: 'case class PersianCat(name: String) extends Cat',
+        declaration: `case class ${s.name}(name: String) extends ${s.parent}`,
         constructorParams: '(name: String)',
         methodSignatures: [],
-      },
-      {
-        id: aid(ANIMALS, 'case class', 'GoldenRetriever'),
-        name: 'GoldenRetriever',
-        subtitle: 'case class',
-        declaration: 'case class GoldenRetriever(name: String) extends Dog',
-        constructorParams: '(name: String)',
-        methodSignatures: [],
-      },
-    )
-    animalInnerRels.push(
-      { from: aid(ANIMALS, 'case class', 'PersianCat'), to: aid(ANIMALS, 'case class', 'Cat'), label: 'extends' },
-      { from: aid(ANIMALS, 'case class', 'GoldenRetriever'), to: aid(ANIMALS, 'case class', 'Dog'), label: 'extends' },
-    )
+      })
+      animalInnerRels.push({
+        from: aid(ANIMALS, 'case class', s.name),
+        to: aid(ANIMALS, 'case class', s.parent),
+        label: 'extends',
+      })
+    }
   }
 
   // ── fruits ────────────────────────────────────────────────────────────────
@@ -1136,53 +1202,58 @@ function buildArtefactHierarchyDojoDocument(layers: number): IlographDocument {
   }
 
   if (n >= 4) {
-    fruitArts.push(
-      {
-        id: aid(FRUITS, 'case class', 'Apple'),
-        name: 'Apple',
-        subtitle: 'case class',
-        declaration: 'case class Apple(name: String, colour: String) extends PomeFruit',
-        constructorParams: '(name: String, colour: String)',
-        methodSignatures: [{ signature: 'def sweetness: Double', startRow: 1 }],
-      },
-      {
-        id: aid(FRUITS, 'case class', 'Banana'),
-        name: 'Banana',
-        subtitle: 'case class',
-        declaration: 'case class Banana(name: String, curvature: Double) extends TropicalFruit',
-        constructorParams: '(name: String, curvature: Double)',
-        methodSignatures: [{ signature: 'def ripeness: Double', startRow: 1 }],
-      },
-    )
-    fruitInnerRels.push(
-      { from: aid(FRUITS, 'case class', 'Apple'), to: aid(FRUITS, 'abstract class', 'PomeFruit'), label: 'extends' },
-      { from: aid(FRUITS, 'case class', 'Banana'), to: aid(FRUITS, 'abstract class', 'TropicalFruit'), label: 'extends' },
-    )
+    const pomeFruitPool = [
+      { name: 'Apple',     parent: 'PomeFruit',    params: '(name: String, colour: String)',   sig: 'def sweetness: Double' },
+      { name: 'Pear',      parent: 'PomeFruit',    params: '(name: String, texture: String)',  sig: 'def grittiness: Double' },
+      { name: 'Quince',    parent: 'PomeFruit',    params: '(name: String)',                   sig: 'def tartness: Double' },
+      { name: 'Crabapple', parent: 'PomeFruit',    params: '(name: String)',                   sig: 'def bitterness: Double' },
+    ]
+    const tropicalFruitPool = [
+      { name: 'Banana',    parent: 'TropicalFruit', params: '(name: String, curvature: Double)', sig: 'def ripeness: Double' },
+      { name: 'Mango',     parent: 'TropicalFruit', params: '(name: String, variety: String)',   sig: 'def fibreContent: Double' },
+      { name: 'Papaya',    parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def enzymeLevel: Double' },
+      { name: 'Pineapple', parent: 'TropicalFruit', params: '(name: String, crownSize: Int)',    sig: 'def acidity: Double' },
+    ]
+    const pomeCount     = Math.min(w, pomeFruitPool.length)
+    const tropicalCount = Math.min(w, tropicalFruitPool.length)
+    for (let i = 0; i < pomeCount; i++) {
+      const f = pomeFruitPool[i]
+      fruitArts.push({ id: aid(FRUITS, 'case class', f.name), name: f.name, subtitle: 'case class',
+        declaration: `case class ${f.name}${f.params} extends ${f.parent}`,
+        constructorParams: f.params, methodSignatures: [{ signature: f.sig, startRow: 1 }] })
+      fruitInnerRels.push({ from: aid(FRUITS, 'case class', f.name), to: aid(FRUITS, 'abstract class', f.parent), label: 'extends' })
+    }
+    for (let i = 0; i < tropicalCount; i++) {
+      const f = tropicalFruitPool[i]
+      fruitArts.push({ id: aid(FRUITS, 'case class', f.name), name: f.name, subtitle: 'case class',
+        declaration: `case class ${f.name}${f.params} extends ${f.parent}`,
+        constructorParams: f.params, methodSignatures: [{ signature: f.sig, startRow: 1 }] })
+      fruitInnerRels.push({ from: aid(FRUITS, 'case class', f.name), to: aid(FRUITS, 'abstract class', f.parent), label: 'extends' })
+    }
   }
 
   if (n >= 5) {
-    fruitArts.push(
-      {
-        id: aid(FRUITS, 'case class', 'GrannySmith'),
-        name: 'GrannySmith',
-        subtitle: 'case class',
-        declaration: 'case class GrannySmith(name: String) extends Apple',
-        constructorParams: '(name: String)',
-        methodSignatures: [],
-      },
-      {
-        id: aid(FRUITS, 'case class', 'Cavendish'),
-        name: 'Cavendish',
-        subtitle: 'case class',
-        declaration: 'case class Cavendish(name: String) extends Banana',
-        constructorParams: '(name: String)',
-        methodSignatures: [],
-      },
-    )
-    fruitInnerRels.push(
-      { from: aid(FRUITS, 'case class', 'GrannySmith'), to: aid(FRUITS, 'case class', 'Apple'), label: 'extends' },
-      { from: aid(FRUITS, 'case class', 'Cavendish'), to: aid(FRUITS, 'case class', 'Banana'), label: 'extends' },
-    )
+    const includedFruits = new Set<string>()
+    if (n >= 4) {
+      const pomeFruitNames   = ['Apple', 'Pear', 'Quince', 'Crabapple'].slice(0, Math.min(w, 4))
+      const tropicalNames    = ['Banana', 'Mango', 'Papaya', 'Pineapple'].slice(0, Math.min(w, 4))
+      pomeFruitNames.forEach(name => includedFruits.add(name))
+      tropicalNames.forEach(name => includedFruits.add(name))
+    }
+    const fruitSpecPool = [
+      { name: 'GrannySmith', parent: 'Apple',     params: '(name: String)', sig: 'def sourness: Double' },
+      { name: 'Coxs',        parent: 'Pear',      params: '(name: String)', sig: 'def crunchiness: Double' },
+      { name: 'Gala',        parent: 'Crabapple', params: '(name: String)', sig: 'def wildness: Double' },
+      { name: 'Cavendish',   parent: 'Banana',    params: '(name: String)', sig: 'def uniformity: Double' },
+      { name: 'Alphonso',    parent: 'Mango',     params: '(name: String)', sig: 'def fragrance: Double' },
+    ]
+    for (const s of fruitSpecPool) {
+      if (!includedFruits.has(s.parent)) continue
+      fruitArts.push({ id: aid(FRUITS, 'case class', s.name), name: s.name, subtitle: 'case class',
+        declaration: `case class ${s.name}${s.params} extends ${s.parent}`,
+        constructorParams: s.params, methodSignatures: [{ signature: s.sig, startRow: 1 }] })
+      fruitInnerRels.push({ from: aid(FRUITS, 'case class', s.name), to: aid(FRUITS, 'case class', s.parent), label: 'extends' })
+    }
   }
 
   // ── registry ──────────────────────────────────────────────────────────────
@@ -1331,18 +1402,20 @@ async function loadPackageTreeDojo(nodeCount: number, prevCount?: number) {
   status.value = `Loaded dojo fixture ${PACKAGE_TREE_DOJO_ID} with ${n} packages.`
 }
 
-async function loadArtefactHierarchyDojo(layers: number) {
+async function loadArtefactHierarchyDojo(layers: number, width: number) {
   const n = clampDojoArtefactLayers(layers)
+  const w = clampDojoArtefactWidth(width)
   dojoArtefactLayers.value = n
+  dojoArtefactWidth.value = w
   sourcePath.value = `dojo/${ARTEFACT_HIERARCHY_DOJO_ID}.ilograph.yaml`
   await applyDoc(
-    stringifyIlographYaml(buildArtefactHierarchyDojoDocument(n)),
+    stringifyIlographYaml(buildArtefactHierarchyDojoDocument(n, w)),
     `${ARTEFACT_HIERARCHY_DOJO_ID}.ilograph.yaml`,
     false,
     { moduleNodeType: 'package' },
   )
   if (activeTab.value) activeTab.value.dojoDepth = n
-  status.value = `Loaded dojo fixture ${ARTEFACT_HIERARCHY_DOJO_ID} at ${n} layer${n !== 1 ? 's' : ''}.`
+  status.value = `Loaded dojo fixture ${ARTEFACT_HIERARCHY_DOJO_ID} at ${n} layer${n !== 1 ? 's' : ''}, width ${w}.`
 }
 
 async function loadDojoFixture(id: string) {
@@ -1363,7 +1436,7 @@ async function loadDojoFixture(id: string) {
     return
   }
   if (id === ARTEFACT_HIERARCHY_DOJO_ID) {
-    await loadArtefactHierarchyDojo(dojoArtefactLayers.value)
+    await loadArtefactHierarchyDojo(dojoArtefactLayers.value, dojoArtefactWidth.value)
     return
   }
   const fixture = getDojoFixture(id)
@@ -2421,7 +2494,21 @@ watch(dojoArtefactLayers, (layers, prev) => {
   }
   if (normalized === prev) return
   if (activeDojoId.value !== ARTEFACT_HIERARCHY_DOJO_ID) return
-  void loadArtefactHierarchyDojo(normalized).then(() => {
+  void loadArtefactHierarchyDojo(normalized, dojoArtefactWidth.value).then(() => {
+    snapshotActiveTab()
+    syncUrlFromState()
+  })
+})
+
+watch(dojoArtefactWidth, (width, prev) => {
+  const normalized = clampDojoArtefactWidth(width)
+  if (normalized !== width) {
+    dojoArtefactWidth.value = normalized
+    return
+  }
+  if (normalized === prev) return
+  if (activeDojoId.value !== ARTEFACT_HIERARCHY_DOJO_ID) return
+  void loadArtefactHierarchyDojo(dojoArtefactLayers.value, normalized).then(() => {
     snapshotActiveTab()
     syncUrlFromState()
   })
@@ -2897,12 +2984,12 @@ onUnmounted(() => {
             <div v-else-if="activeDojoId === ARTEFACT_HIERARCHY_DOJO_ID" class="dojo-panel">
               <div class="dojo-panel__header">
                 <div class="dojo-panel__title">Artefact hierarchy</div>
-                <div class="dojo-panel__meta">{{ dojoArtefactLayers }} layer{{ dojoArtefactLayers !== 1 ? 's' : '' }}</div>
+                <div class="dojo-panel__meta">{{ dojoArtefactLayers }} layer{{ dojoArtefactLayers !== 1 ? 's' : '' }}, width {{ dojoArtefactWidth }}</div>
               </div>
               <p class="dojo-panel__hint">
                 Each layer deepens the Scala inheritance tree inside the
-                <strong>animals</strong> and <strong>fruits</strong> packages. Drill into any
-                package to see the inner artefact diagram grow as you move the slider.
+                <strong>animals</strong> and <strong>fruits</strong> packages. Width adds more
+                sibling artefacts at each level. Drill into any package to explore the inner diagram.
               </p>
               <label class="dojo-panel__control" for="dojo-artefact-layers">
                 <span class="dojo-panel__label">Hierarchy layers</span>
@@ -2920,6 +3007,23 @@ onUnmounted(() => {
               <div class="dojo-panel__scale">
                 <span>1</span>
                 <span>5</span>
+              </div>
+              <label class="dojo-panel__control" for="dojo-artefact-width">
+                <span class="dojo-panel__label">Width per layer</span>
+                <input
+                  id="dojo-artefact-width"
+                  v-model.number="dojoArtefactWidth"
+                  class="dojo-panel__slider"
+                  type="range"
+                  min="1"
+                  max="4"
+                  step="1"
+                  aria-label="Artefact hierarchy width"
+                />
+              </label>
+              <div class="dojo-panel__scale">
+                <span>1</span>
+                <span>4</span>
               </div>
             </div>
           </div>
