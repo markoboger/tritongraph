@@ -35,6 +35,9 @@ const MODULE_LAYOUT_H = 72
 const PACKAGE_SCOPE_GROUP_MIN_LAYOUT_H = 40
 const OTHER_GROUP_MIN_LAYOUT_H = 76
 
+/** Subpixel / border slack so a graph that visually fits does not enable pan rails. */
+const PAN_RAIL_FIT_SLACK_PX = 8
+
 const nodes = defineModel<any[]>('nodes', { required: true })
 const edges = defineModel<any[]>('edges', { required: true })
 
@@ -428,11 +431,23 @@ provide('tritonRefreshDimming', () => {
 })
 
 function readFlowViewport(): { width: number; height: number } {
-  const el = document.querySelector('.flow-wrap')
-  const r = el?.getBoundingClientRect()
+  if (typeof document === 'undefined') return { width: 960, height: 720 }
+  const pane =
+    (document.querySelector('.flow-wrap-shell .flow') as HTMLElement | null) ??
+    (document.querySelector('.flow-wrap-shell') as HTMLElement | null) ??
+    (document.querySelector('.flow-wrap') as HTMLElement | null)
+  if (!pane) return { width: 960, height: 720 }
+  const w =
+    pane instanceof HTMLElement && pane.clientWidth > 0
+      ? pane.clientWidth
+      : pane.getBoundingClientRect().width
+  const h =
+    pane instanceof HTMLElement && pane.clientHeight > 0
+      ? pane.clientHeight
+      : pane.getBoundingClientRect().height
   return {
-    width: Math.max(200, r?.width ?? 960),
-    height: Math.max(200, r?.height ?? 720),
+    width: Math.max(200, w),
+    height: Math.max(200, h),
   }
 }
 
@@ -1043,8 +1058,8 @@ async function fitToViewport(opts?: {
   const py = vp.height * pad * 2
   const usableW = Math.max(80, vp.width - px)
   const usableH = Math.max(80, vp.height - py)
-  const widthOverflow = rect.width > usableW + 1
-  const heightOverflow = rect.height > usableH + 1
+  const widthOverflow = rect.width > usableW + PAN_RAIL_FIT_SLACK_PX
+  const heightOverflow = rect.height > usableH + PAN_RAIL_FIT_SLACK_PX
   const visibleNodes = nodes.value.filter((n) => !(n as { hidden?: boolean }).hidden)
   const heightMinReached = visibleNodes.some((node) => nodePixelHeight(node) <= nodeMinHeight(node) + 1)
   const useHorizontalPanRail = widthOverflow
