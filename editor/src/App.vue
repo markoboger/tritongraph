@@ -207,7 +207,7 @@ function clampDojoArtefactLayers(raw: number): number {
 
 function clampDojoArtefactWidth(raw: number): number {
   if (!Number.isFinite(raw)) return 1
-  return Math.min(4, Math.max(1, Math.round(raw)))
+  return Math.min(20, Math.max(1, Math.round(raw)))
 }
 
 const dojoNestingDepth = ref(clampDojoDepth(initialRequestedDojoDepth))
@@ -945,9 +945,25 @@ function buildArtefactHierarchyDojoDocument(layers: number, width: number): Ilog
   ]
   // Extra lifecycle traits added by width >= 2 (shared by animals and fruits via cross-pkg).
   const extraLifecycleTraits: Array<{ name: string; sig: string }> = [
-    { name: 'Measurable', sig: 'def measure: Double' },
-    { name: 'Observable', sig: 'def observe(): Unit' },
+    { name: 'Measurable',   sig: 'def measure: Double' },
+    { name: 'Observable',   sig: 'def observe(): Unit' },
     { name: 'Categorizable', sig: 'def category: String' },
+    { name: 'Trackable',    sig: 'def track(): Unit' },
+    { name: 'Serializable', sig: 'def serialize: String' },
+    { name: 'Comparable',   sig: 'def compareTo(other: Lifeform): Int' },
+    { name: 'Printable',    sig: 'def print(): Unit' },
+    { name: 'Hashable',     sig: 'def hash: Long' },
+    { name: 'Equatable',    sig: 'def equalTo(other: Lifeform): Boolean' },
+    { name: 'Countable',    sig: 'def count: Int' },
+    { name: 'Sortable',     sig: 'def sortKey: String' },
+    { name: 'Filterable',   sig: 'def matches(query: String): Boolean' },
+    { name: 'Mappable',     sig: 'def toMap: Map[String, Any]' },
+    { name: 'Foldable',     sig: 'def fold[A](z: A)(f: (A, Lifeform) => A): A' },
+    { name: 'Traversable',  sig: 'def traverse(): Iterator[Lifeform]' },
+    { name: 'Reducible',    sig: 'def reduce[A](f: (A, A) => A): A' },
+    { name: 'Groupable',    sig: 'def groupKey: String' },
+    { name: 'Indexable',    sig: 'def index: Int' },
+    { name: 'Loggable',     sig: 'def log(): Unit' },
   ]
   for (let i = 0; i < Math.min(w - 1, extraLifecycleTraits.length); i++) {
     const t = extraLifecycleTraits[i]!
@@ -1068,22 +1084,51 @@ function buildArtefactHierarchyDojoDocument(layers: number, width: number): Ilog
     // Pool of leaf mammals and birds; width controls how many are included.
     type LeafSpec = { name: string; parent: string; ctor: string; sigs: string[] }
     const mammalPool: LeafSpec[] = [
-      { name: 'Cat', parent: 'Mammal', ctor: '(name: String, indoor: Boolean)', sigs: ['def makeSound(): String'] },
-      { name: 'Dog', parent: 'Mammal', ctor: '(name: String, breed: String)', sigs: ['def makeSound(): String', 'def fetch(): Unit'] },
-      { name: 'Mouse', parent: 'Mammal', ctor: '(name: String)', sigs: ['def makeSound(): String'] },
-      { name: 'Whale', parent: 'Mammal', ctor: '(name: String, length: Double)', sigs: ['def dive(): Unit'] },
-      { name: 'Bat', parent: 'Mammal', ctor: '(name: String)', sigs: ['def echolocate(): Boolean'] },
-      { name: 'Bear', parent: 'Mammal', ctor: '(name: String, weight: Double)', sigs: ['def hibernate(): Unit'] },
+      { name: 'Cat',       parent: 'Mammal', ctor: '(name: String, indoor: Boolean)', sigs: ['def makeSound(): String'] },
+      { name: 'Dog',       parent: 'Mammal', ctor: '(name: String, breed: String)',   sigs: ['def makeSound(): String', 'def fetch(): Unit'] },
+      { name: 'Mouse',     parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def makeSound(): String'] },
+      { name: 'Whale',     parent: 'Mammal', ctor: '(name: String, length: Double)',  sigs: ['def dive(): Unit'] },
+      { name: 'Bat',       parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def echolocate(): Boolean'] },
+      { name: 'Bear',      parent: 'Mammal', ctor: '(name: String, weight: Double)',  sigs: ['def hibernate(): Unit'] },
+      { name: 'Wolf',      parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def howl(): Unit'] },
+      { name: 'Fox',       parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def stalk(): Unit'] },
+      { name: 'Deer',      parent: 'Mammal', ctor: '(name: String, antlers: Boolean)', sigs: ['def graze(): Unit'] },
+      { name: 'Rabbit',    parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def burrow(): Unit'] },
+      { name: 'Horse',     parent: 'Mammal', ctor: '(name: String, breed: String)',   sigs: ['def gallop(): Unit'] },
+      { name: 'Elephant',  parent: 'Mammal', ctor: '(name: String, tuskLen: Double)', sigs: ['def trumpet(): Unit'] },
+      { name: 'Tiger',     parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def stalk(): Unit'] },
+      { name: 'Lion',      parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def roar(): Unit'] },
+      { name: 'Panda',     parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def eat(): Unit'] },
+      { name: 'Kangaroo',  parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def leap(): Unit'] },
+      { name: 'Dolphin',   parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def sonar(): Double'] },
+      { name: 'Seal',      parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def flipper(): Unit'] },
+      { name: 'Otter',     parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def float(): Unit'] },
+      { name: 'Hedgehog',  parent: 'Mammal', ctor: '(name: String)',                  sigs: ['def curl(): Unit'] },
     ]
     const birdPool: LeafSpec[] = [
-      { name: 'Sparrow', parent: 'Bird', ctor: '(name: String)', sigs: ['def canFly: Boolean'] },
-      { name: 'Eagle', parent: 'Bird', ctor: '(name: String)', sigs: ['def canFly: Boolean', 'def huntRange: Double'] },
-      { name: 'Owl', parent: 'Bird', ctor: '(name: String)', sigs: ['def canFly: Boolean', 'def isNocturnal: Boolean'] },
-      { name: 'Parrot', parent: 'Bird', ctor: '(name: String, speaks: Boolean)', sigs: ['def mimic(): String'] },
+      { name: 'Sparrow',     parent: 'Bird', ctor: '(name: String)',              sigs: ['def canFly: Boolean'] },
+      { name: 'Eagle',       parent: 'Bird', ctor: '(name: String)',              sigs: ['def canFly: Boolean', 'def huntRange: Double'] },
+      { name: 'Owl',         parent: 'Bird', ctor: '(name: String)',              sigs: ['def canFly: Boolean', 'def isNocturnal: Boolean'] },
+      { name: 'Parrot',      parent: 'Bird', ctor: '(name: String, speaks: Boolean)', sigs: ['def mimic(): String'] },
+      { name: 'Robin',       parent: 'Bird', ctor: '(name: String)',              sigs: ['def canFly: Boolean'] },
+      { name: 'Falcon',      parent: 'Bird', ctor: '(name: String)',              sigs: ['def diveSpeed: Double'] },
+      { name: 'Heron',       parent: 'Bird', ctor: '(name: String)',              sigs: ['def wade(): Unit'] },
+      { name: 'Crane',       parent: 'Bird', ctor: '(name: String)',              sigs: ['def migrate(): Unit'] },
+      { name: 'Penguin',     parent: 'Bird', ctor: '(name: String)',              sigs: ['def canFly: Boolean', 'def swim(): Unit'] },
+      { name: 'Flamingo',    parent: 'Bird', ctor: '(name: String)',              sigs: ['def balance(): Unit'] },
+      { name: 'Pelican',     parent: 'Bird', ctor: '(name: String)',              sigs: ['def scoop(): Unit'] },
+      { name: 'Stork',       parent: 'Bird', ctor: '(name: String)',              sigs: ['def migrate(): Unit'] },
+      { name: 'Toucan',      parent: 'Bird', ctor: '(name: String)',              sigs: ['def beakLength: Double'] },
+      { name: 'Woodpecker',  parent: 'Bird', ctor: '(name: String)',              sigs: ['def drum(): Unit'] },
+      { name: 'Kingfisher',  parent: 'Bird', ctor: '(name: String)',              sigs: ['def dive(): Unit'] },
+      { name: 'Albatross',   parent: 'Bird', ctor: '(name: String)',              sigs: ['def glide(): Unit'] },
+      { name: 'Condor',      parent: 'Bird', ctor: '(name: String)',              sigs: ['def soar(): Unit'] },
+      { name: 'Hornbill',    parent: 'Bird', ctor: '(name: String)',              sigs: ['def casqueSize: Double'] },
+      { name: 'Macaw',       parent: 'Bird', ctor: '(name: String)',              sigs: ['def squawk(): String'] },
+      { name: 'Cockatoo',    parent: 'Bird', ctor: '(name: String)',              sigs: ['def crest(): Unit'] },
     ]
-    // width=1 → 2 mammals + 1 bird; each +1 width adds 1 more mammal + 1 bird (capped at pool size).
-    const mammalCount = Math.min(2 + (w - 1), mammalPool.length)
-    const birdCount   = Math.min(1 + (w - 1), birdPool.length)
+    const mammalCount = Math.min(w, mammalPool.length)
+    const birdCount   = Math.min(w, birdPool.length)
     const pushLeaf = (spec: LeafSpec) => {
       animalArts.push({
         id: aid(ANIMALS, 'case class', spec.name),
@@ -1107,16 +1152,32 @@ function buildArtefactHierarchyDojoDocument(layers: number, width: number): Ilog
     // Specialisations — one per parent mammal that's included (capped by width).
     type SpecSpec = { name: string; parent: string }
     const specPool: SpecSpec[] = [
-      { name: 'PersianCat', parent: 'Cat' },
-      { name: 'Labrador', parent: 'Dog' },
-      { name: 'FieldMouse', parent: 'Mouse' },
-      { name: 'BlueWhale', parent: 'Whale' },
-      { name: 'FruitBat', parent: 'Bat' },
-      { name: 'PolarBear', parent: 'Bear' },
+      { name: 'PersianCat',         parent: 'Cat' },
+      { name: 'Labrador',           parent: 'Dog' },
+      { name: 'FieldMouse',         parent: 'Mouse' },
+      { name: 'BlueWhale',          parent: 'Whale' },
+      { name: 'FruitBat',           parent: 'Bat' },
+      { name: 'PolarBear',          parent: 'Bear' },
+      { name: 'TimberWolf',         parent: 'Wolf' },
+      { name: 'ArcticFox',          parent: 'Fox' },
+      { name: 'RedDeer',            parent: 'Deer' },
+      { name: 'Jackrabbit',         parent: 'Rabbit' },
+      { name: 'Mustang',            parent: 'Horse' },
+      { name: 'AfricanElephant',    parent: 'Elephant' },
+      { name: 'BengalTiger',        parent: 'Tiger' },
+      { name: 'AfricanLion',        parent: 'Lion' },
+      { name: 'GiantPanda',         parent: 'Panda' },
+      { name: 'RedKangaroo',        parent: 'Kangaroo' },
+      { name: 'BottlenoseDolphin',  parent: 'Dolphin' },
+      { name: 'GraySeal',           parent: 'Seal' },
+      { name: 'SeaOtter',           parent: 'Otter' },
+      { name: 'EuropeanHedgehog',   parent: 'Hedgehog' },
     ]
     // Only emit specialisations whose parent was included at layer 4.
     const includedMammals = new Set(
-      ['Cat', 'Dog', 'Mouse', 'Whale', 'Bat', 'Bear'].slice(0, Math.min(2 + (w - 1), 6))
+      ['Cat','Dog','Mouse','Whale','Bat','Bear','Wolf','Fox','Deer','Rabbit',
+       'Horse','Elephant','Tiger','Lion','Panda','Kangaroo','Dolphin','Seal','Otter','Hedgehog']
+        .slice(0, Math.min(w, 20))
     )
     for (const s of specPool) {
       if (!includedMammals.has(s.parent)) continue
@@ -1203,16 +1264,48 @@ function buildArtefactHierarchyDojoDocument(layers: number, width: number): Ilog
 
   if (n >= 4) {
     const pomeFruitPool = [
-      { name: 'Apple',     parent: 'PomeFruit',    params: '(name: String, colour: String)',   sig: 'def sweetness: Double' },
-      { name: 'Pear',      parent: 'PomeFruit',    params: '(name: String, texture: String)',  sig: 'def grittiness: Double' },
-      { name: 'Quince',    parent: 'PomeFruit',    params: '(name: String)',                   sig: 'def tartness: Double' },
-      { name: 'Crabapple', parent: 'PomeFruit',    params: '(name: String)',                   sig: 'def bitterness: Double' },
+      { name: 'Apple',         parent: 'PomeFruit', params: '(name: String, colour: String)',  sig: 'def sweetness: Double' },
+      { name: 'Pear',          parent: 'PomeFruit', params: '(name: String, texture: String)', sig: 'def grittiness: Double' },
+      { name: 'Quince',        parent: 'PomeFruit', params: '(name: String)',                  sig: 'def tartness: Double' },
+      { name: 'Crabapple',     parent: 'PomeFruit', params: '(name: String)',                  sig: 'def bitterness: Double' },
+      { name: 'Medlar',        parent: 'PomeFruit', params: '(name: String)',                  sig: 'def bletting: Boolean' },
+      { name: 'Loquat',        parent: 'PomeFruit', params: '(name: String)',                  sig: 'def juiciness: Double' },
+      { name: 'Serviceberry',  parent: 'PomeFruit', params: '(name: String)',                  sig: 'def colour: String' },
+      { name: 'Chokeberry',    parent: 'PomeFruit', params: '(name: String)',                  sig: 'def antioxidants: Double' },
+      { name: 'Hawthorn',      parent: 'PomeFruit', params: '(name: String)',                  sig: 'def thornCount: Int' },
+      { name: 'Rowan',         parent: 'PomeFruit', params: '(name: String)',                  sig: 'def brixLevel: Double' },
+      { name: 'Mayhaw',        parent: 'PomeFruit', params: '(name: String)',                  sig: 'def jellySuitability: Boolean' },
+      { name: 'Amelanchier',   parent: 'PomeFruit', params: '(name: String)',                  sig: 'def ripeness: Double' },
+      { name: 'Aronia',        parent: 'PomeFruit', params: '(name: String)',                  sig: 'def polyphenols: Double' },
+      { name: 'Firethorn',     parent: 'PomeFruit', params: '(name: String)',                  sig: 'def clusterSize: Int' },
+      { name: 'Toyon',         parent: 'PomeFruit', params: '(name: String)',                  sig: 'def berryDiameter: Double' },
+      { name: 'Buffaloberry',  parent: 'PomeFruit', params: '(name: String)',                  sig: 'def tartness: Double' },
+      { name: 'Hackberry',     parent: 'PomeFruit', params: '(name: String)',                  sig: 'def stoniness: Boolean' },
+      { name: 'Whitebeam',     parent: 'PomeFruit', params: '(name: String)',                  sig: 'def flouring: Boolean' },
+      { name: 'Cotoneaster',   parent: 'PomeFruit', params: '(name: String)',                  sig: 'def ornamental: Boolean' },
+      { name: 'Photinia',      parent: 'PomeFruit', params: '(name: String)',                  sig: 'def leafColour: String' },
     ]
     const tropicalFruitPool = [
-      { name: 'Banana',    parent: 'TropicalFruit', params: '(name: String, curvature: Double)', sig: 'def ripeness: Double' },
-      { name: 'Mango',     parent: 'TropicalFruit', params: '(name: String, variety: String)',   sig: 'def fibreContent: Double' },
-      { name: 'Papaya',    parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def enzymeLevel: Double' },
-      { name: 'Pineapple', parent: 'TropicalFruit', params: '(name: String, crownSize: Int)',    sig: 'def acidity: Double' },
+      { name: 'Banana',        parent: 'TropicalFruit', params: '(name: String, curvature: Double)', sig: 'def ripeness: Double' },
+      { name: 'Mango',         parent: 'TropicalFruit', params: '(name: String, variety: String)',   sig: 'def fibreContent: Double' },
+      { name: 'Papaya',        parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def enzymeLevel: Double' },
+      { name: 'Pineapple',     parent: 'TropicalFruit', params: '(name: String, crownSize: Int)',    sig: 'def acidity: Double' },
+      { name: 'Guava',         parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def vitaminC: Double' },
+      { name: 'Lychee',        parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def shellThickness: Double' },
+      { name: 'Coconut',       parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def milkVolume: Double' },
+      { name: 'Jackfruit',     parent: 'TropicalFruit', params: '(name: String, weight: Double)',    sig: 'def podCount: Int' },
+      { name: 'Starfruit',     parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def ridges: Int' },
+      { name: 'Durian',        parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def odourLevel: Double' },
+      { name: 'Rambutan',      parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def spineCount: Int' },
+      { name: 'Dragonfruit',   parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def scaleCount: Int' },
+      { name: 'Passionfruit',  parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def pulpRatio: Double' },
+      { name: 'Tamarind',      parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def sourness: Double' },
+      { name: 'Persimmon',     parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def tannins: Double' },
+      { name: 'Longan',        parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def shellColour: String' },
+      { name: 'Soursop',       parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def spineLength: Double' },
+      { name: 'Langsat',       parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def clusterSize: Int' },
+      { name: 'Salak',         parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def scaleTexture: String' },
+      { name: 'Pomelo',        parent: 'TropicalFruit', params: '(name: String)',                    sig: 'def rindThickness: Double' },
     ]
     const pomeCount     = Math.min(w, pomeFruitPool.length)
     const tropicalCount = Math.min(w, tropicalFruitPool.length)
@@ -1233,19 +1326,34 @@ function buildArtefactHierarchyDojoDocument(layers: number, width: number): Ilog
   }
 
   if (n >= 5) {
-    const includedFruits = new Set<string>()
-    if (n >= 4) {
-      const pomeFruitNames   = ['Apple', 'Pear', 'Quince', 'Crabapple'].slice(0, Math.min(w, 4))
-      const tropicalNames    = ['Banana', 'Mango', 'Papaya', 'Pineapple'].slice(0, Math.min(w, 4))
-      pomeFruitNames.forEach(name => includedFruits.add(name))
-      tropicalNames.forEach(name => includedFruits.add(name))
-    }
+    const pomeNames = ['Apple','Pear','Quince','Crabapple','Medlar','Loquat','Serviceberry','Chokeberry',
+      'Hawthorn','Rowan','Mayhaw','Amelanchier','Aronia','Firethorn','Toyon','Buffaloberry',
+      'Hackberry','Whitebeam','Cotoneaster','Photinia'].slice(0, Math.min(w, 20))
+    const tropNames = ['Banana','Mango','Papaya','Pineapple','Guava','Lychee','Coconut','Jackfruit',
+      'Starfruit','Durian','Rambutan','Dragonfruit','Passionfruit','Tamarind','Persimmon',
+      'Longan','Soursop','Langsat','Salak','Pomelo'].slice(0, Math.min(w, 20))
+    const includedFruits = new Set<string>([...pomeNames, ...tropNames])
     const fruitSpecPool = [
-      { name: 'GrannySmith', parent: 'Apple',     params: '(name: String)', sig: 'def sourness: Double' },
-      { name: 'Coxs',        parent: 'Pear',      params: '(name: String)', sig: 'def crunchiness: Double' },
-      { name: 'Gala',        parent: 'Crabapple', params: '(name: String)', sig: 'def wildness: Double' },
-      { name: 'Cavendish',   parent: 'Banana',    params: '(name: String)', sig: 'def uniformity: Double' },
-      { name: 'Alphonso',    parent: 'Mango',     params: '(name: String)', sig: 'def fragrance: Double' },
+      { name: 'GrannySmith',  parent: 'Apple',        params: '(name: String)', sig: 'def sourness: Double' },
+      { name: 'Coxs',         parent: 'Pear',         params: '(name: String)', sig: 'def crunchiness: Double' },
+      { name: 'Gala',         parent: 'Crabapple',    params: '(name: String)', sig: 'def wildness: Double' },
+      { name: 'JapaneseLoquat', parent: 'Loquat',     params: '(name: String)', sig: 'def blush: String' },
+      { name: 'AroniaElite',  parent: 'Aronia',       params: '(name: String)', sig: 'def yield: Double' },
+      { name: 'Cavendish',    parent: 'Banana',        params: '(name: String)', sig: 'def uniformity: Double' },
+      { name: 'Alphonso',     parent: 'Mango',         params: '(name: String)', sig: 'def fragrance: Double' },
+      { name: 'Solo',         parent: 'Papaya',        params: '(name: String)', sig: 'def size: String' },
+      { name: 'Smooth',       parent: 'Pineapple',     params: '(name: String)', sig: 'def eyeDepth: Double' },
+      { name: 'RedGuava',     parent: 'Guava',         params: '(name: String)', sig: 'def pulpColour: String' },
+      { name: 'Mauritius',    parent: 'Lychee',        params: '(name: String)', sig: 'def shellRedness: Double' },
+      { name: 'TallPalm',     parent: 'Coconut',       params: '(name: String)', sig: 'def height: Double' },
+      { name: 'ChempadasJack', parent: 'Jackfruit',   params: '(name: String)', sig: 'def podDensity: Int' },
+      { name: 'GoldenStar',   parent: 'Starfruit',     params: '(name: String)', sig: 'def waxiness: Boolean' },
+      { name: 'MusangKing',   parent: 'Durian',        params: '(name: String)', sig: 'def creaminess: Double' },
+      { name: 'RedRambutan',  parent: 'Rambutan',      params: '(name: String)', sig: 'def spineSoftness: Double' },
+      { name: 'PitayaRed',    parent: 'Dragonfruit',   params: '(name: String)', sig: 'def pulpColour: String' },
+      { name: 'PurplePassion', parent: 'Passionfruit', params: '(name: String)', sig: 'def seedRatio: Double' },
+      { name: 'TamarindSweet', parent: 'Tamarind',    params: '(name: String)', sig: 'def sugarContent: Double' },
+      { name: 'HachiyaPersimmon', parent: 'Persimmon', params: '(name: String)', sig: 'def astringency: Double' },
     ]
     for (const s of fruitSpecPool) {
       if (!includedFruits.has(s.parent)) continue
@@ -3016,14 +3124,14 @@ onUnmounted(() => {
                   class="dojo-panel__slider"
                   type="range"
                   min="1"
-                  max="4"
+                  max="20"
                   step="1"
                   aria-label="Artefact hierarchy width"
                 />
               </label>
               <div class="dojo-panel__scale">
                 <span>1</span>
-                <span>4</span>
+                <span>20</span>
               </div>
             </div>
           </div>
