@@ -35,6 +35,9 @@ const MODULE_LAYOUT_H = 72
 const PACKAGE_SCOPE_GROUP_MIN_LAYOUT_H = 40
 const OTHER_GROUP_MIN_LAYOUT_H = 76
 
+/** Subpixel / border slack so a graph that visually fits does not enable pan rails. */
+const PAN_RAIL_FIT_SLACK_PX = 8
+
 const nodes = defineModel<any[]>('nodes', { required: true })
 const edges = defineModel<any[]>('edges', { required: true })
 
@@ -197,12 +200,8 @@ function hasSingletonRootPackageScopeOverview(): boolean {
   return isLeafBoxNode(root)
 }
 
-async function fitOverviewSingletonPackageScope(duration = 0): Promise<void> {
-  resetVerticalScrollChrome()
-  await nextTick()
-  await doubleRaf()
-  await setViewport({ x: 0, y: 0, zoom: 1 }, { duration })
-}
+/** Mounted shell around `<VueFlow>` — preferred for pane size (avoids selector drift vs rails). */
+const flowShellRef = ref<HTMLElement | null>(null)
 
 /** After connect-start from a **source** handle: if pointer up does not complete @connect, create a module on the pane. */
 const pendingPaneConnect = ref<{ nodeId: string; handleId: string | null } | null>(null)
@@ -428,11 +427,24 @@ provide('tritonRefreshDimming', () => {
 })
 
 function readFlowViewport(): { width: number; height: number } {
-  const el = document.querySelector('.flow-wrap')
-  const r = el?.getBoundingClientRect()
+  if (typeof document === 'undefined') return { width: 960, height: 720 }
+  const pane =
+    (flowShellRef.value?.querySelector('.flow') as HTMLElement | null) ??
+    (document.querySelector('.flow-wrap-shell .flow') as HTMLElement | null) ??
+    (document.querySelector('.flow-wrap-shell') as HTMLElement | null) ??
+    (document.querySelector('.flow-wrap') as HTMLElement | null)
+  if (!pane) return { width: 960, height: 720 }
+  const w =
+    pane instanceof HTMLElement && pane.clientWidth > 0
+      ? pane.clientWidth
+      : pane.getBoundingClientRect().width
+  const h =
+    pane instanceof HTMLElement && pane.clientHeight > 0
+      ? pane.clientHeight
+      : pane.getBoundingClientRect().height
   return {
-    width: Math.max(200, r?.width ?? 960),
-    height: Math.max(200, r?.height ?? 720),
+    width: Math.max(200, w),
+    height: Math.max(200, h),
   }
 }
 
@@ -466,14 +478,10 @@ async function relayoutViewport(opts?: { skipDrillReapply?: boolean; preserveFit
   if (reapplied) return
   /** Keep the full graph in view after geometry changes; skip while drill is active or pending. */
   if (!layerDrillBusy()) {
-    if (hasSingletonRootPackageScopeOverview()) {
-      await fitOverviewSingletonPackageScope(0)
-    } else {
-      await fitToViewport({
-        duration: 0,
-        preserveViewportPosition: opts?.preserveFitToViewport === true,
-      })
-    }
+    await fitToViewport({
+      duration: 0,
+      preserveViewportPosition: opts?.preserveFitToViewport === true,
+    })
   }
 }
 
@@ -715,9 +723,159 @@ function onNodeMouseLeave(ev: { node: { id: string } }) {
   if (hoveredNodeId.value === ev.node.id) hoveredNodeId.value = null
 }
 
+/**
+ * After layout/paint, re-run {@link fitToViewport} (singleton overview uses top-left anchor + pan
+ * rails when content exceeds the pane). Skips while layer drill is busy.
+ */
+async function stabilizeWorkspaceViewportAfterRender(): Promise<void> {
+  if (layerDrillBusy()) return
+  await nextTick()
+  await doubleRaf()
+  if (layerDrillBusy()) return
+  await fitToViewport({ duration: 0 })
+}
+
+let workspaceStabilizeFlush: ReturnType<typeof setTimeout> | null = null
+let workspaceStabilizeGeneration = 0
+
+/**
+ * Coalesce many reactive updates (focus toggles, `updateNodeDimensions`, relation visibility)
+ * into one settle pass. A plain single-RAF flag **drops** trailing updates in the same tick; a
+ * zero-timeout + double-RAF waits until the browser has applied DOM + Vue Flow measurements.
+ */
+function queueWorkspaceViewportStabilize(): void {
+  if (workspaceStabilizeFlush != null) clearTimeout(workspaceStabilizeFlush)
+  workspaceStabilizeFlush = setTimeout(() => {
+    workspaceStabilizeFlush = null
+    const gen = ++workspaceStabilizeGeneration
+    requestAnimationFrame(() => {
+      requestAnimationFrame(async () => {
+        if (gen !== workspaceStabilizeGeneration) return
+        await stabilizeWorkspaceViewportAfterRender()
+      })
+    })
+  }, 0)
+}
+
+provide('tritonQueueViewportStabilize', queueWorkspaceViewportStabilize)
+
+/** Fields that change without node `position`/`style` updates (e.g. inner artefact focus → resize). */
+function nodeViewportStabilizerToken(n: any): string {
+  const pos = n?.position as { x?: number; y?: number } | undefined
+  const st = n?.style as { width?: unknown; height?: unknown } | undefined
+  const w = st?.width ?? n?.width
+  const h = st?.height ?? n?.height
+  const d = (n?.data ?? {}) as Record<string, unknown>
+  const flip = d.layerFlip as { tx?: number; ty?: number; sx?: number; sy?: number } | undefined
+  const flipStr = flip
+    ? `${Number(flip.tx) || 0},${Number(flip.ty) || 0},${Number(flip.sx) || 0},${Number(flip.sy) || 0}`
+    : ''
+  const innerFocus = typeof d.innerArtefactFocusId === 'string' ? d.innerArtefactFocusId : ''
+  const drillPath = Array.isArray(d.innerDrillPath) ? (d.innerDrillPath as unknown[]).join('>') : ''
+  return [
+    String(n.id),
+    n.hidden ? 1 : 0,
+    n.parentNode != null && n.parentNode !== '' ? String(n.parentNode) : '',
+    Math.round(Number(pos?.x) || 0),
+    Math.round(Number(pos?.y) || 0),
+    String(w ?? ''),
+    String(h ?? ''),
+    d.layerDrillFocus === true ? 1 : 0,
+    d.packageScope === true ? 1 : 0,
+    innerFocus,
+    drillPath,
+    d.__crossPackageFocus === true ? 1 : 0,
+    flipStr,
+  ].join(':')
+}
+
+function workspaceViewportStabilizerSignature(): string {
+  let sig = `${nodes.value.length}|${edges.value.length}`
+  for (const n of nodes.value) sig += `|${nodeViewportStabilizerToken(n)}`
+  return sig
+}
+
+watch(workspaceViewportStabilizerSignature, () => queueWorkspaceViewportStabilize(), { flush: 'post' })
+
+let flowShellResizeObserver: ResizeObserver | null = null
+
+/** Inner layout (PackageBox, metrics) can change node bounds without a nodes-array identity change. */
+function setupFlowShellResizeObserver(): void {
+  if (typeof ResizeObserver === 'undefined') return
+  const el = flowShellRef.value
+  if (!el) return
+  if (flowShellResizeObserver) {
+    flowShellResizeObserver.disconnect()
+    flowShellResizeObserver = null
+  }
+  flowShellResizeObserver = new ResizeObserver(() => queueWorkspaceViewportStabilize())
+  flowShellResizeObserver.observe(el)
+}
+
+watch(flowShellRef, () => setupFlowShellResizeObserver(), { flush: 'post' })
+
+/** If the transform drifts outside pan rails (e.g. after rapid layout), queue a refit. */
+watch(
+  () => viewport.value,
+  () => {
+    if (layerDrillBusy()) return
+    if (!horizontalScrollChrome.value && !verticalScrollChrome.value) return
+    const cur = viewport.value
+    if (!cur || !Number.isFinite(panBounds.xMin)) return
+    if (Math.abs(cur.zoom - panBounds.zoom) > 0.02) return
+    const slack = 3
+    if (
+      cur.x < panBounds.xMin - slack ||
+      cur.x > panBounds.xMax + slack ||
+      cur.y < panBounds.yMin - slack ||
+      cur.y > panBounds.yMax + slack
+    ) {
+      queueWorkspaceViewportStabilize()
+    }
+  },
+  { deep: true },
+)
+
 function onPaneClickClearHover() {
+  /**
+   * Vue Flow’s pane handler runs after `@pane-click` listeners return and calls
+   * `removeSelectedElements()`, which clears `node.selected` / `edge.selected` (the focus ring).
+   * Snapshot here (still selected), then re-apply on the next tick so background clicks can
+   * stabilize the camera without dropping keyboard / selection focus.
+   */
+  const selectedNodeIds = new Set(
+    nodes.value
+      .filter((n) => (n as { selected?: boolean }).selected === true)
+      .map((n) => String(n.id)),
+  )
+  const selectedEdgeIds = new Set(
+    edges.value
+      .filter((e) => (e as { selected?: boolean }).selected === true)
+      .map((e) => String(e.id)),
+  )
+
   hoveredNodeId.value = null
   hoveredEdgeId.value = null
+  queueWorkspaceViewportStabilize()
+
+  if (!selectedNodeIds.size && !selectedEdgeIds.size) return
+
+  const restoreSelection = () => {
+    if (selectedNodeIds.size) {
+      nodes.value = nodes.value.map((n) =>
+        selectedNodeIds.has(String(n.id)) ? { ...n, selected: true } : n,
+      )
+    }
+    if (selectedEdgeIds.size) {
+      edges.value = edges.value.map((e) =>
+        selectedEdgeIds.has(String(e.id)) ? { ...e, selected: true } : e,
+      )
+    }
+  }
+
+  void nextTick(() => {
+    void nextTick(restoreSelection)
+  })
 }
 
 function paneBackgroundCanStartPan(target: EventTarget | null): boolean {
@@ -882,6 +1040,12 @@ onUnmounted(() => {
   window.removeEventListener('mousedown', onGlobalPanePanMouseDown, true)
   window.removeEventListener('wheel', onGlobalWheel, true)
   finishPanePanDrag()
+  if (workspaceStabilizeFlush != null) {
+    clearTimeout(workspaceStabilizeFlush)
+    workspaceStabilizeFlush = null
+  }
+  flowShellResizeObserver?.disconnect()
+  flowShellResizeObserver = null
 })
 
 function onEdgeMouseEnter(ev: { edge: { id: string } }) {
@@ -1012,11 +1176,6 @@ async function fitToViewport(opts?: {
     return
   }
 
-  if (hasSingletonRootPackageScopeOverview()) {
-    await fitOverviewSingletonPackageScope(duration)
-    return
-  }
-
   const roots = nodes.value.filter((n) => !n.parentNode && !(n as { hidden?: boolean }).hidden)
   if (!roots.length) {
     resetVerticalScrollChrome()
@@ -1043,8 +1202,8 @@ async function fitToViewport(opts?: {
   const py = vp.height * pad * 2
   const usableW = Math.max(80, vp.width - px)
   const usableH = Math.max(80, vp.height - py)
-  const widthOverflow = rect.width > usableW + 1
-  const heightOverflow = rect.height > usableH + 1
+  const widthOverflow = rect.width > usableW + PAN_RAIL_FIT_SLACK_PX
+  const heightOverflow = rect.height > usableH + PAN_RAIL_FIT_SLACK_PX
   const visibleNodes = nodes.value.filter((n) => !(n as { hidden?: boolean }).hidden)
   const heightMinReached = visibleNodes.some((node) => nodePixelHeight(node) <= nodeMinHeight(node) + 1)
   const useHorizontalPanRail = widthOverflow
@@ -1062,6 +1221,10 @@ async function fitToViewport(opts?: {
   // (xMin+xMax)/2 == txCenter and (yMin+yMax)/2 == tyCenter — always, regardless of overflow.
   const txCenter = (xMin + xMax) / 2
   const tyCenter = (yMin + yMax) / 2
+  /** One full-viewport package (or single leaf): pin diagram top-left to the pane, not centered. */
+  const singletonOverviewPin = hasSingletonRootPackageScopeOverview()
+  const anchorCamX = singletonOverviewPin ? txLeft : txCenter
+  const anchorCamY = singletonOverviewPin ? tyTop : tyCenter
   const stackShrinkRecenter = opts?.recenterStackShrink === true
 
   const preserveViewportPosition = opts?.preserveViewportPosition === true
@@ -1073,7 +1236,7 @@ async function fitToViewport(opts?: {
       await setViewport({ x: cur.x, y: cur.y, zoom: cur.zoom }, { duration })
       return
     }
-    await setViewport({ x: txCenter, y: tyCenter, zoom: 1 }, { duration })
+    await setViewport({ x: anchorCamX, y: anchorCamY, zoom: 1 }, { duration })
     return
   }
 
@@ -1081,8 +1244,9 @@ async function fitToViewport(opts?: {
   // cause a visible slip: when the diagram was centered, its position is already inside the
   // pan range, so the clamped value equals the centered position → no jump.
   const curVp = viewport.value ?? { x: 0, y: 0, zoom: 1 }
-  const startX = Math.min(xMax, Math.max(xMin, curVp.x))
-  const startY = Math.min(yMax, Math.max(yMin, curVp.y))
+  const pinDefaultTopLeft = singletonOverviewPin && !preserveViewportPosition
+  const startX = Math.min(xMax, Math.max(xMin, pinDefaultTopLeft ? txLeft : curVp.x))
+  const startY = Math.min(yMax, Math.max(yMin, pinDefaultTopLeft ? tyTop : curVp.y))
   const hSpan = xMax - xMin
   const vSpan = yMax - yMin
   const hSlider = hSpan > 0.5 ? Math.round(1000 * (xMax - startX) / hSpan) : 0
@@ -1098,25 +1262,25 @@ async function fitToViewport(opts?: {
   horizontalThumbFraction.value = hSpan > 0 ? vp.width / (vp.width + hSpan) : 1
 
   setTranslateExtent(translateExtentForPan(xMin, xMax, yMin, yMax))
-  const finalX = stackShrinkRecenter ? txCenter : startX
-  const finalY = stackShrinkRecenter ? tyTop : startY
-  // Non-panning axis always centers; panning axis uses preserved (or recentered) position.
+  const finalX = stackShrinkRecenter ? txCenter : singletonOverviewPin ? txLeft : startX
+  const finalY = stackShrinkRecenter ? tyTop : singletonOverviewPin ? tyTop : startY
+  // Non-panning axis uses center (or singleton top-left anchor); panning axis uses preserved/recentered.
   const xViewport = preserveViewportPosition
     ? useHorizontalPanRail
       ? startX
-      : txCenter
+      : anchorCamX
     : useHorizontalPanRail
       ? finalX
-      : txCenter
+      : anchorCamX
   const yViewport = preserveViewportPosition
     ? useVerticalPanRail
       ? startY
-      : tyCenter
+      : anchorCamY
     : stackShrinkRecenter
       ? tyTop
       : useVerticalPanRail
         ? finalY
-        : tyCenter
+        : anchorCamY
   await setViewport({ x: xViewport, y: yViewport, zoom }, { duration })
 }
 
@@ -1171,6 +1335,7 @@ defineExpose({
 <template>
   <DiagramContainerView :model="diagramModel" class="diagram-root-wrap">
     <div
+      ref="flowShellRef"
       class="flow-wrap-shell"
       :class="{
         'flow-wrap-shell--vscroll': verticalScrollChrome,
