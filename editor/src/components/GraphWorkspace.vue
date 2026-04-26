@@ -11,7 +11,9 @@ import {
   useVueFlow,
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
-import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, unref, watch } from 'vue'
+import '@vue-flow/node-resizer/dist/style.css'
+import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, unref, watch, withDefaults } from 'vue'
+import type { AbstractionDojoResizeConfig } from './diagram/useAbstractionNodeResize'
 import DiagramContainerView from './diagram/DiagramContainerView.vue'
 import GraphDrillIn from './GraphDrillIn.vue'
 import { buildDiagramRootModel } from '../diagram/model/buildRootDiagram'
@@ -23,6 +25,7 @@ import {
   mergeEdgeHiddenForInvisibleEndpoints,
   routeSmoothstepEdgesInViewport,
 } from '../graph/layoutDependencyLayers'
+import { TRITON_WORKSPACE_FLOW_ID } from '../graph/tritonVueFlowId'
 import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE } from '../graph/handles'
 import { boxColorForId } from '../graph/boxColors'
 import { isLeafBoxNode } from '../graph/nodeKinds'
@@ -41,11 +44,18 @@ const PAN_RAIL_FIT_SLACK_PX = 8
 const nodes = defineModel<any[]>('nodes', { required: true })
 const edges = defineModel<any[]>('edges', { required: true })
 
-const props = defineProps<{
-  nodeTypes: NodeTypesObject
-  /** When a key is `false`, edges with that relation label are hidden (merged into `hidden`). */
-  relationTypeVisibility?: Record<string, boolean>
-}>()
+const props = withDefaults(
+  defineProps<{
+    nodeTypes: NodeTypesObject
+    /** When a key is `false`, edges with that relation label are hidden (merged into `hidden`). */
+    relationTypeVisibility?: Record<string, boolean>
+    /** Abstraction dojo: show resize handles and optional linked resize across listed node ids. */
+    abstractionDojoResize?: AbstractionDojoResizeConfig | null
+    /** When true, nodes can be dragged on the pane (abstraction-layers dojo only). */
+    nodesDraggable?: boolean
+  }>(),
+  { nodesDraggable: false },
+)
 
 const emit = defineEmits<{
   /** User-facing status line updates (e.g. new module from pane connect). */
@@ -55,12 +65,11 @@ const emit = defineEmits<{
 }>()
 
 /**
- * `useVueFlow()` must target the same store as `<VueFlow>`. This component’s `<script setup>`
- * runs as the **parent** of `<VueFlow>`, so a bare `useVueFlow()` creates an orphan store:
+ * `useVueFlow(id)` must match `<VueFlow :id>`. This component’s `<script setup>` runs as the
+ * **parent** of `<VueFlow>`, so a bare `useVueFlow()` creates an orphan store:
  * `vueFlowRef` stays null and `screenToFlowCoordinate` always returns (0,0) — pane-drop would
  * “do nothing” visually. A stable id links parent composables to the mounted pane.
  */
-const WORKSPACE_FLOW_ID = 'triton-workspace'
 const {
   fitView,
   screenToFlowCoordinate,
@@ -70,7 +79,7 @@ const {
   setViewport,
   setTranslateExtent,
   viewport,
-} = useVueFlow(WORKSPACE_FLOW_ID)
+} = useVueFlow(TRITON_WORKSPACE_FLOW_ID)
 
 /** Default: pan is unconstrained (see Vue Flow store initial `translateExtent`). */
 const UNBOUNDED_TRANSLATE_EXTENT: CoordinateExtent = [
@@ -502,6 +511,63 @@ function tritonPatchNodeData(id: string, patch: Record<string, unknown>) {
   )
 }
 provide('tritonPatchNodeData', tritonPatchNodeData)
+
+/**
+ * Abstraction dojo resize: updates v-model nodes in one pass so linked mode stays consistent.
+ * When `linked`, every listed node gets the new width/height; only `sourceId` moves to `patch` x/y.
+ */
+function tritonPatchAbstractionResize(
+  sourceId: string,
+  patch: { width: number; height: number; x: number; y: number },
+) {
+  const cfg = props.abstractionDojoResize
+  if (!cfg?.nodeIds?.includes(sourceId)) return
+
+  const ids = cfg.nodeIds
+  const linked = cfg.linked === true
+  const idSet = linked ? new Set(ids) : new Set<string>([sourceId])
+
+  nodes.value = nodes.value.map((n) => {
+    if (!idSet.has(n.id)) return n
+    const prevStyle = n.style && typeof n.style === 'object' ? { ...n.style } : {}
+    if (n.id === sourceId) {
+      return {
+        ...n,
+        position: { x: patch.x, y: patch.y },
+        width: patch.width,
+        height: patch.height,
+        style: {
+          ...prevStyle,
+          width: `${patch.width}px`,
+          height: `${patch.height}px`,
+        },
+      }
+    }
+    const pos = n.position ?? { x: 0, y: 0 }
+    return {
+      ...n,
+      position: { x: pos.x, y: pos.y },
+      width: patch.width,
+      height: patch.height,
+      style: {
+        ...prevStyle,
+        width: `${patch.width}px`,
+        height: `${patch.height}px`,
+      },
+    }
+  })
+  const refreshIds = linked ? [...ids] : [sourceId]
+  void nextTick(() => {
+    updateNodeInternals(refreshIds)
+  })
+}
+provide('tritonPatchAbstractionResize', tritonPatchAbstractionResize)
+
+const abstractionResizeModel = computed(() => props.abstractionDojoResize ?? null)
+provide('tritonAbstractionResize', abstractionResizeModel)
+
+const abstractionDojoActive = computed(() => !!props.abstractionDojoResize)
+provide('tritonAbstractionDojoActive', abstractionDojoActive)
 
 /** Surface link-action clicks from FlowProjectNode → ProjectBox subtitle to the App-level handler. */
 function tritonEmitLinkAction(nodeId: string, href: string) {
@@ -1348,14 +1414,14 @@ defineExpose({
       @pointercancel.capture="onPanePanPointerCancel"
     >
       <VueFlow
-        :id="WORKSPACE_FLOW_ID"
+        :id="TRITON_WORKSPACE_FLOW_ID"
         v-model:nodes="nodes"
         v-model:edges="edges"
         :class="['flow', { 'tg-depth-layout-animate': depthLayoutAnimate }]"
         :node-types="nodeTypes"
         :default-edge-options="defaultEdgeOptions"
         :connection-mode="ConnectionMode.Strict"
-        :nodes-draggable="false"
+        :nodes-draggable="props.nodesDraggable"
         :nodes-connectable="true"
         :edges-updatable="false"
         :edges-focusable="true"
@@ -1743,5 +1809,11 @@ defineExpose({
 }
 .vue-flow__edge.tg-dimmed .vue-flow__edge-text {
   opacity: 0.45;
+}
+
+/* Abstraction dojo: thin blue outlines on inner layout divs (below flip shell). */
+.flow-graph-node--abstraction-debug-outline .flow-graph-node__flip-outer div {
+  outline: 1px solid rgba(37, 99, 235, 0.42);
+  outline-offset: -0.5px;
 }
 </style>

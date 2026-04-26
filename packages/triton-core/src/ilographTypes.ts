@@ -29,7 +29,7 @@ export interface IlographResource {
   name: string
   subtitle?: string
   description?: string
-  'x-triton-project-kind'?: 'project' | 'module'
+  'x-triton-project-kind'?: 'project' | 'module' | 'general'
   children?: IlographResource[]
   'x-triton-project-compartments'?: readonly TritonProjectCompartment[]
 }

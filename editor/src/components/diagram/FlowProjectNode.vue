@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { NodeResizer } from '@vue-flow/node-resizer'
 import { useVueFlow } from '@vue-flow/core'
-import { computed, inject, nextTick } from 'vue'
+import { computed, inject, nextTick, type ComputedRef } from 'vue'
 import { boxColorForId, nextNamedBoxColor } from '../../graph/boxColors'
 import type { ModuleAnchorTops } from '../../graph/layoutDependencyLayers'
 import { setNodeColor, setNodeNotes, setNodePinned } from '../../store/overlayStore'
@@ -8,6 +9,9 @@ import type { BoxCompartment } from '../../diagram/boxCompartments'
 import DepthRelationHandles from '../common/DepthRelationHandles.vue'
 import DiagramSection from './DiagramSection.vue'
 import ProjectBox from './ProjectBox.vue'
+import { TRITON_WORKSPACE_FLOW_ID } from '../../graph/tritonVueFlowId'
+import { useAbstractionNodeResize } from './useAbstractionNodeResize'
+import { DIAGRAM_LEAF_MIN_WIDTH_PX } from './boxMetricBreakLayout'
 
 type LayerFlipPayload = {
   tx: number
@@ -44,7 +48,7 @@ const props = defineProps<{
     pinned?: boolean
     boxColor?: string
     language?: string
-    projectKind?: 'project' | 'module'
+    projectKind?: 'project' | 'module' | 'general'
     projectCompartments?: readonly BoxCompartment[]
     preferredFocusWidth?: number
     /** Set by layout: handle `top` % aligned to partner module centers. */
@@ -52,7 +56,7 @@ const props = defineProps<{
   }
 }>()
 
-const { updateNodeData, getNodes } = useVueFlow()
+const { updateNodeData, getNodes } = useVueFlow(TRITON_WORKSPACE_FLOW_ID)
 
 /**
  * Workspace key supplied by `App.vue` so overlay-store writes target the active tab. Empty
@@ -76,6 +80,11 @@ const emitLinkAction = inject<((nodeId: string, href: string) => void) | undefin
   'tritonEmitLinkAction',
   undefined,
 )
+
+const { showResizer, onResize } = useAbstractionNodeResize(props.id)
+
+const absentAbstractionDojo = computed(() => false)
+const abstractionDojoActive = inject<ComputedRef<boolean>>('tritonAbstractionDojoActive', absentAbstractionDojo)
 
 function onLinkAction(href: string) {
   emitLinkAction?.(props.id, href)
@@ -175,9 +184,17 @@ function togglePin(ev: MouseEvent) {
   <!-- FLIP transform only on inner shell so handle positions match Vue Flow edge math (tall pinned boxes). -->
   <div
     class="flow-graph-node flow-graph-node--project"
+    :class="{ 'flow-graph-node--abstraction-debug-outline': abstractionDojoActive }"
     :data-node-id="id"
     :data-testid="`diagram-node-${id}`"
   >
+    <NodeResizer
+      v-if="showResizer"
+      :min-width="DIAGRAM_LEAF_MIN_WIDTH_PX"
+      :min-height="64"
+      :is-visible="true"
+      @resize="onResize"
+    />
     <div class="flow-graph-node__flip-outer" :style="layerFlipStyle">
       <div class="flow-graph-node__flip-counter" :style="layerFlipCounterStyle">
         <DiagramSection>

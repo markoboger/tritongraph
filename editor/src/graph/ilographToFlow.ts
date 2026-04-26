@@ -195,6 +195,7 @@ export function ilographDocumentToFlow(
 
   const editor = doc['x-triton-editor']
   const saved = options.preferSavedPositions ? editor?.positions : undefined
+  const savedSizes = options.preferSavedPositions ? editor?.sizes : undefined
   /** Always apply saved palette when valid (independent of whether positions are applied). */
   const savedColors = editor?.moduleColors
   const pinnedIds = new Set(editor?.pinnedModuleIds ?? [])
@@ -261,10 +262,18 @@ export function ilographDocumentToFlow(
       Number.isFinite(res['x-triton-preferred-leaf-height'])
         ? Number(res['x-triton-preferred-leaf-height'])
         : undefined
+    const sz = !isGroup ? savedSizes?.[id] : undefined
+    const savedW = sz && typeof sz.w === 'number' && Number.isFinite(sz.w) && sz.w > 0 ? sz.w : undefined
+    const savedH = sz && typeof sz.h === 'number' && Number.isFinite(sz.h) && sz.h > 0 ? sz.h : undefined
+    const leafStyle =
+      !isGroup && savedW !== undefined && savedH !== undefined
+        ? { width: `${savedW}px`, height: `${savedH}px` }
+        : undefined
     return {
       id,
       type: isGroup ? 'group' : leafType,
       position: pos,
+      ...(savedW !== undefined && savedH !== undefined ? { width: savedW, height: savedH } : {}),
       sourcePosition: Position.Left,
       targetPosition: Position.Right,
       data: {
@@ -298,9 +307,12 @@ export function ilographDocumentToFlow(
         ...(projectCompartments?.length ? { projectCompartments } : {}),
         ...(typeof preferredFocusWidth === 'number' ? { preferredFocusWidth } : {}),
         ...(typeof preferredLeafHeight === 'number' ? { preferredLeafHeight } : {}),
-        ...(res['x-triton-project-kind'] === 'project' || res['x-triton-project-kind'] === 'module'
+        ...(res['x-triton-project-kind'] === 'project' ||
+        res['x-triton-project-kind'] === 'module' ||
+        res['x-triton-project-kind'] === 'general'
           ? { projectKind: res['x-triton-project-kind'] }
           : {}),
+        ...(res['x-triton-layout-frozen'] === true ? { tritonLayoutFrozen: true } : {}),
         ...(isGroup && res['x-triton-package-scope'] === true ? { packageScope: true } : {}),
         ...(isGroup && res['x-triton-package-scope'] === true && typeof res['x-triton-package-language'] === 'string'
           ? { language: res['x-triton-package-language'] }
@@ -309,7 +321,7 @@ export function ilographDocumentToFlow(
       parentNode: parentId,
       style: isGroup
         ? { width: 520, height: 360, backgroundColor: 'rgba(240,248,255,0.35)' }
-        : undefined,
+        : leafStyle,
       extent: parentId ? ('parent' as const) : undefined,
       expandParent: !!parentId,
     }

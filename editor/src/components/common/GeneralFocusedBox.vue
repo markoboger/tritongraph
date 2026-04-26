@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { computed, nextTick, onUnmounted, ref, useSlots, watch } from 'vue'
 import BoxMetricStrip from './BoxMetricStrip.vue'
+import { nextMetricsBreakLayout } from '../diagram/boxMetricBreakLayout'
+import { nextMetricsBreakSuperslim } from '../diagram/metricsBreakChromeLayout'
 
-defineProps<{
+const props = defineProps<{
   accent: string
   title: string
   subtitle?: string
@@ -24,10 +27,128 @@ const emit = defineEmits<{
   'cycle-color': []
   'header-dblclick': [MouseEvent]
 }>()
+
+const slots = useSlots()
+
+const rootEl = ref<HTMLElement | null>(null)
+const shellEl = ref<HTMLElement | null>(null)
+const titleEl = ref<HTMLElement | null>(null)
+const metricsBreakLayout = ref(false)
+const metricsBreakSuperslim = ref(false)
+const metricsBreakVerticalBody = ref(false)
+
+const hasMetricsChrome = computed(() => {
+  if (props.hasCoverage) return true
+  if (typeof props.issueCount === 'number' && props.issueCount >= 0) return true
+  if (props.technicalDebtPercent != null && Number.isFinite(props.technicalDebtPercent)) return true
+  return false
+})
+
+function syncMetricsBreakChrome(root: HTMLElement) {
+  if (!metricsBreakLayout.value) {
+    metricsBreakSuperslim.value = false
+    metricsBreakVerticalBody.value = false
+    return
+  }
+  const w = root.clientWidth
+  metricsBreakSuperslim.value = nextMetricsBreakSuperslim(w, metricsBreakSuperslim.value)
+  if (metricsBreakSuperslim.value) {
+    metricsBreakVerticalBody.value = false
+    return
+  }
+  /**
+   * In slim (metrics-break, non-superslim) chrome, always use vertical title rails — the same
+   * headline treatment as long Scala declaration subtitles; short subtitles rarely make the
+   * body column taller than it is wide, so aspect-ratio heuristics never tripped for projects.
+   */
+  metricsBreakVerticalBody.value = true
+}
+
+function measure() {
+  const root = rootEl.value
+  if (!root) {
+    metricsBreakLayout.value = false
+    metricsBreakSuperslim.value = false
+    metricsBreakVerticalBody.value = false
+    return
+  }
+  if (!hasMetricsChrome.value) {
+    metricsBreakLayout.value = false
+    metricsBreakSuperslim.value = false
+    metricsBreakVerticalBody.value = false
+    return
+  }
+  metricsBreakLayout.value = nextMetricsBreakLayout(
+    root.clientWidth,
+    root.clientHeight,
+    metricsBreakLayout.value,
+  )
+  syncMetricsBreakChrome(root)
+}
+
+const showFocusedSubtitle = computed(() => {
+  if (metricsBreakSuperslim.value) return false
+  const hasSub = !!(String(props.subtitle ?? '').trim() || slots.subtitle)
+  if (!hasSub) return false
+  if (metricsBreakLayout.value && metricsBreakVerticalBody.value) return true
+  return hasSub
+})
+
+let ro: ResizeObserver | null = null
+
+watch(
+  rootEl,
+  (el) => {
+    ro?.disconnect()
+    ro = null
+    if (el) {
+      const observer = new ResizeObserver(() => measure())
+      ro = observer
+      observer.observe(el)
+      void nextTick(() => {
+        if (titleEl.value) observer.observe(titleEl.value)
+        if (shellEl.value) observer.observe(shellEl.value)
+        measure()
+      })
+    }
+  },
+  { flush: 'post' },
+)
+
+watch(titleEl, (el) => {
+  if (!el || !rootEl.value) return
+  const r = ro
+  if (r) r.observe(el)
+})
+
+watch(shellEl, (el) => {
+  if (!el || !rootEl.value) return
+  const r = ro
+  if (r) r.observe(el)
+})
+
+watch(
+  () => [
+    props.title,
+    props.subtitle,
+    props.hasCoverage,
+    props.issueCount,
+    props.technicalDebtPercent,
+    props.showPinTool,
+    props.showColorTool,
+  ],
+  () => void nextTick(measure),
+)
+
+onUnmounted(() => {
+  ro?.disconnect()
+  ro = null
+})
 </script>
 
 <template>
   <div
+    ref="rootEl"
     class="general-focused-box"
     :class="{
       'general-focused-box--pinned': pinned,
@@ -36,6 +157,10 @@ const emit = defineEmits<{
       'general-focused-box--has-metrics':
         hasCoverage || technicalDebtPercent != null || issueCount != null,
       'general-focused-box--allow-overflow': allowOverflow,
+      'general-focused-box--metrics-break': metricsBreakLayout,
+      'general-focused-box--metrics-superslim': metricsBreakSuperslim,
+      'general-focused-box--metrics-break-vertical-body':
+        metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
     }"
     :style="{ '--box-accent': accent }"
   >
@@ -82,14 +207,24 @@ const emit = defineEmits<{
       </div>
     </div>
 
-    <div class="general-focused-box__shell">
+    <div ref="shellEl" class="general-focused-box__shell">
       <div class="general-focused-box__header" @dblclick.stop="emit('header-dblclick', $event)">
-        <slot name="header-icon" />
+        <div class="general-focused-box__header-icon">
+          <slot name="header-icon" />
+        </div>
         <div class="general-focused-box__head-text">
-          <div class="title title--header" :title="titleTooltip || undefined">
+          <div
+            ref="titleEl"
+            class="title title--header"
+            :class="{
+              'title--metrics-break-vertical':
+                metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+            }"
+            :title="titleTooltip || undefined"
+          >
             {{ title }}
           </div>
-          <div v-if="$slots.subtitle || subtitle" class="subtitle subtitle--header">
+          <div v-if="showFocusedSubtitle" class="subtitle subtitle--header">
             <slot name="subtitle">{{ subtitle }}</slot>
           </div>
         </div>
@@ -134,6 +269,18 @@ const emit = defineEmits<{
     outline 0.45s ease;
 }
 
+.general-focused-box--has-metrics:not(.general-focused-box--metrics-break) {
+  padding-top: clamp(16px, 3.8vmin, 24px);
+}
+
+.general-focused-box--has-metrics.general-focused-box--metrics-break {
+  padding-top: clamp(28px, 6vmin, 44px);
+}
+
+.general-focused-box--has-metrics.general-focused-box--metrics-break.general-focused-box--metrics-superslim {
+  padding-top: clamp(28px, 6vmin, 44px);
+}
+
 .general-focused-box--allow-overflow {
   overflow: visible;
 }
@@ -161,6 +308,31 @@ const emit = defineEmits<{
   padding-right: clamp(44px, 10cqw, 104px);
 }
 
+.general-focused-box--metrics-break:not(.general-focused-box--metrics-superslim) .general-focused-box__header {
+  padding-top: clamp(2px, 0.5vmin, 6px);
+}
+
+.general-focused-box__header-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.general-focused-box--metrics-break:not(.general-focused-box--metrics-superslim) .general-focused-box__header-icon,
+.general-focused-box--metrics-break.general-focused-box--metrics-superslim .general-focused-box__header-icon {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  z-index: 3;
+  width: auto;
+  height: 44px;
+  min-height: 40px;
+  max-height: 48px;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
 .general-focused-box__head-text {
   flex: 1;
   min-width: 0;
@@ -168,6 +340,11 @@ const emit = defineEmits<{
   flex-direction: column;
   gap: 2px;
   align-items: flex-start;
+}
+
+.general-focused-box--metrics-break:not(.general-focused-box--metrics-superslim) .general-focused-box__head-text,
+.general-focused-box--metrics-break.general-focused-box--metrics-superslim .general-focused-box__head-text {
+  padding-left: clamp(40px, 12cqw, 52px);
 }
 
 .general-focused-box__body {
@@ -184,20 +361,20 @@ const emit = defineEmits<{
 
 .general-focused-box__tools {
   position: absolute;
-  top: 5px;
-  right: 5px;
+  top: 1px;
+  right: 1px;
   z-index: 4;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   justify-content: flex-end;
   gap: 4px;
-  max-width: calc(100% - 10px);
+  max-width: calc(100% - 2px);
 }
 
 .general-focused-box__metric-strip {
-  width: auto;
-  max-width: 100%;
+  width: min(124px, calc(100% - 2px));
+  max-width: min(124px, calc(100% - 2px));
 }
 
 .general-focused-box__tool-row {
@@ -207,6 +384,36 @@ const emit = defineEmits<{
   gap: 5px;
   flex-wrap: wrap;
   max-width: 100%;
+}
+
+.general-focused-box--metrics-break-vertical-body:not(.general-focused-box--metrics-superslim)
+  .general-focused-box__head-text {
+  flex-direction: row;
+  justify-content: center;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+}
+
+.general-focused-box--metrics-break-vertical-body:not(.general-focused-box--metrics-superslim)
+  .title.title--metrics-break-vertical,
+.general-focused-box--metrics-break-vertical-body:not(.general-focused-box--metrics-superslim)
+  .subtitle.subtitle--header {
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  max-width: none;
+  align-self: stretch;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-orientation: mixed;
+  line-height: 1.15;
+  text-align: left;
+}
+
+.general-focused-box--metrics-break-vertical-body:not(.general-focused-box--metrics-superslim)
+  .subtitle.subtitle--header {
+  margin-top: 0;
 }
 
 .tool-btn {
@@ -272,6 +479,17 @@ const emit = defineEmits<{
   align-self: stretch;
 }
 
+/**
+ * `.title--header` is declared after the vertical-metrics block and resets `writing-mode`;
+ * repeat vertical chrome here so slim tall cards (and focused shells) cannot snap back to horizontal.
+ */
+.general-focused-box--metrics-break-vertical-body:not(.general-focused-box--metrics-superslim)
+  .title.title--header.title--metrics-break-vertical {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-orientation: mixed;
+}
+
 .subtitle {
   font-size: clamp(0.65rem, min(1.45vmin, 2.2cqh), 0.85rem);
   line-height: 1.25;
@@ -283,5 +501,40 @@ const emit = defineEmits<{
   opacity: 1;
   max-height: none;
   text-align: left;
+}
+
+/**
+ * Wide focused cards: stack icon above title so the logo is centered in the full box width;
+ * title/subtitle span the header and use centered text. Skip when metrics strip stacks — that
+ * chrome uses its own corner / vertical-title rules (parity with {@link ProjectBox}).
+ */
+@container (min-width: 168px) {
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--metrics-superslim)
+    .general-focused-box__header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--metrics-superslim)
+    .general-focused-box__header-icon {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--metrics-superslim)
+    .general-focused-box__head-text {
+    flex: 0 1 auto;
+    align-items: stretch;
+    width: 100%;
+    text-align: center;
+  }
+
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--metrics-superslim)
+    .title--header,
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--metrics-superslim)
+    .subtitle--header {
+    text-align: center;
+  }
 }
 </style>

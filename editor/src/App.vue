@@ -184,6 +184,15 @@ const PACKAGE_STACKING_DOJO_ID = 'package-stacking'
 const PACKAGE_IMPORT_CHAIN_DOJO_ID = 'package-import-chain'
 const PACKAGE_TREE_DOJO_ID = 'package-tree'
 const ARTEFACT_HIERARCHY_DOJO_ID = 'artefact-hierarchy'
+const ABSTRACTION_LAYERS_DOJO_ID = 'abstraction-layers'
+
+const ABSTRACTION_RESIZE_NODE_IDS: readonly string[] = [
+  'abstraction-general',
+  'abstraction-project',
+  'abstraction-module',
+  'abstraction-package',
+  'abstraction-artefact',
+]
 
 function clampDojoDepth(raw: number): number {
   if (!Number.isFinite(raw)) return 4
@@ -216,6 +225,8 @@ const dojoImportChainLength = ref(clampDojoStackCount(initialRequestedDojoDepth)
 const dojoTreeCount = ref(clampDojoTreeCount(initialRequestedDojoDepth))
 const dojoArtefactLayers = ref(clampDojoArtefactLayers(initialRequestedDojoDepth))
 const dojoArtefactWidth = ref(1)
+/** Abstraction dojo: when true, resizing any one box applies the new size to every demo node. */
+const dojoAbstractionLinkedResize = ref(false)
 
 /** All bundled examples (`build.sbt` files) across every registered examples-root. */
 const sbtExamplesAll = listSbtExamples()
@@ -243,6 +254,7 @@ const dojoExamples = computed(() => [
   { id: PACKAGE_IMPORT_CHAIN_DOJO_ID, title: 'Package import chain' },
   { id: PACKAGE_TREE_DOJO_ID, title: 'Package tree' },
   { id: ARTEFACT_HIERARCHY_DOJO_ID, title: 'Artefact hierarchy' },
+  { id: ABSTRACTION_LAYERS_DOJO_ID, title: 'Abstraction layers' },
   ...dojoFixtures.map((fixture) => ({ id: fixture.id, title: fixture.title })),
 ])
 
@@ -823,6 +835,100 @@ function buildPackageImportChainDojoDocument(chainLen: number): IlographDocument
         name: 'dependencies',
         orientation: 'leftToRight',
         relations,
+      },
+    ],
+  }
+}
+
+function buildAbstractionDojoDocument(): IlographDocument {
+  const W = 248
+  const H = 116
+  /** Vertical gap between stacked rows — generous so resize handles are easy to grab. */
+  const ROW_GAP = 52
+  /** Horizontal gap between the two columns. */
+  const COL_GAP = 88
+  const LEFT = 56
+  const TOP = 56
+  const COL2 = LEFT + W + COL_GAP
+  const gridMidX = LEFT + (2 * W + COL_GAP) / 2
+  const artefactX = Math.round(gridMidX - W / 2)
+  const positions: NonNullable<NonNullable<IlographDocument['x-triton-editor']>['positions']> = {
+    'abstraction-general': { x: LEFT, y: TOP },
+    'abstraction-project': { x: COL2, y: TOP },
+    'abstraction-module': { x: LEFT, y: TOP + H + ROW_GAP },
+    'abstraction-package': { x: COL2, y: TOP + H + ROW_GAP },
+    'abstraction-artefact': { x: artefactX, y: TOP + 2 * (H + ROW_GAP) },
+  }
+  const sizes: NonNullable<NonNullable<IlographDocument['x-triton-editor']>['sizes']> = {
+    'abstraction-general': { w: W, h: H },
+    'abstraction-project': { w: W, h: H },
+    'abstraction-module': { w: W, h: H },
+    'abstraction-package': { w: W, h: H },
+    'abstraction-artefact': { w: W, h: H },
+  }
+  return {
+    description:
+      'Dojo comparing Triton leaf chrome across abstraction layers (generic box, project, module, package, Scala artefact). Drag resize handles; toggle linked mode so one resize updates every box.',
+    'x-triton-editor': { positions, sizes },
+    resources: [
+      {
+        id: 'abstraction-general',
+        name: 'General box',
+        subtitle: 'Neutral leaf shell (`x-triton-project-kind: general`)',
+        'x-triton-project-kind': 'general',
+        'x-triton-layout-frozen': true,
+      },
+      {
+        id: 'abstraction-project',
+        name: 'Acme build',
+        subtitle: 'Root aggregate (`x-triton-project-kind: project`)',
+        'x-triton-project-kind': 'project',
+        'x-triton-layout-frozen': true,
+        'x-triton-project-compartments': [
+          {
+            id: 'scala',
+            title: 'Scala',
+            rows: [{ label: 'binary', value: '3.8.3' }],
+          },
+        ],
+      },
+      {
+        id: 'abstraction-module',
+        name: 'ingestion',
+        subtitle: 'JVM module boundary (`x-triton-project-kind: module`)',
+        'x-triton-project-kind': 'module',
+        'x-triton-layout-frozen': true,
+      },
+      {
+        id: 'abstraction-package',
+        name: 'com.acme.core',
+        subtitle: 'Scala package container (`x-triton-node-type: package`)',
+        'x-triton-node-type': 'package',
+        'x-triton-package-language': 'scala',
+        'x-triton-layout-frozen': true,
+        description: 'Holds domain model sources and public facades.',
+      },
+      {
+        id: 'abstraction-artefact',
+        name: 'TelemetryRouter',
+        subtitle: 'Scala class',
+        'x-triton-node-type': 'artefact',
+        'x-triton-declaration': 'final class TelemetryRouter(config: RouterConfig)(using Telemetry)',
+        'x-triton-method-signatures': [
+          { signature: 'def route(batch: Batch): RoutePlan', startRow: 1 },
+          { signature: 'def shutdown(): Unit', startRow: 2 },
+        ],
+        'x-triton-source-file': 'TelemetryRouter.scala',
+        'x-triton-source-row': 4,
+        'x-triton-layout-frozen': true,
+      },
+    ],
+    perspectives: [
+      {
+        id: 'dependencies',
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        relations: [],
       },
     ],
   }
@@ -1526,6 +1632,17 @@ async function loadArtefactHierarchyDojo(layers: number, width: number) {
   status.value = `Loaded dojo fixture ${ARTEFACT_HIERARCHY_DOJO_ID} at ${n} layer${n !== 1 ? 's' : ''}, width ${w}.`
 }
 
+async function loadAbstractionLayersDojo() {
+  sourcePath.value = `dojo/${ABSTRACTION_LAYERS_DOJO_ID}.ilograph.yaml`
+  await applyDoc(
+    stringifyIlographYaml(buildAbstractionDojoDocument()),
+    `${ABSTRACTION_LAYERS_DOJO_ID}.ilograph.yaml`,
+    true,
+    { moduleNodeType: 'module' },
+  )
+  status.value = `Loaded dojo fixture ${ABSTRACTION_LAYERS_DOJO_ID}.`
+}
+
 async function loadDojoFixture(id: string) {
   if (id === PACKAGE_NESTING_DOJO_ID) {
     await loadPackageNestingDojo(dojoNestingDepth.value)
@@ -1545,6 +1662,10 @@ async function loadDojoFixture(id: string) {
   }
   if (id === ARTEFACT_HIERARCHY_DOJO_ID) {
     await loadArtefactHierarchyDojo(dojoArtefactLayers.value, dojoArtefactWidth.value)
+    return
+  }
+  if (id === ABSTRACTION_LAYERS_DOJO_ID) {
+    await loadAbstractionLayersDojo()
     return
   }
   const fixture = getDojoFixture(id)
@@ -1571,7 +1692,9 @@ async function openDojoTab(id: string): Promise<void> {
             ? `${PACKAGE_TREE_DOJO_ID}.ilograph.yaml`
             : id === ARTEFACT_HIERARCHY_DOJO_ID
               ? `${ARTEFACT_HIERARCHY_DOJO_ID}.ilograph.yaml`
-              : fixture?.fileName ?? `${id}.ilograph.yaml`
+              : id === ABSTRACTION_LAYERS_DOJO_ID
+                ? `${ABSTRACTION_LAYERS_DOJO_ID}.ilograph.yaml`
+                : fixture?.fileName ?? `${id}.ilograph.yaml`
   await openOrActivateTab(
     { key: `dojo:${id}`, title, iconUrl: cubeIconUrl },
     () => loadDojoFixture(id),
@@ -1581,7 +1704,8 @@ async function openDojoTab(id: string): Promise<void> {
     id === PACKAGE_STACKING_DOJO_ID ||
     id === PACKAGE_IMPORT_CHAIN_DOJO_ID ||
     id === PACKAGE_TREE_DOJO_ID ||
-    id === ARTEFACT_HIERARCHY_DOJO_ID
+    id === ARTEFACT_HIERARCHY_DOJO_ID ||
+    id === ABSTRACTION_LAYERS_DOJO_ID
   ) {
     showYamlEditor.value = true
     sidePanelTab.value = 'dojo'
@@ -2520,7 +2644,14 @@ const showDojoPanel = computed(
     activeDojoId.value === PACKAGE_STACKING_DOJO_ID ||
     activeDojoId.value === PACKAGE_IMPORT_CHAIN_DOJO_ID ||
     activeDojoId.value === PACKAGE_TREE_DOJO_ID ||
-    activeDojoId.value === ARTEFACT_HIERARCHY_DOJO_ID,
+    activeDojoId.value === ARTEFACT_HIERARCHY_DOJO_ID ||
+    activeDojoId.value === ABSTRACTION_LAYERS_DOJO_ID,
+)
+
+const abstractionDojoResizeForGraph = computed(() =>
+  activeTab.value?.key === `dojo:${ABSTRACTION_LAYERS_DOJO_ID}`
+    ? { linked: dojoAbstractionLinkedResize.value, nodeIds: ABSTRACTION_RESIZE_NODE_IDS }
+    : null,
 )
 
 watch(activeTabId, () => {
@@ -2874,6 +3005,8 @@ onUnmounted(() => {
           v-model:edges="edges"
           :node-types="nodeTypes"
           :relation-type-visibility="relationTypeVisibility"
+          :abstraction-dojo-resize="abstractionDojoResizeForGraph"
+          :nodes-draggable="activeTab?.key === `dojo:${ABSTRACTION_LAYERS_DOJO_ID}`"
           @status="(s) => (status = s)"
           @link-action="onNodeLinkAction"
         />
@@ -3134,6 +3267,31 @@ onUnmounted(() => {
                 <span>1</span>
                 <span>20</span>
               </div>
+            </div>
+            <div v-else-if="activeDojoId === ABSTRACTION_LAYERS_DOJO_ID" class="dojo-panel">
+              <div class="dojo-panel__header">
+                <div class="dojo-panel__title">Abstraction layers</div>
+                <div class="dojo-panel__meta">Resize + layout parity</div>
+              </div>
+              <p class="dojo-panel__hint">
+                Each tile is a different Triton abstraction (general box, project, module, package, Scala artefact) with
+                the same subtitle + metric strip affordances. Drag the blue handles to resize; compare how inner layout
+                behaves at different sizes.
+              </p>
+              <label class="dojo-panel__control dojo-panel__control--switch" for="dojo-abstraction-linked-resize">
+                <span class="dojo-panel__label">Linked resize</span>
+                <input
+                  id="dojo-abstraction-linked-resize"
+                  v-model="dojoAbstractionLinkedResize"
+                  class="dojo-panel__checkbox"
+                  type="checkbox"
+                  aria-label="When enabled, resizing one box updates every abstraction demo box to the same width and height"
+                />
+              </label>
+              <p class="dojo-panel__hint dojo-panel__hint--compact">
+                Off: each handle only resizes its own box. On: dragging any handle applies the new size to all five
+                boxes (positions stay put).
+              </p>
             </div>
           </div>
         </div>
@@ -3569,10 +3727,27 @@ onUnmounted(() => {
   line-height: 1.5;
   color: #475569;
 }
+.dojo-panel__hint--compact {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #64748b;
+}
 .dojo-panel__control {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.dojo-panel__control--switch {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dojo-panel__checkbox {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
 }
 .dojo-panel__label {
   font-size: 12px;

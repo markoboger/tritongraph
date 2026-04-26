@@ -7,8 +7,9 @@
  * when layer-drill focused. Does not relay subtitle link-action clicks (package boxes have no markdown
  * links yet — re-add the `tritonEmitLinkAction` injection here when that changes).
  */
+import { NodeResizer } from '@vue-flow/node-resizer'
 import { useVueFlow } from '@vue-flow/core'
-import { computed, inject, nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onUnmounted, ref, watch, type ComputedRef } from 'vue'
 import { boxColorForId, nextNamedBoxColor } from '../../graph/boxColors'
 import type { ModuleAnchorTops } from '../../graph/layoutDependencyLayers'
 import {
@@ -18,6 +19,8 @@ import {
   setNodeNotes,
   setNodePinned,
 } from '../../store/overlayStore'
+import { TRITON_WORKSPACE_FLOW_ID } from '../../graph/tritonVueFlowId'
+import { DIAGRAM_LEAF_MIN_WIDTH_PX } from './boxMetricBreakLayout'
 import { openInEditor } from '../../openInEditor'
 import type { Ref } from 'vue'
 import DepthRelationHandles from '../common/DepthRelationHandles.vue'
@@ -28,6 +31,7 @@ import PackageBox, {
   type InnerPackageSummary,
 } from './PackageBox.vue'
 import ScalaArtefactBox from './ScalaArtefactBox.vue'
+import { useAbstractionNodeResize } from './useAbstractionNodeResize'
 
 type LayerFlipPayload = {
   tx: number
@@ -141,7 +145,7 @@ const innerDrillPathForBox = computed(() => {
   return Array.isArray(raw) ? raw.map(String) : []
 })
 
-const { updateNodeData, getNodes, updateNodeDimensions } = useVueFlow()
+const { updateNodeData, getNodes, updateNodeDimensions } = useVueFlow(TRITON_WORKSPACE_FLOW_ID)
 const rootEl = ref<HTMLDivElement | null>(null)
 let nodeDimensionSettleTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -217,6 +221,11 @@ const patchNodeData = inject<((id: string, patch: Record<string, unknown>) => vo
   'tritonPatchNodeData',
   undefined,
 )
+
+const { showResizer, onResize } = useAbstractionNodeResize(props.id)
+
+const absentAbstractionDojo = computed(() => false)
+const abstractionDojoActive = inject<ComputedRef<boolean>>('tritonAbstractionDojoActive', absentAbstractionDojo)
 
 function moduleInContainerFocusTree(focusId: string, moduleId: string): boolean {
   const nodes = getNodes.value
@@ -410,9 +419,17 @@ onUnmounted(() => {
   <div
     ref="rootEl"
     class="flow-graph-node flow-graph-node--package"
+    :class="{ 'flow-graph-node--abstraction-debug-outline': abstractionDojoActive }"
     :data-node-id="id"
     :data-testid="`diagram-node-${id}`"
   >
+    <NodeResizer
+      v-if="showResizer"
+      :min-width="DIAGRAM_LEAF_MIN_WIDTH_PX"
+      :min-height="64"
+      :is-visible="true"
+      @resize="onResize"
+    />
     <div class="flow-graph-node__flip-outer" :style="layerFlipStyle">
       <div class="flow-graph-node__flip-counter" :style="layerFlipCounterStyle">
         <DiagramSection>

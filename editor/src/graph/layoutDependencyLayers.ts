@@ -1321,6 +1321,48 @@ export function verticalBandForLayerDrill(
   return { padTop: INNER_PAD_Y, usable: Math.max(80, ph - INNER_PAD_Y - INNER_PAD_Y) }
 }
 
+function allVisibleRootLeavesLayoutFrozen(out: readonly any[]): boolean {
+  const roots = out.filter((n) => !n.parentNode && !(n as { hidden?: boolean }).hidden)
+  if (!roots.length) return false
+  return roots.every(
+    (n) =>
+      isLeafBoxNode(n) &&
+      (n.data as Record<string, unknown> | undefined)?.tritonLayoutFrozen === true,
+  )
+}
+
+/** Keep hand-placed root leaf geometry when every visible root leaf opts into frozen layout. */
+function preserveFrozenRootLeafLayout(out: any[]): any[] {
+  return out.map((n) => {
+    if (
+      !n.parentNode &&
+      isLeafBoxNode(n) &&
+      (n.data as Record<string, unknown> | undefined)?.tritonLayoutFrozen === true
+    ) {
+      const w =
+        typeof n.width === 'number' && Number.isFinite(n.width) && n.width >= 16 ? n.width : 220
+      const h =
+        typeof n.height === 'number' && Number.isFinite(n.height) && n.height >= 24 ? n.height : 100
+      const pos = n.position ?? { x: 48, y: 48 }
+      const prevStyle = n.style && typeof n.style === 'object' ? { ...n.style } : {}
+      return {
+        ...n,
+        position: { x: pos.x ?? 0, y: pos.y ?? 0 },
+        width: w,
+        height: h,
+        style: {
+          ...prevStyle,
+          width: `${w}px`,
+          height: `${h}px`,
+          opacity: prevStyle.opacity ?? 1,
+          pointerEvents: 'auto',
+        },
+      }
+    }
+    return n
+  })
+}
+
 /**
  * Positions all nodes: nested regions first (deepest parent), then root region using `viewport`.
  */
@@ -1343,6 +1385,9 @@ export function layoutDepthInViewport(
     }
     return base
   })
+  if (allVisibleRootLeavesLayoutFrozen(out)) {
+    return preserveFrozenRootLeafLayout(out)
+  }
   const byId = new Map(out.map((n) => [n.id, n]))
 
   const parentIds = [...new Set(out.filter((n) => n.parentNode).map((n) => String(n.parentNode)))]

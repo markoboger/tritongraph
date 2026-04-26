@@ -2,6 +2,7 @@
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
 import cubeIconUrl from '../../assets/language-icons/cube.svg'
+import genericIconUrl from '../../assets/language-icons/generic.svg'
 import stackedCubesIconUrl from '../../assets/language-icons/stacked-cubes.svg'
 import type { BoxCompartment } from '../../diagram/boxCompartments'
 import BoxCompartments from '../common/BoxCompartments.vue'
@@ -9,6 +10,8 @@ import GeneralFocusedBox from '../common/GeneralFocusedBox.vue'
 import BoxMetricStrip from '../common/BoxMetricStrip.vue'
 import { simulatedMetricsForBox } from '../common/boxMetricDemo'
 import { useScalaCoverageKeyed } from '../../store/useOverlay'
+import { nextMetricsBreakLayout } from './boxMetricBreakLayout'
+import { nextMetricsBreakSuperslim } from './metricsBreakChromeLayout'
 
 const props = defineProps<{
   boxId: string
@@ -18,7 +21,7 @@ const props = defineProps<{
   notes?: string
   /** Free-text "what does this module do" — surfaced in the AI prompt. */
   description?: string
-  kind?: 'project' | 'module'
+  kind?: 'project' | 'module' | 'general'
   /** Kept for YAML round-trip; not used for the icon (all project boxes show the cube). */
   language?: string
   compartments?: readonly BoxCompartment[]
@@ -83,9 +86,19 @@ const coveragePercent = computed((): number | null => {
 const hasCoverage = computed(() => coveragePercent.value !== null)
 const coveragePercentValue = computed(() => coveragePercent.value ?? 0)
 const simulatedMetrics = computed(() => simulatedMetricsForBox(props.boxId))
-const projectKind = computed<'project' | 'module'>(() => (props.kind === 'project' ? 'project' : 'module'))
-const projectIconUrl = computed(() => (projectKind.value === 'project' ? stackedCubesIconUrl : cubeIconUrl))
-const displayNoun = computed(() => (projectKind.value === 'project' ? 'project' : 'module'))
+const projectKind = computed<'project' | 'module' | 'general'>(() =>
+  props.kind === 'project' ? 'project' : props.kind === 'general' ? 'general' : 'module',
+)
+const projectIconUrl = computed(() =>
+  projectKind.value === 'project'
+    ? stackedCubesIconUrl
+    : projectKind.value === 'general'
+      ? genericIconUrl
+      : cubeIconUrl,
+)
+const displayNoun = computed(() =>
+  projectKind.value === 'project' ? 'project' : projectKind.value === 'general' ? 'box' : 'module',
+)
 
 const focusedCompartments = computed<readonly BoxCompartment[]>(() => {
   const out: BoxCompartment[] = []
@@ -108,9 +121,36 @@ const focusedCompartments = computed<readonly BoxCompartment[]>(() => {
 })
 
 const rootEl = ref<HTMLElement | null>(null)
+const bodyEl = ref<HTMLElement | null>(null)
 const titleEl = ref<HTMLElement | null>(null)
 /** Title too wide for one line or title+subtitle overflow → vertical title; subtitle only when horizontal. */
 const tightLayout = ref(false)
+/** When the metric strip stacks (narrow width), pin the logo top-left and keep metrics top-right. */
+const metricsBreakLayout = ref(false)
+const metricsBreakSuperslim = ref(false)
+/** Vertical title in slim strip mode (non-superslim); matches {@link PackageBox} / {@link GeneralFocusedBox}. */
+const metricsBreakVerticalBody = ref(false)
+
+function syncMetricsBreakChrome(root: HTMLElement | null) {
+  if (!root || !metricsBreakLayout.value) {
+    metricsBreakSuperslim.value = false
+    metricsBreakVerticalBody.value = false
+    return
+  }
+  const w = root.clientWidth
+  metricsBreakSuperslim.value = nextMetricsBreakSuperslim(w, metricsBreakSuperslim.value)
+  if (metricsBreakSuperslim.value) {
+    metricsBreakVerticalBody.value = false
+    return
+  }
+  metricsBreakVerticalBody.value = true
+}
+
+const showUnfocusedSubtitle = computed(() => {
+  if (metricsBreakSuperslim.value) return false
+  if (metricsBreakLayout.value && metricsBreakVerticalBody.value) return !!props.subtitle?.trim()
+  return !!props.subtitle?.trim() && !tightLayout.value
+})
 
 let measureCanvas: CanvasRenderingContext2D | null = null
 
@@ -128,7 +168,22 @@ function measureTitleWidth(label: string, title: HTMLElement): number {
 function measure() {
   const root = rootEl.value
   const title = titleEl.value
-  if (!root || !title) return
+  if (!root) {
+    metricsBreakLayout.value = false
+    metricsBreakSuperslim.value = false
+    metricsBreakVerticalBody.value = false
+    return
+  }
+  const hasMetricsChrome = hasCoverage.value || simulatedMetrics.value.issueCount >= 0
+  metricsBreakLayout.value = hasMetricsChrome
+    ? nextMetricsBreakLayout(root.clientWidth, root.clientHeight, metricsBreakLayout.value)
+    : false
+  syncMetricsBreakChrome(root)
+  if (!title) return
+  if (metricsBreakLayout.value) {
+    tightLayout.value = false
+    return
+  }
   const label = String(props.label ?? '')
   const hasSubtitle = !!(props.subtitle && String(props.subtitle).trim())
   const padX =
@@ -142,13 +197,45 @@ function measure() {
 
 let ro: ResizeObserver | null = null
 
+/**
+ * `ref="rootEl"` only exists on the unfocused branch (`v-else`). Re-bind ResizeObserver whenever
+ * that element appears — otherwise after layer-drill unfocus the observer stays on a detached
+ * node and {@link metricsBreakLayout} / superslim / vertical-body never update (packages already
+ * do this in {@link PackageBox}).
+ */
+watch(
+  rootEl,
+  (el) => {
+    ro?.disconnect()
+    ro = null
+    if (el) {
+      const observer = new ResizeObserver(() => measure())
+      ro = observer
+      observer.observe(el)
+      void nextTick(() => {
+        if (titleEl.value) observer.observe(titleEl.value)
+        if (bodyEl.value) observer.observe(bodyEl.value)
+        measure()
+      })
+    }
+  },
+  { flush: 'post' },
+)
+
+watch(titleEl, (el) => {
+  if (!el || !rootEl.value) return
+  const r = ro
+  if (r) r.observe(el)
+})
+
+watch(bodyEl, (el) => {
+  if (!el || !rootEl.value) return
+  const r = ro
+  if (r) r.observe(el)
+})
+
 onMounted(() => {
-  void nextTick(() => {
-    measure()
-    ro = new ResizeObserver(() => measure())
-    if (rootEl.value) ro.observe(rootEl.value)
-    if (titleEl.value) ro.observe(titleEl.value)
-  })
+  void nextTick(() => measure())
 })
 
 onUnmounted(() => {
@@ -167,6 +254,10 @@ watch(
     props.language,
     props.showPinTool,
     props.showColorTool,
+    props.boxId,
+    props.description,
+    hasCoverage.value,
+    simulatedMetrics.value.issueCount,
   ],
   () => void nextTick(measure),
 )
@@ -283,6 +374,10 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
         'project-box--pin-only': showPinTool && !showColorTool,
         'project-box--editing': editing,
         'project-box--has-metrics': hasCoverage || simulatedMetrics.issueCount >= 0,
+        'project-box--metrics-break': metricsBreakLayout,
+        'project-box--metrics-superslim': metricsBreakSuperslim,
+        'project-box--metrics-break-vertical-body':
+          metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
       }"
       :style="{ '--box-accent': accent }"
     >
@@ -332,6 +427,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       </div>
 
       <div
+        ref="bodyEl"
         class="project-box__body"
         @dblclick.stop="startEditing"
       >
@@ -339,9 +435,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
           <div
             ref="titleEl"
             class="title"
+            :class="{
+              'title--metrics-break-vertical':
+                metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+            }"
             :title="`Double-click to rename / edit ${displayNoun} description`"
           >{{ label }}</div>
-          <div v-if="subtitle && !tightLayout" class="subtitle">
+          <div v-if="showUnfocusedSubtitle" class="subtitle">
             <template v-for="(seg, i) in subtitleSegments" :key="i">
               <button
                 v-if="seg.kind === 'link'"
@@ -357,7 +457,16 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
             </template>
           </div>
         </div>
-        <div v-if="description && !tightLayout" class="description-preview" :title="description">
+        <div
+          v-if="
+            description &&
+            !tightLayout &&
+            !metricsBreakSuperslim &&
+            !(metricsBreakLayout && metricsBreakVerticalBody)
+          "
+          class="description-preview"
+          :title="description"
+        >
           {{ description }}
         </div>
       </div>
@@ -455,32 +564,36 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   padding-right: clamp(72px, 12cqw, 108px);
 }
 
+/* Metrics + tools float top-right; keep horizontal padding symmetric (base `.project-box` rule). */
 .project-box--has-metrics {
-  padding-top: clamp(20px, 4vmin, 26px);
-  padding-right: clamp(46px, 8cqw, 56px);
+  padding-top: clamp(16px, 3.8vmin, 24px);
 }
 
-@container (max-width: 150px) {
-  .project-box--has-metrics {
-    padding-top: clamp(38px, 8vmin, 54px);
-  }
+.project-box--has-metrics.project-box--metrics-break {
+  padding-top: clamp(36px, 7.5vmin, 52px);
 }
 
 .project-box__metrics {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 1px;
+  right: 1px;
   z-index: 4;
-  width: min(124px, calc(100% - 12px));
+  width: min(124px, calc(100% - 2px));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  box-sizing: border-box;
 }
 
 .lang-icon-slot {
   display: flex;
   justify-content: center;
   align-items: center;
-  align-self: center;
+  align-self: stretch;
   flex-shrink: 0;
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   height: clamp(40px, min(30cqw, 28cqh), 160px);
   min-height: 36px;
   margin-bottom: clamp(6px, 1.5cqh, 16px);
@@ -495,6 +608,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   max-height: 100%;
   max-width: min(92cqw, 240px);
 }
+
 .lang-icon-slot--header {
   width: 40px;
   height: 40px;
@@ -513,6 +627,8 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .project-box__body {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -522,7 +638,94 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  align-items: stretch;
 }
+
+.project-box:not(.project-box--tight) .project-box__header .title,
+.project-box:not(.project-box--tight) .project-box__header .subtitle,
+.project-box:not(.project-box--tight) .project-box__body > .description-preview {
+  text-align: center;
+  align-self: stretch;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+/**
+ * Narrow metrics-break only: pin logo top-left (same contract as {@link PackageBox} unfocused).
+ * Wide boxes keep the centered column — do not apply to every `has-metrics` card.
+ */
+.project-box--has-metrics.project-box--metrics-break .lang-icon-slot {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  z-index: 3;
+  align-self: flex-start;
+  justify-content: flex-start;
+  align-items: flex-start;
+  width: auto;
+  min-height: 40px;
+  height: 44px;
+  max-height: 48px;
+  margin: 0;
+}
+
+.project-box--has-metrics.project-box--metrics-break .project-box__body {
+  justify-content: flex-start;
+}
+
+.project-box--has-metrics.project-box--metrics-break .lang-icon-slot :deep(.lang-svg),
+.project-box--has-metrics.project-box--metrics-break .lang-icon-slot :deep(svg) {
+  height: 40px;
+  max-height: 40px;
+  width: auto;
+}
+
+.project-box--has-metrics.project-box--metrics-break .project-box__header {
+  padding-left: clamp(40px, 12cqw, 52px);
+}
+
+.project-box--has-metrics.project-box--metrics-break .project-box__header .title,
+.project-box--has-metrics.project-box--metrics-break .project-box__header .subtitle,
+.project-box--has-metrics.project-box--metrics-break .project-box__body > .description-preview {
+  text-align: left;
+}
+
+/** Superslim: keep metric strip + tools in the top-right corner; reserve the same top band as non-superslim break. */
+.project-box--has-metrics.project-box--metrics-break.project-box--metrics-superslim {
+  padding-top: clamp(36px, 7.5vmin, 52px);
+}
+
+.project-box--metrics-break-vertical-body:not(.project-box--metrics-superslim) .project-box__header {
+  flex-direction: row;
+  justify-content: center;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.project-box--metrics-break-vertical-body:not(.project-box--metrics-superslim)
+  .title.title--metrics-break-vertical,
+.project-box--metrics-break-vertical-body:not(.project-box--metrics-superslim) .project-box__header .subtitle {
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  max-width: none;
+  align-self: stretch;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-orientation: mixed;
+  line-height: 1.15;
+  text-align: left;
+}
+
+.project-box--metrics-break-vertical-body:not(.project-box--metrics-superslim) .project-box__header .subtitle {
+  margin-top: 0;
+  opacity: 1;
+  max-height: none;
+}
+
 .project-box__focus-body {
   flex: 1 1 0;
   display: flex;
@@ -558,8 +761,8 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .project-box__tools {
   position: absolute;
-  top: 5px;
-  right: 5px;
+  top: 1px;
+  right: 1px;
   z-index: 4;
   display: flex;
   flex-direction: row;
@@ -567,15 +770,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 5px;
-  max-width: calc(100% - 10px);
+  max-width: calc(100% - 2px);
 }
 .project-box--has-metrics .project-box__tools {
-  top: 22px;
+  top: 17px;
 }
-@container (max-width: 150px) {
-  .project-box--has-metrics .project-box__tools {
-    top: 42px;
-  }
+.project-box--has-metrics.project-box--metrics-break .project-box__tools {
+  top: 40px;
 }
 .project-box--pinned:not(.project-box--focused) {
   box-shadow:

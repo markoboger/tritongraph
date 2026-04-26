@@ -118,7 +118,12 @@ export interface IlographResource {
   id?: string
   subtitle?: string
   description?: string
-  'x-triton-project-kind'?: 'project' | 'module'
+  'x-triton-project-kind'?: 'project' | 'module' | 'general'
+  /**
+   * When true, root depth layout preserves this leaf's `position`, `width`, and `height` instead of
+   * re-stacking it in the dependency columns (dojo / hand-placed demos).
+   */
+  'x-triton-layout-frozen'?: boolean
   color?: string
   backgroundColor?: string
   style?: 'default' | 'plural' | 'dashed' | 'outline' | 'flat'
@@ -205,6 +210,8 @@ export interface IlographResource {
 export interface IlographEditorLayout {
   /** vue-flow node id -> position */
   positions?: Record<string, { x: number; y: number }>
+  /** vue-flow node id -> pixel size (paired with {@link positions} for frozen-layout demos). */
+  sizes?: Record<string, { w: number; h: number }>
   /** vue-flow module node id -> CSS named accent color (see editor `boxColors` palette) */
   moduleColors?: Record<string, string>
   /** Module ids that stay visually focused (undimmed) when another container is zoomed */

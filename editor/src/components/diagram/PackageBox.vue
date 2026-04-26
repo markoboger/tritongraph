@@ -45,6 +45,8 @@ import { useScalaCoverageKeyed } from '../../store/useOverlay'
 import { getScalaCoverage, onScalaCoverageChanged } from '../../store/overlayStore'
 import type { BoxCompartment } from '../../diagram/boxCompartments'
 import { shouldHideEdgeForRelationFilter } from '../../graph/relationVisibility'
+import { nextMetricsBreakLayout } from './boxMetricBreakLayout'
+import { nextMetricsBreakSuperslim } from './metricsBreakChromeLayout'
 import { buildAnchoredSmoothStepRelationDraws } from '../../graph/anchoredSmoothStepRelations'
 
 /**
@@ -288,6 +290,36 @@ const hasCoverage = computed(() => coveragePercent.value !== null)
 /** Safe numeric for template bindings (only used when `hasCoverage`). */
 const coveragePercentValue = computed(() => coveragePercent.value ?? 0)
 const simulatedMetrics = computed(() => simulatedMetricsForBox(props.boxId))
+
+function applyMetricsBreakLayout(root: HTMLElement | null) {
+  if (!root) {
+    metricsBreakLayout.value = false
+    return
+  }
+  const hasMetricsChrome = hasCoverage.value || simulatedMetrics.value.issueCount >= 0
+  metricsBreakLayout.value = hasMetricsChrome
+    ? nextMetricsBreakLayout(root.clientWidth, root.clientHeight, metricsBreakLayout.value)
+    : false
+}
+
+const metricsBreakSuperslim = ref(false)
+/** True in slim (metrics-break, non-superslim) chrome — vertical title rails for all leaf kinds. */
+const metricsBreakVerticalBody = ref(false)
+
+function syncMetricsBreakChrome(root: HTMLElement | null) {
+  if (!root || !metricsBreakLayout.value) {
+    metricsBreakSuperslim.value = false
+    metricsBreakVerticalBody.value = false
+    return
+  }
+  const w = root.clientWidth
+  metricsBreakSuperslim.value = nextMetricsBreakSuperslim(w, metricsBreakSuperslim.value)
+  if (metricsBreakSuperslim.value) {
+    metricsBreakVerticalBody.value = false
+    return
+  }
+  metricsBreakVerticalBody.value = true
+}
 
 const innerCoverageVersion = ref(0)
 const offInnerCoverage = onScalaCoverageChanged(() => {
@@ -1136,6 +1168,8 @@ function innerDrillBackOne() {
 
 const rootEl = ref<HTMLElement | null>(null)
 const titleEl = ref<HTMLElement | null>(null)
+/** Unfocused + embedded roots: observe for vertical-body ratio when flex height changes without root width changing. */
+const packageBodyEl = ref<HTMLElement | null>(null)
 /** Title too wide for one line or title+subtitle overflow → vertical title; subtitle only when horizontal. */
 const tightLayout = ref(false)
 /** Short, wide unfocused box: folder icon left, title + subtitle to the right (no stacked column). */
@@ -1152,11 +1186,18 @@ const stackIconBelowMetrics = ref(false)
 const stackTitleVertical = ref(false)
 /** Centered column stacks: 0 default padding, 1 / 2 = tighter horizontal inset before any reposition. */
 const stackHorizontalTightLevel = ref(0)
+/** When the metric strip stacks (narrow width), pin the logo top-left and keep metrics top-right. */
+const metricsBreakLayout = ref(false)
 
-/** Subtitle hidden when title uses vertical writing mode (stack-tl or generic tight). */
-const subtitleHiddenForVerticalTitle = computed(
-  () => tightLayout.value || stackTitleVertical.value,
-)
+/**
+ * Subtitle hidden for stack-tl / generic tight, or metrics-break superslim.
+ * Metrics-break **vertical** body shows subtitle next to vertical title.
+ */
+const subtitleHiddenForVerticalTitle = computed(() => {
+  if (metricsBreakSuperslim.value) return true
+  if (metricsBreakLayout.value && metricsBreakVerticalBody.value) return false
+  return tightLayout.value || stackTitleVertical.value
+})
 
 let measureCanvas: CanvasRenderingContext2D | null = null
 
@@ -1188,6 +1229,8 @@ function measure() {
     stackIconBelowMetrics.value = false
     stackTitleVertical.value = false
     stackHorizontalTightLevel.value = 0
+    applyMetricsBreakLayout(rootEl.value)
+    syncMetricsBreakChrome(rootEl.value)
     return
   }
   if (props.focused) {
@@ -1198,17 +1241,28 @@ function measure() {
     stackIconBelowMetrics.value = false
     stackTitleVertical.value = false
     stackHorizontalTightLevel.value = 0
+    metricsBreakLayout.value = false
+    metricsBreakSuperslim.value = false
+    metricsBreakVerticalBody.value = false
     return
   }
   if (preferCenteredStackLayout.value) {
     const root = rootEl.value
+    applyMetricsBreakLayout(root)
+    syncMetricsBreakChrome(root)
     if (!root) return
     const w = root.clientWidth
     const h = root.clientHeight
     const narrowBandPreferred = shortBandDojoPackage.value
     const STACK_ULTRA_COMPACT_ENTER = narrowBandPreferred ? 118 : 58
     const STACK_ULTRA_COMPACT_EXIT = narrowBandPreferred ? 132 : 70
-    if (compactHeaderLayout.value) {
+    /**
+     * When the metric strip stacks, use the same vertical-title chrome as Scala leaves — compact
+     * header fights `.package-box--metrics-break-vertical-body` (which excludes compact-header).
+     */
+    if (metricsBreakLayout.value) {
+      compactHeaderLayout.value = false
+    } else if (compactHeaderLayout.value) {
       compactHeaderLayout.value = h <= STACK_ULTRA_COMPACT_EXIT
     } else {
       compactHeaderLayout.value = h <= STACK_ULTRA_COMPACT_ENTER
@@ -1247,10 +1301,7 @@ function measure() {
     }
     compactHeaderLayout.value = false
 
-    const padX =
-      parseFloat(getComputedStyle(root).paddingLeft) + parseFloat(getComputedStyle(root).paddingRight)
     const title = titleEl.value
-    const label = String(props.label ?? '')
     if (!title) {
       stackTopLeftLayout.value = false
       stackIconBelowMetrics.value = false
@@ -1259,38 +1310,16 @@ function measure() {
       tightLayout.value = false
       return
     }
-    const innerReserve = nextPad <= 0 ? 24 : nextPad === 1 ? 18 : 10
-    const availCentered = Math.max(20, w - padX - innerReserve)
-    const tw = measureTitleWidth(label, title)
-    const overflowCentered = tw > availCentered - 6
-    const REPO_ENTER_W = 300
-    const REPO_EXIT_W = 328
-    if (stackTopLeftLayout.value) {
-      stackTopLeftLayout.value = w < REPO_EXIT_W
-    } else {
-      stackTopLeftLayout.value = w < REPO_ENTER_W || (nextPad >= 2 && overflowCentered)
-    }
-
-    if (!stackTopLeftLayout.value) {
-      stackIconBelowMetrics.value = false
-      stackTitleVertical.value = false
-      tightLayout.value = false
-      return
-    }
-
-    const ICON_BELOW_W_ENTER = 214
-    const ICON_BELOW_W_EXIT = 228
-    if (stackIconBelowMetrics.value) {
-      stackIconBelowMetrics.value = w < ICON_BELOW_W_EXIT
-    } else {
-      stackIconBelowMetrics.value = w < ICON_BELOW_W_ENTER
-    }
-    const iconCol = stackIconBelowMetrics.value ? 0 : 52
-    const availW = Math.max(24, w - padX - iconCol - 10)
-    const titleNeedsVertical = stackTitleVertical.value
-      ? tw > availW - TITLE_TIGHT_EXIT
-      : tw > availW - 10
-    stackTitleVertical.value = titleNeedsVertical
+    /**
+     * Do not combine `stack-top-left` with `centered-stack`. Narrow column widths (e.g. abstraction
+     * dojo ~248px) used to flip `stackTopLeftLayout` when `w < 300px`, which layered the grid
+     * chrome on top of the centered column and produced icon | vertical-title instead of the
+     * same icon-over-title stack as every other simple package. Ellipsis + horizontal title handle
+     * overflow in the centered column.
+     */
+    stackTopLeftLayout.value = false
+    stackIconBelowMetrics.value = false
+    stackTitleVertical.value = false
     tightLayout.value = false
     return
   }
@@ -1301,7 +1330,17 @@ function measure() {
   compactHeaderLayout.value = false
   const root = rootEl.value
   const title = titleEl.value
+  applyMetricsBreakLayout(root)
+  syncMetricsBreakChrome(root)
   if (!root || !title) return
+  /**
+   * Wide-shallow row mode skips the metrics-break vertical-title body row in CSS — force it off
+   * whenever the strip stacks so packages match Scala artefact leaves (narrow + low-wide can
+   * otherwise satisfy both predicates).
+   */
+  if (metricsBreakLayout.value) {
+    wideShortRow.value = false
+  }
   /** Top-level Scala declaration leaves: match package vertical card — never use wide-shallow row mode. */
   if (props.leafVisual === 'artefact') {
     wideShortRow.value = false
@@ -1324,6 +1363,11 @@ function measure() {
     wideShortRow.value = h <= WIDE_SHORT_MAX_H && aspect >= WIDE_SHORT_MIN_AR
   }
   if (wideShortRow.value) {
+    tightLayout.value = false
+    return
+  }
+  /** Metrics-break chrome owns title/subtitle axis (superslim column or vertical-vs-horizontal body). */
+  if (metricsBreakLayout.value) {
     tightLayout.value = false
     return
   }
@@ -1397,6 +1441,10 @@ watch(
     props.focusedInnerArtefactId,
     props.embedded,
     props.leafVisual,
+    props.boxId,
+    hasCoverage.value,
+    simulatedMetrics.value.issueCount,
+    innerCoverageVersion.value,
   ],
   () => void nextTick(measure),
 )
@@ -1421,15 +1469,25 @@ watch(innerArtefactDiagramRef, (el) => {
  * layer-drill unfocus the observer stays on an unmounted element and compact-header state never
  * updates (Vue Flow docs use the same “rebind when target changes” idea as interactive MiniMap).
  */
+watch(packageBodyEl, (body) => {
+  if (!body || !rootEl.value) return
+  const r = ro
+  if (r) r.observe(body)
+})
+
 watch(
   rootEl,
   (el) => {
     ro?.disconnect()
     ro = null
     if (el) {
-      ro = new ResizeObserver(() => scheduleMeasure())
-      ro.observe(el)
-      void nextTick(() => measure())
+      const observer = new ResizeObserver(() => scheduleMeasure())
+      ro = observer
+      observer.observe(el)
+      void nextTick(() => {
+        if (packageBodyEl.value) observer.observe(packageBodyEl.value)
+        measure()
+      })
     }
     innerArtefactHostRo?.disconnect()
     innerArtefactHostRo = null
@@ -1551,7 +1609,14 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     v-if="embedded"
     ref="rootEl"
     class="package-box package-box--embedded"
-    :class="{ 'package-box--pinned': pinned, 'package-box--has-metrics': true }"
+    :class="{
+      'package-box--pinned': pinned,
+      'package-box--has-metrics': true,
+      'package-box--metrics-break': metricsBreakLayout,
+      'package-box--metrics-superslim': metricsBreakSuperslim,
+      'package-box--metrics-break-vertical-body':
+        metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+    }"
     :style="{ '--box-accent': accent }"
   >
     <div class="package-box__metrics package-box__metrics--embedded">
@@ -1565,9 +1630,18 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     <div class="lang-icon-slot lang-icon-slot--embedded">
       <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
     </div>
-    <div class="package-box__body package-box__body--embedded">
-      <div ref="titleEl" class="title">{{ label }}</div>
-      <div v-if="subtitle" class="subtitle">{{ subtitle }}</div>
+    <div ref="packageBodyEl" class="package-box__body package-box__body--embedded">
+      <div
+        ref="titleEl"
+        class="title"
+        :class="{
+          'title--metrics-break-vertical':
+            metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+        }"
+      >
+        {{ label }}
+      </div>
+      <div v-if="subtitle && !subtitleHiddenForVerticalTitle" class="subtitle">{{ subtitle }}</div>
     </div>
   </div>
 
@@ -2269,6 +2343,10 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
         preferCenteredStackLayout && !stackTopLeftLayout && stackHorizontalTightLevel === 1,
       'package-box--stack-hpad-2':
         preferCenteredStackLayout && !stackTopLeftLayout && stackHorizontalTightLevel === 2,
+      'package-box--metrics-break': metricsBreakLayout,
+      'package-box--metrics-superslim': metricsBreakSuperslim,
+      'package-box--metrics-break-vertical-body':
+        metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
     }"
     :style="{ '--box-accent': accent }"
   >
@@ -2331,18 +2409,30 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       />
     </div>
 
-    <div class="package-box__body" @dblclick.stop="startEditing">
+    <div ref="packageBodyEl" class="package-box__body" @dblclick.stop="startEditing">
       <div
         ref="titleEl"
         class="title"
-        :class="{ 'stack-title-vertical': stackTitleVertical }"
+        :class="{
+          'stack-title-vertical': stackTitleVertical,
+          'title--metrics-break-vertical':
+            metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+        }"
         :title="isScalaLeaf ? String(label ?? '') : 'Double-click to rename / edit description'"
       >
         {{ label }}
       </div>
       <div v-if="subtitle && !subtitleHiddenForVerticalTitle" class="subtitle">{{ subtitle }}</div>
       <div
-        v-if="!isScalaLeaf && description && !tightLayout && !wideShortRow && !stackTitleVertical"
+        v-if="
+          !isScalaLeaf &&
+          description &&
+          !tightLayout &&
+          !wideShortRow &&
+          !stackTitleVertical &&
+          !metricsBreakSuperslim &&
+          !(metricsBreakLayout && metricsBreakVerticalBody)
+        "
         class="description-preview"
         :title="description"
       >
@@ -2658,15 +2748,16 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 
 /**
- * Coverage bar in the top-right tools cluster. The cluster is `position: absolute`, so the
- * box's content (title / icon) needs reserved padding-right or it slides under the bar.
- * Each modifier below combines with `--has-coverage` for the multi-tool cases — pin / color
- * buttons may wrap to a row below the bar, so the right-pad only needs to clear the widest
- * single-row item, not the cluster's total height.
+ * Metrics + pin/color tools sit in an absolute top-right cluster — keep root horizontal padding
+ * symmetric (see base `.package-box`) so the icon + title column stays visually centered; extra
+ * `padding-right` here used to shrink the stack and pulled centered text toward the left edge.
  */
 .package-box--has-metrics {
-  padding-right: clamp(46px, 8cqw, 56px);
-  padding-top: clamp(20px, 4vmin, 26px);
+  padding-top: clamp(16px, 3.8vmin, 24px);
+}
+
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--compact-header) {
+  padding-top: clamp(36px, 7.5vmin, 52px);
 }
 /**
  * Centered stack: reduce horizontal padding (icon → border) before any top-left reposition.
@@ -2678,21 +2769,20 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .package-box--centered-stack.package-box--stack-hpad-1:not(.package-box--stack-top-left).package-box--has-metrics {
   padding-top: clamp(14px, 3.1vmin, 22px);
-  padding-right: max(42px, min(50px, 8.5cqw));
 }
 .package-box--centered-stack.package-box--stack-hpad-2:not(.package-box--stack-top-left) {
   padding: max(1px, 4px) max(1px, 6px);
 }
 .package-box--centered-stack.package-box--stack-hpad-2:not(.package-box--stack-top-left).package-box--has-metrics {
   padding-top: max(11px, min(18px, 3vmin));
-  padding-right: max(38px, 1px);
   padding-bottom: max(1px, 4px);
 }
-.package-box--has-metrics.package-box--pin-only {
-  padding-right: clamp(46px, 8cqw, 56px);
-}
-.package-box--has-metrics.package-box--tools-wide {
-  padding-right: clamp(72px, 12cqw, 108px);
+
+/** `stack-hpad-*` rules above win on specificity; bump top again when the metric strip stacks. */
+.package-box--centered-stack.package-box--has-metrics.package-box--metrics-break:not(
+    .package-box--compact-header
+  ) {
+  padding-top: clamp(36px, 7.5vmin, 52px);
 }
 /**
  * Tight (narrow vertical) boxes: coverage bar lives in the top-right corner, but reserving
@@ -2704,7 +2794,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .package-box--tight.package-box--has-metrics.package-box--pin-only,
 .package-box--tight.package-box--has-metrics.package-box--tools-wide {
   padding-right: clamp(4px, 1vmin, 10px);
-  padding-top: clamp(38px, 8vmin, 54px);
+  padding-top: clamp(36px, 7.5vmin, 52px);
 }
 
 /**
@@ -2719,26 +2809,38 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   padding-right: clamp(6px, 1.35vmin, 14px);
 }
 
+/** Matches {@link ProjectBox} `.project-box__metrics` — fixed top-right on the box frame. */
 .package-box__metrics {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 1px;
+  right: 1px;
   z-index: 4;
-  width: min(124px, calc(100% - 12px));
+  width: min(124px, calc(100% - 2px));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  box-sizing: border-box;
 }
 
+/** Same corner contract as {@link ProjectBox} `.project-box__metrics` (general box). */
 .package-box__metrics--embedded {
-  top: 4px;
-  right: 4px;
+  top: 1px;
+  right: 1px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  box-sizing: border-box;
 }
 
 .lang-icon-slot {
   display: flex;
   justify-content: center;
   align-items: center;
-  align-self: center;
+  align-self: stretch;
   flex-shrink: 0;
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   height: clamp(40px, min(30cqw, 28cqh), 160px);
   min-height: 36px;
   margin-bottom: clamp(6px, 1.5cqh, 16px);
@@ -2746,13 +2848,171 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   pointer-events: none;
 }
 .package-box--has-metrics .package-box__tools {
-  top: 22px;
+  top: 17px;
 }
-@container (max-width: 150px) {
-  .package-box--has-metrics .package-box__tools {
-    top: 42px;
-  }
+.package-box--has-metrics.package-box--metrics-break .package-box__tools {
+  top: 40px;
 }
+
+/**
+ * Narrow width: metric strip stacks — pin folder / Scala badge top-left (same `top: 1px` as
+ * `.package-box__metrics`), keep strip top-right. Skip wide-shallow / ultra-compact header modes.
+ */
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
+    .package-box--compact-header
+  )
+  .lang-icon-slot:not(.lang-icon-slot--header):not(.lang-icon-slot--artefact) {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  z-index: 3;
+  align-self: flex-start;
+  justify-content: flex-start;
+  align-items: flex-start;
+  width: auto;
+  min-height: 40px;
+  height: 44px;
+  max-height: 48px;
+  margin: 0;
+}
+
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
+    .package-box--focused-layout
+  )
+  .package-box__body {
+  justify-content: flex-start;
+}
+
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
+    .package-box--compact-header
+  )
+  .lang-icon-slot:not(.lang-icon-slot--header):not(.lang-icon-slot--artefact)
+  :deep(.lang-svg),
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
+    .package-box--compact-header
+  )
+  .lang-icon-slot:not(.lang-icon-slot--header):not(.lang-icon-slot--artefact)
+  :deep(svg) {
+  height: 40px;
+  max-height: 40px;
+  width: auto;
+}
+
+.package-box--embedded.package-box--has-metrics.package-box--metrics-break .lang-icon-slot.lang-icon-slot--embedded {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  z-index: 3;
+  align-self: flex-start;
+  justify-content: flex-start;
+  align-items: flex-start;
+  width: auto;
+  height: clamp(32px, min(20cqw, 14cqh), 48px);
+  min-height: 32px;
+  margin: 0;
+}
+
+.package-box--embedded.package-box--metrics-break .package-box__body--embedded {
+  justify-content: flex-start;
+}
+
+.package-box--embedded.package-box--has-metrics.package-box--metrics-break
+  .lang-icon-slot.lang-icon-slot--embedded
+  :deep(.lang-svg),
+.package-box--embedded.package-box--has-metrics.package-box--metrics-break
+  .lang-icon-slot.lang-icon-slot--embedded
+  :deep(svg) {
+  height: clamp(28px, min(18cqw, 12cqh), 40px);
+  max-height: 40px;
+  width: auto;
+}
+
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
+    .package-box--compact-header
+  ):not(.package-box--focused-layout)
+  .package-box__body
+  > .title,
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
+    .package-box--compact-header
+  ):not(.package-box--focused-layout)
+  .package-box__body
+  > .subtitle,
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
+    .package-box--compact-header
+  ):not(.package-box--focused-layout)
+  .package-box__body
+  > .description-preview {
+  text-align: left;
+}
+
+.package-box--centered-stack.package-box--has-metrics.package-box--metrics-break:not(.package-box--compact-header)
+  .package-box__body
+  > .title,
+.package-box--centered-stack.package-box--has-metrics.package-box--metrics-break:not(.package-box--compact-header)
+  .package-box__body
+  > .subtitle,
+.package-box--centered-stack.package-box--has-metrics.package-box--metrics-break:not(.package-box--compact-header)
+  .package-box__body
+  > .description-preview {
+  text-align: left;
+}
+
+.package-box--embedded.package-box--metrics-break .title,
+.package-box--embedded.package-box--metrics-break .subtitle {
+  text-align: left;
+}
+
+/**
+ * Superslim: subtitle hidden in script — keep metrics + tools pinned top-right (same as wide
+ * break); reserve vertical space for the floating strip instead of in-flow stacking.
+ */
+.package-box--has-metrics.package-box--metrics-break.package-box--metrics-superslim:not(
+    .package-box--compact-header
+  ) {
+  padding-top: clamp(36px, 7.5vmin, 52px);
+}
+
+.package-box--centered-stack.package-box--has-metrics.package-box--metrics-break.package-box--metrics-superslim:not(
+    .package-box--compact-header
+  ) {
+  padding-top: clamp(36px, 7.5vmin, 52px);
+}
+
+/**
+ * Side-by-side chrome: when the body is taller than it is wide, title + subtitle use vertical
+ * rails; otherwise they stay horizontal under the logo/metrics row.
+ */
+.package-box--metrics-break-vertical-body:not(.package-box--metrics-superslim) .package-box__body,
+.package-box--embedded.package-box--metrics-break-vertical-body:not(.package-box--metrics-superslim)
+  .package-box__body--embedded {
+  flex-direction: row;
+  justify-content: center;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.package-box--metrics-break-vertical-body:not(.package-box--metrics-superslim)
+  .title.title--metrics-break-vertical,
+.package-box--metrics-break-vertical-body:not(.package-box--metrics-superslim) .package-box__body > .subtitle {
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  max-width: none;
+  align-self: stretch;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-orientation: mixed;
+  line-height: 1.15;
+  text-align: left;
+}
+
+.package-box--metrics-break-vertical-body:not(.package-box--metrics-superslim) .package-box__body > .subtitle {
+  margin-top: 0;
+  opacity: 1;
+  max-height: none;
+  pointer-events: none;
+}
+
 .lang-icon-slot :deep(svg),
 .lang-icon-slot :deep(.lang-svg) {
   display: block;
@@ -2761,6 +3021,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   max-height: 100%;
   max-width: min(92cqw, 240px);
 }
+
 /**
  * Tight = narrow column: keep folder readable via `cqh` (not `cqw`), stack **icon on top centered**
  * and **vertical title below**; title may draw upward over the icon for a compact footprint.
@@ -2851,10 +3112,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .package-box__body {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: stretch;
+  box-sizing: border-box;
 }
 
 .package-box--centered-stack {
@@ -2872,7 +3136,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
  */
 .package-box--short-band-dojo.package-box--centered-stack:not(.package-box--compact-header):not(
     .package-box--stack-top-left
-  )
+  ):not(.package-box--metrics-break)
   .lang-icon-slot {
   height: auto;
   max-height: min(160px, min(30cqw, 28cqh));
@@ -2880,7 +3144,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 
 .package-box--centered-stack .package-box__body {
-  align-items: center;
+  align-items: stretch;
   justify-content: flex-start;
   text-align: center;
 }
@@ -2888,13 +3152,56 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .package-box--centered-stack .title,
 .package-box--centered-stack .subtitle {
   text-align: center;
-  align-self: center;
+  align-self: stretch;
+  width: 100%;
+}
+
+.package-box--centered-stack .package-box__body > .description-preview {
+  text-align: center;
+  align-self: stretch;
+  width: 100%;
 }
 
 /**
- * Stacked package column (~4+ rows): icon pinned top-left at preferred size; metrics strip still
- * top-right (min width follows the 124px metric strip). Narrow width drops the icon under the
- * metrics row; title uses `stackTitleVertical` before horizontal ellipsis.
+ * Default / scala-leaf column: title + subtitle + description fill the body width and center
+ * (same idea as {@link ProjectBox} — avoids shrink-wrapped lines sitting left of the icon).
+ */
+.package-box:not(.package-box--tight):not(.package-box--wide-short-row):not(.package-box--stack-top-left):not(
+    .package-box--compact-header
+  ):not(.package-box--focused-layout)
+  .package-box__body
+  > .title,
+.package-box:not(.package-box--tight):not(.package-box--wide-short-row):not(.package-box--stack-top-left):not(
+    .package-box--compact-header
+  ):not(.package-box--focused-layout)
+  .package-box__body
+  > .subtitle,
+.package-box:not(.package-box--tight):not(.package-box--wide-short-row):not(.package-box--stack-top-left):not(
+    .package-box--compact-header
+  ):not(.package-box--focused-layout)
+  .package-box__body
+  > .description-preview {
+  text-align: center;
+  align-self: stretch;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.package-box--embedded .title,
+.package-box--embedded .subtitle {
+  align-self: stretch;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+/**
+ * Stacked package column (~4+ rows): icon pinned top-left at preferred size. Metrics stay
+ * **fixed top-right** (same absolute slot as {@link ProjectBox} / general box) — not a grid-flow
+ * row — so pin/color tools use the same `has-metrics` vertical offset as every other package card.
+ * Narrow width may still drop the icon under the strip via `stack-icon-below-metrics`; title uses
+ * `stackTitleVertical` before horizontal ellipsis.
  */
 .package-box.package-box--stack-top-left:not(.package-box--compact-header) {
   display: grid;
@@ -2910,37 +3217,19 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .package-box--stack-top-left.package-box--stack-icon-below-metrics {
   grid-template-columns: 1fr;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  /** Metrics are out-of-flow (absolute); only icon row + body row. */
+  grid-template-rows: auto minmax(0, 1fr);
 }
-.package-box--stack-top-left:not(.package-box--stack-icon-below-metrics) .package-box__metrics {
-  position: relative;
-  top: auto;
-  right: auto;
-  grid-column: 1 / -1;
-  grid-row: 1;
-  width: min(124px, calc(100% - 8px));
-  max-width: 124px;
-  justify-self: end;
-  z-index: 4;
-}
+.package-box--stack-top-left:not(.package-box--stack-icon-below-metrics) .package-box__metrics,
 .package-box--stack-top-left.package-box--stack-icon-below-metrics .package-box__metrics {
-  position: relative;
-  top: auto;
-  right: auto;
-  grid-column: 1;
-  grid-row: 1;
-  width: min(124px, calc(100% - 8px));
-  max-width: 124px;
-  justify-self: end;
-  z-index: 4;
-}
-.package-box--stack-top-left .package-box__tools {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  grid-column: 1 / -1;
-  grid-row: 1;
-  z-index: 5;
+  top: 1px;
+  right: 1px;
+  left: auto;
+  bottom: auto;
+  z-index: 4;
+  width: min(124px, calc(100% - 2px));
+  max-width: 124px;
 }
 .package-box--stack-top-left:not(.package-box--stack-icon-below-metrics) .lang-icon-slot {
   grid-column: 1;
@@ -2966,7 +3255,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .package-box--stack-top-left.package-box--stack-icon-below-metrics .lang-icon-slot {
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 1;
   width: 44px;
   height: 44px;
   min-width: 44px;
@@ -2979,7 +3268,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .package-box--stack-top-left.package-box--stack-icon-below-metrics .package-box__body {
   grid-column: 1;
-  grid-row: 3;
+  grid-row: 2;
   align-items: flex-start;
   text-align: left;
   min-width: 0;
@@ -3660,10 +3949,10 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .package-box__artefact-metrics {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 1px;
+  right: 1px;
   z-index: 2;
-  max-width: calc(100% - 18px);
+  max-width: calc(100% - 2px);
   pointer-events: none;
 }
 /** Ridge handles (same idea as `.tg-handle-anchor` on Vue Flow modules). */
@@ -3720,6 +4009,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   height: min(100%, 30px);
   width: auto;
 }
+
 .package-box__artefact-text {
   flex: 0 1 auto;
   min-width: 0;
@@ -3727,7 +4017,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  align-items: center;
+  align-items: stretch;
   text-align: center;
 }
 .package-box__artefact-title {
@@ -3740,6 +4030,8 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: center;
+  align-self: stretch;
+  width: 100%;
 }
 .package-box__artefact-subtitle {
   font-size: clamp(0.62rem, min(1.35vmin, 2cqh), 0.8rem);
@@ -3750,6 +4042,8 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: center;
+  align-self: stretch;
+  width: 100%;
 }
 /** Very narrow inner columns: vertical title like `.package-box--tight` (default row is already stacked). */
 @container pkg-artefact-row (max-width: 118px) {
@@ -3758,11 +4052,11 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     padding: 6px 4px 5px 10px;
   }
   .package-box__artefact-row--has-metrics {
-    padding-top: 40px;
+    padding-top: 38px;
   }
   .package-box__artefact-metrics {
-    top: 4px;
-    right: 4px;
+    top: 1px;
+    right: 1px;
     max-width: 40px;
   }
   .package-box__artefact-row .package-box__artefact-text {
@@ -4029,7 +4323,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
  * width in a column flex — inner cards then stay narrow with empty space on the right. Stretch
  * the icon row to the full inner-diagram width so each embedded package reads as a full-width tile.
  */
-.package-box--embedded > .lang-icon-slot.lang-icon-slot--embedded {
+.package-box--embedded:not(.package-box--metrics-break) > .lang-icon-slot.lang-icon-slot--embedded {
   align-self: stretch;
   width: 100%;
   max-width: none;
@@ -4068,8 +4362,8 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .package-box__tools {
   position: absolute;
-  top: 5px;
-  right: 5px;
+  top: 1px;
+  right: 1px;
   z-index: 4;
   display: flex;
   flex-direction: row;
@@ -4077,7 +4371,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 5px;
-  max-width: calc(100% - 10px);
+  max-width: calc(100% - 2px);
 }
 
 /**
@@ -4219,34 +4513,58 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   font-size: clamp(0.82rem, min(2.4vmin, 3.8cqh), 1.45rem);
 }
 @container (max-width: 260px) {
-  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .title {
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
+      .package-box--metrics-break-vertical-body
+    )
+    .title {
     font-size: 1.08rem;
   }
-  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .subtitle {
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
+      .package-box--metrics-break-vertical-body
+    )
+    .subtitle {
     font-size: 0.84rem;
   }
 }
 @container (max-width: 190px) {
-  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .title {
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
+      .package-box--metrics-break-vertical-body
+    )
+    .title {
     font-size: 0.96rem;
   }
-  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .subtitle {
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
+      .package-box--metrics-break-vertical-body
+    )
+    .subtitle {
     font-size: 0.78rem;
   }
 }
 @container (max-height: 180px) {
-  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .title {
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
+      .package-box--metrics-break-vertical-body
+    )
+    .title {
     font-size: 1.04rem;
   }
-  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .subtitle {
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
+      .package-box--metrics-break-vertical-body
+    )
+    .subtitle {
     font-size: 0.82rem;
   }
 }
 @container (max-height: 145px) {
-  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .title {
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
+      .package-box--metrics-break-vertical-body
+    )
+    .title {
     font-size: 0.94rem;
   }
-  .package-box:not(.package-box--focused-layout):not(.package-box--tight) .subtitle {
+  .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
+      .package-box--metrics-break-vertical-body
+    )
+    .subtitle {
     font-size: 0.76rem;
   }
 }
