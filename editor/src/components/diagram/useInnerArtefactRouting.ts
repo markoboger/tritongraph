@@ -169,6 +169,7 @@ export function useInnerArtefactRouting(options: RoutingOptions) {
   })
 
   const rootPackagePorts = computed(() => {
+    if (options.focused() && options.focusedInnerArtefactId()) return []
     const out: PortEndpoint[] = []
     const innerPackages = options.innerPackages()
     const innerArtefacts = options.innerArtefacts()
@@ -208,26 +209,22 @@ export function useInnerArtefactRouting(options: RoutingOptions) {
 
       if (fromIsChildPackage && toIsLocalArtefact) {
         const childPortId = childPackagePortId(rel.from, 'right')
-        const rootPortId = rootPackagePortId(options.boxId(), 'left')
         out.push({ from: rel.from, to: childPortId, label: rel.label, wrapperName: rel.wrapperName, overlay: true })
         out.push({
           from: childPortId,
-          to: rootPortId,
+          to: rel.to,
           label: rel.label,
           wrapperName: rel.wrapperName,
           displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
           overlay: true,
         })
-        out.push({ from: rootPortId, to: rel.to, label: rel.label, wrapperName: rel.wrapperName, overlay: true })
         continue
       }
 
       if (fromIsLocalArtefact && toIsChildPackage) {
-        const rootPortId = rootPackagePortId(options.boxId(), 'right')
         const childPortId = childPackagePortId(rel.to, 'left')
-        out.push({ from: rel.from, to: rootPortId, label: rel.label, wrapperName: rel.wrapperName, overlay: true })
         out.push({
-          from: rootPortId,
+          from: rel.from,
           to: childPortId,
           label: rel.label,
           wrapperName: rel.wrapperName,

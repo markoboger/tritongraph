@@ -102,6 +102,10 @@ function scalaIconForKind(subtitle: string | undefined): string {
       class="package-box__inner-artefact-cols"
       :class="{
         'package-box__inner-artefact-cols--artefact-focus': innerArtefactFocusActive,
+        'package-box__inner-artefact-cols--left-root-lane': innerArtefactFocusActive && rootPackagePortsLeft.length > 0,
+        'package-box__inner-artefact-cols--right-root-lane': innerArtefactFocusActive && rootPackagePortsRight.length > 0,
+        'package-box__inner-artefact-cols--child-package-lane':
+          innerArtefactFocusActive && childPackagePortsById.size > 0,
         'package-box__inner-artefact-cols--with-packages': mode === 'focused' && topLevelInnerPackages.length > 0,
       }"
       :style="mode === 'focused' ? colsTransformStyle : undefined"
@@ -252,6 +256,8 @@ function scalaIconForKind(subtitle: string | undefined): string {
 .package-box__inner-artefact-cols {
   --triton-inner-artefact-min-h: 40px;
   --triton-inner-artefact-preferred-h: 132px;
+  --triton-inner-container-port-lane: clamp(64px, 8cqw, 96px);
+  --triton-inner-child-package-edge-lane: clamp(96px, 13cqw, 160px);
   position: relative;
   z-index: 0;
   display: flex;
@@ -275,6 +281,15 @@ function scalaIconForKind(subtitle: string | undefined): string {
   min-height: 0;
   align-items: stretch;
   gap: clamp(32px, 7cqw, 64px);
+}
+.package-box__inner-artefact-cols--artefact-focus.package-box__inner-artefact-cols--child-package-lane {
+  gap: var(--triton-inner-child-package-edge-lane);
+}
+.package-box__inner-artefact-cols--artefact-focus.package-box__inner-artefact-cols--left-root-lane {
+  padding-left: var(--triton-inner-container-port-lane);
+}
+.package-box__inner-artefact-cols--artefact-focus.package-box__inner-artefact-cols--right-root-lane {
+  padding-right: var(--triton-inner-container-port-lane);
 }
 .package-box__inner-artefact-cols--with-packages {
   flex: 1 1 0;
@@ -345,6 +360,7 @@ function scalaIconForKind(subtitle: string | undefined): string {
   height: 100%;
 }
 .package-box__inner-slot--artefact-layer.package-box__inner-slot--artefact-focused-cell {
+  position: relative;
   flex: 1 1 0;
   min-height: 0;
   align-self: stretch;

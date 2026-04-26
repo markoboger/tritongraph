@@ -28,7 +28,6 @@ const {
   getEdges,
   setEdges,
   fitView,
-  getViewport,
   setViewport,
   onNodeClick,
   onNodeDoubleClick,
@@ -45,7 +44,6 @@ const shouldSuppressPaneClick =
 const fitWorkspaceViewport = inject<
   | ((opts?: {
       duration?: number
-      preserveViewportPosition?: boolean
     }) => Promise<void>)
   | undefined
 >('tritonFitToViewport', undefined)
@@ -294,7 +292,7 @@ async function fitCameraAfterLayerDrillClear(): Promise<void> {
       return
     }
     if (fitWorkspaceViewport) {
-      await fitWorkspaceViewport({ duration: FIT_DURATION_MS, preserveViewportPosition: true })
+      await fitWorkspaceViewport({ duration: FIT_DURATION_MS })
       return
     }
     await setViewport({ x: 0, y: 0, zoom: 1 }, { duration: FIT_DURATION_MS })
@@ -308,12 +306,6 @@ function readFlowViewport(): { width: number; height: number } {
     width: Math.max(480, r?.width ?? 960),
     height: Math.max(420, r?.height ?? 720),
   }
-}
-
-function readLayerDrillNodeScreenRect(moduleId: string): DOMRect | null {
-  if (typeof document === 'undefined') return null
-  const el = document.querySelector(`[data-testid="diagram-node-${CSS.escape(moduleId)}"]`) as HTMLElement | null
-  return el?.getBoundingClientRect() ?? null
 }
 
 /**
@@ -725,8 +717,6 @@ async function applyLayerDrill(moduleId: string) {
     applyDimming(null)
   }
 
-  const preFocusScreenRect = readLayerDrillNodeScreenRect(moduleId)
-
   captureLayerSnapshot()
   layerDrillId.value = moduleId
 
@@ -971,23 +961,6 @@ async function applyLayerDrill(moduleId: string) {
   })
   setNodes(stripLayerFlipsFromNodes(getNodes.value))
   flowEl?.classList.remove(FLIP_FLOW_CLASS)
-
-  /**
-   * Layer drill repositions the focused node in flow space (e.g. `y: diagramTop`). Without shifting
-   * the camera, a user who had panned down to reach the box sees it jump off-screen. Match the
-   * pre-click screen rect so the box stays under the cursor / in the same viewport region.
-   */
-  await nextTick()
-  await doubleRaf()
-  const postFocusScreenRect = readLayerDrillNodeScreenRect(moduleId)
-  const vp0 = getViewport()
-  if (preFocusScreenRect && postFocusScreenRect && Number.isFinite(vp0.zoom) && vp0.zoom > 0) {
-    const dx = preFocusScreenRect.left - postFocusScreenRect.left
-    const dy = preFocusScreenRect.top - postFocusScreenRect.top
-    if (Math.abs(dx) > 0.25 || Math.abs(dy) > 0.25) {
-      await setViewport({ x: vp0.x + dx, y: vp0.y + dy, zoom: vp0.zoom }, { duration: 0 })
-    }
-  }
 }
 
 async function zoomIntoContainer(id: string) {

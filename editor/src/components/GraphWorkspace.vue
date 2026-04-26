@@ -20,6 +20,8 @@ import { buildDiagramRootModel } from '../diagram/model/buildRootDiagram'
 import { dependencyEdgeLabelStyle, dependencyEdgeStyle, dependencyMarker, DEP_EDGE_STROKE } from '../graph/edgeTheme'
 import { shouldHideEdgeForRelationFilter } from '../graph/relationVisibility'
 import {
+  DIAGRAM_MARGIN_X,
+  DIAGRAM_MARGIN_Y,
   applyHandleAnchorAlignment,
   layoutDepthInViewport,
   mergeEdgeHiddenForInvisibleEndpoints,
@@ -194,17 +196,6 @@ const hoveredNodeId = ref<string | null>(null)
 /** When set, only this edge is stroke-emphasized (takes precedence over node-hover). */
 const hoveredEdgeId = ref<string | null>(null)
 const packageFocusRelayoutQueued = ref(false)
-
-function hasSingletonRootPackageScopeOverview(): boolean {
-  const topVisible = nodes.value.filter((n) => !n.parentNode && !n.hidden)
-  if (topVisible.length !== 1) return false
-  const root = topVisible[0]
-  if (root?.type === 'group') {
-    const data = (root.data ?? {}) as Record<string, unknown>
-    return data.packageScope === true
-  }
-  return isLeafBoxNode(root)
-}
 
 /** Mounted shell around `<VueFlow>` — preferred for pane size (avoids selector drift vs rails). */
 const flowShellRef = ref<HTMLElement | null>(null)
@@ -459,7 +450,7 @@ const diagramModel = computed(() => {
   return buildDiagramRootModel(nodes.value, edges.value, { x: 0, y: 0, width: vp.width, height: vp.height })
 })
 
-async function relayoutViewport(opts?: { skipDrillReapply?: boolean; preserveFitToViewport?: boolean }) {
+async function relayoutViewport(opts?: { skipDrillReapply?: boolean }) {
   if (!nodes.value.length) return
   await nextTick()
   await doubleRaf()
@@ -482,19 +473,16 @@ async function relayoutViewport(opts?: { skipDrillReapply?: boolean; preserveFit
    */
   const reapplied = opts?.skipDrillReapply ? false : ((await drillRef.value?.reapplyLayerDrill?.()) ?? false)
   if (reapplied) return
-  /** Keep the full graph in view after geometry changes; skip while drill is active or pending. */
+  /** Keep the full graph anchored after geometry changes; skip while drill is active or pending. */
   if (!layerDrillBusy()) {
-    await fitToViewport({
-      duration: 0,
-      preserveViewportPosition: opts?.preserveFitToViewport === true,
-    })
+    await fitToViewport({ duration: 0 })
   }
 }
 
 provide('tritonRelayoutViewport', relayoutViewport)
 
 /** Re-run depth layout after layer drill-out so snapshot geometry does not shrink pinned modules. */
-provide('tritonAfterLayerDrillOut', () => relayoutViewport({ preserveFitToViewport: true }))
+provide('tritonAfterLayerDrillOut', () => relayoutViewport())
 
 /**
  * Update a node's `data` directly on the v-model array. `useVueFlow().updateNodeData(...)`
@@ -787,8 +775,8 @@ function onNodeMouseLeave(ev: { node: { id: string } }) {
 }
 
 /**
- * After layout/paint, re-run {@link fitToViewport} (singleton overview uses top-left anchor + pan
- * rails when content exceeds the pane). Skips while layer drill is busy.
+ * After layout/paint, re-run {@link fitToViewport} (top-left anchor + pan rails when content
+ * exceeds the pane). Skips while layer drill is busy.
  */
 async function stabilizeWorkspaceViewportAfterRender(): Promise<void> {
   if (layerDrillBusy()) return
@@ -1198,16 +1186,13 @@ function resetNavigationAfterDocReplace() {
  */
 async function fitToViewport(opts?: {
   duration?: number
-  /** When true, keep the current pan position inside updated pan rails (used after layer-drill-out). */
-  preserveViewportPosition?: boolean
 }) {
   await nextTick()
   await doubleRaf()
   const duration = opts?.duration ?? 220
   const vp = readFlowViewport()
-  // Layer drill always takes priority — even a singleton package-scope root must not snap
-  // the viewport to origin while a drill is active or pending (that causes the jump-to-right-bottom
-  // bug in diagrams like animal-fruit that have one root group with packageScope: true).
+  // Layer drill owns geometry while it is active. The camera still follows the same top-left
+  // rule as overview: root bounds appear at the shared diagram margin.
   if (layerDrillBusy()) {
     // When only pending (click timer started, drill not yet active), hold the camera steady.
     if (!layerDrillActive()) return
@@ -1229,14 +1214,8 @@ async function fitToViewport(opts?: {
       await setViewport({ x: 0, y: 0, zoom: 1 }, { duration })
       return
     }
-    const singletonOverviewPin = hasSingletonRootPackageScopeOverview()
-    const pad = 0.05
-    const x = singletonOverviewPin
-      ? vp.width * pad - rect.x
-      : vp.width / 2 - (rect.x + rect.width / 2)
-    const y = singletonOverviewPin
-      ? vp.height * pad - rect.y
-      : vp.height / 2 - (rect.y + rect.height / 2)
+    const x = DIAGRAM_MARGIN_X - rect.x
+    const y = DIAGRAM_MARGIN_Y - rect.y
     await setViewport({ x, y, zoom: 1 }, { duration })
     return
   }
@@ -1262,9 +1241,8 @@ async function fitToViewport(opts?: {
     return
   }
 
-  const pad = 0.05
-  const px = vp.width * pad * 2
-  const py = vp.height * pad * 2
+  const px = DIAGRAM_MARGIN_X * 2
+  const py = DIAGRAM_MARGIN_Y * 2
   const usableW = Math.max(80, vp.width - px)
   const usableH = Math.max(80, vp.height - py)
   const widthOverflow = rect.width > usableW + PAN_RAIL_FIT_SLACK_PX
@@ -1275,48 +1253,35 @@ async function fitToViewport(opts?: {
   const useVerticalPanRail = heightOverflow && heightMinReached
 
   const zoom = 1
-  const txLeft = vp.width * pad - rect.x * zoom
-  const txRight = vp.width * (1 - pad) - (rect.x + rect.width) * zoom
-  const tyTop = vp.height * pad - rect.y * zoom
-  const tyBot = vp.height * (1 - pad) - (rect.y + rect.height) * zoom
+  const txLeft = DIAGRAM_MARGIN_X - rect.x * zoom
+  const txRight = vp.width - DIAGRAM_MARGIN_X - (rect.x + rect.width) * zoom
+  const tyTop = DIAGRAM_MARGIN_Y - rect.y * zoom
+  const tyBot = vp.height - DIAGRAM_MARGIN_Y - (rect.y + rect.height) * zoom
   const xMax = Math.max(txLeft, txRight)
   const xMin = Math.min(txLeft, txRight)
   const yMax = Math.max(tyTop, tyBot)
   const yMin = Math.min(tyTop, tyBot)
-  // (xMin+xMax)/2 == txCenter and (yMin+yMax)/2 == tyCenter — always, regardless of overflow.
-  const txCenter = (xMin + xMax) / 2
-  const tyCenter = (yMin + yMax) / 2
-  /** One full-viewport package (or single leaf): pin diagram top-left to the pane, not centered. */
-  const singletonOverviewPin = hasSingletonRootPackageScopeOverview()
-  const anchorCamX = singletonOverviewPin ? txLeft : txCenter
-  const anchorCamY = singletonOverviewPin ? tyTop : tyCenter
-
-  const preserveViewportPosition = opts?.preserveViewportPosition === true
+  const anchorCamX = txLeft
+  const anchorCamY = tyTop
+  const panXMax = useHorizontalPanRail ? xMax : anchorCamX
+  const panXMin = useHorizontalPanRail ? xMin : anchorCamX
+  const panYMax = useVerticalPanRail ? yMax : anchorCamY
+  const panYMin = useVerticalPanRail ? yMin : anchorCamY
 
   if (!useHorizontalPanRail && !useVerticalPanRail) {
     resetVerticalScrollChrome()
-    if (preserveViewportPosition) {
-      const cur = viewport.value ?? { x: 0, y: 0, zoom: 1 }
-      await setViewport({ x: cur.x, y: cur.y, zoom: cur.zoom }, { duration })
-      return
-    }
     await setViewport({ x: anchorCamX, y: anchorCamY, zoom: 1 }, { duration })
     return
   }
 
-  // Clamp the current viewport position to the new pan bounds so panning activating does not
-  // cause a visible slip: when the diagram was centered, its position is already inside the
-  // pan range, so the clamped value equals the centered position → no jump.
-  const curVp = viewport.value ?? { x: 0, y: 0, zoom: 1 }
-  const pinDefaultTopLeft = singletonOverviewPin && !preserveViewportPosition
-  const startX = Math.min(xMax, Math.max(xMin, pinDefaultTopLeft ? txLeft : curVp.x))
-  const startY = Math.min(yMax, Math.max(yMin, pinDefaultTopLeft ? tyTop : curVp.y))
-  const hSpan = xMax - xMin
-  const vSpan = yMax - yMin
-  const hSlider = hSpan > 0.5 ? Math.round(1000 * (xMax - startX) / hSpan) : 0
-  const vSlider = vSpan > 0.5 ? Math.round(1000 * (yMax - startY) / vSpan) : 0
+  const startX = txLeft
+  const startY = tyTop
+  const hSpan = panXMax - panXMin
+  const vSpan = panYMax - panYMin
+  const hSlider = hSpan > 0.5 ? Math.round(1000 * (panXMax - startX) / hSpan) : 0
+  const vSlider = vSpan > 0.5 ? Math.round(1000 * (panYMax - startY) / vSpan) : 0
 
-  panBounds = { xMin, xMax, yMin, yMax, zoom }
+  panBounds = { xMin: panXMin, xMax: panXMax, yMin: panYMin, yMax: panYMax, zoom }
   horizontalScrollChrome.value = useHorizontalPanRail
   verticalScrollChrome.value = useVerticalPanRail
   horizontalScrollSlider.value = hSlider
@@ -1325,24 +1290,9 @@ async function fitToViewport(opts?: {
   verticalThumbFraction.value = vSpan > 0 ? vp.height / (vp.height + vSpan) : 1
   horizontalThumbFraction.value = hSpan > 0 ? vp.width / (vp.width + hSpan) : 1
 
-  setTranslateExtent(translateExtentForPan(xMin, xMax, yMin, yMax))
-  const finalX = singletonOverviewPin ? txLeft : startX
-  const finalY = singletonOverviewPin ? tyTop : startY
-  // Non-panning axis uses center (or singleton top-left anchor); panning axis uses preserved/recentered.
-  const xViewport = preserveViewportPosition
-    ? useHorizontalPanRail
-      ? startX
-      : anchorCamX
-    : useHorizontalPanRail
-      ? finalX
-      : anchorCamX
-  const yViewport = preserveViewportPosition
-    ? useVerticalPanRail
-      ? startY
-      : anchorCamY
-    : useVerticalPanRail
-      ? finalY
-      : anchorCamY
+  setTranslateExtent(translateExtentForPan(panXMin, panXMax, panYMin, panYMax))
+  const xViewport = useHorizontalPanRail ? startX : anchorCamX
+  const yViewport = useVerticalPanRail ? startY : anchorCamY
   await setViewport({ x: xViewport, y: yViewport, zoom }, { duration })
 }
 

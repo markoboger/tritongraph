@@ -21,6 +21,7 @@ type InnerArtefactEdgesOptions = {
 
 const INNER_EDGE_LAYOUT_SETTLE_MS = 480
 const INNER_EDGE_CARD_SELECTOR = '.diagram-leaf-box, .general-focused-box, .package-box'
+const INNER_EDGE_ANCHOR_SELECTOR = '.package-box__artefact-anchor'
 
 export function useInnerArtefactEdges(options: InnerArtefactEdgesOptions) {
   const innerEdgeDraws = ref<InnerEdgeDraw[]>([])
@@ -80,7 +81,10 @@ export function useInnerArtefactEdges(options: InnerArtefactEdgesOptions) {
 
   function bindInnerArtefactSlotEl(artId: string, el: unknown) {
     if (el instanceof HTMLElement) {
-      const card = el.matches(INNER_EDGE_CARD_SELECTOR)
+      const directAnchor = Array.from(el.children).some((child) =>
+        child instanceof HTMLElement && child.matches(INNER_EDGE_ANCHOR_SELECTOR),
+      )
+      const card = directAnchor || el.matches(INNER_EDGE_CARD_SELECTOR)
         ? el
         : el.querySelector(INNER_EDGE_CARD_SELECTOR)
       innerArtefactSlotEls.set(artId, card instanceof HTMLElement ? card : el)

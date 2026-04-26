@@ -24,8 +24,10 @@ const LEAF_MIN_H = 40
 const GROUP_MIN_W = 220
 const GROUP_MIN_H = 160
 
-const MARGIN_X = 28
-const MARGIN_Y = 36
+export const DIAGRAM_MARGIN_X = 28
+export const DIAGRAM_MARGIN_Y = 36
+const MARGIN_X = DIAGRAM_MARGIN_X
+const MARGIN_Y = DIAGRAM_MARGIN_Y
 /**
  * Inset between a nested group's outer border and the leftmost / topmost child. Bumped beyond
  * the previous values (24 / 44) so nested package containers have visible margin on the LEFT
@@ -1055,7 +1057,7 @@ export function annotateAggregateVerticalPaths(
     const d2 = dmap.get(String(tgt.id))
     const depthOk = d1 !== undefined && d2 !== undefined
     const depthDelta = depthOk ? Math.abs(d1 - d2) : 0
-    /** Skip lane detour when a single shallow edge can run straight; use lanes when skipping columns or fanning parallels. */
+    /** Skip lane detour when a single shallow edge can run horizontally; use lanes when skipping columns or fanning parallels. */
     const needDetour = (depthOk && depthDelta >= 2) || parallelCount > 1
     if (!needDetour) {
       const straightY = straightHorizontalRelationY(String(src.id), String(tgt.id), byId)
@@ -1063,7 +1065,7 @@ export function annotateAggregateVerticalPaths(
         const baseOpts = edge.pathOptions && typeof edge.pathOptions === 'object' ? { ...edge.pathOptions } : {}
         return {
           ...stripRoutingFromEdge({ ...edge, pathOptions: { ...baseOpts, centerY: straightY } }),
-          type: 'straight',
+          type: 'smoothstep',
         }
       }
       const plain = stripRoutingFromEdge({ ...edge })

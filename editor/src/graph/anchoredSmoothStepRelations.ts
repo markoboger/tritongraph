@@ -1,5 +1,3 @@
-import { getSmoothStepPath, Position } from '@vue-flow/core'
-
 export type AnchoredRelationSpec = {
   id: string
   from: string
@@ -38,6 +36,58 @@ function anchoredSlotCenter(
   return { x: side === 'left' ? r.left : r.right, y: r.top + r.height / 2 }
 }
 
+function smoothHorizontalStepPath(
+  sourceX: number,
+  sourceY: number,
+  targetX: number,
+  targetY: number,
+  borderRadius: number,
+): [path: string, labelX: number, labelY: number] {
+  const dx = targetX - sourceX
+  const dy = targetY - sourceY
+  if (Math.abs(dy) < 0.5) {
+    return [`M${sourceX},${sourceY}L${targetX},${targetY}`, (sourceX + targetX) / 2, sourceY]
+  }
+
+  const dirX = dx >= 0 ? 1 : -1
+  const dirY = dy >= 0 ? 1 : -1
+  const minLane = 28
+  const midX = Math.abs(dx) >= minLane * 2
+    ? sourceX + dx / 2
+    : (dirX > 0
+        ? Math.max(sourceX, targetX) + minLane
+        : Math.min(sourceX, targetX) - minLane)
+  const r = Math.max(
+    0,
+    Math.min(
+      borderRadius,
+      Math.abs(midX - sourceX) / 2,
+      Math.abs(midX - targetX) / 2,
+      Math.abs(dy) / 2,
+    ),
+  )
+  if (r < 0.5) {
+    return [
+      `M${sourceX},${sourceY}L${midX},${sourceY}L${midX},${targetY}L${targetX},${targetY}`,
+      midX,
+      (sourceY + targetY) / 2,
+    ]
+  }
+
+  return [
+    [
+      `M${sourceX},${sourceY}`,
+      `L${midX - dirX * r},${sourceY}`,
+      `Q${midX},${sourceY} ${midX},${sourceY + dirY * r}`,
+      `L${midX},${targetY - dirY * r}`,
+      `Q${midX},${targetY} ${midX + dirX * r},${targetY}`,
+      `L${targetX},${targetY}`,
+    ].join(''),
+    midX,
+    (sourceY + targetY) / 2,
+  ]
+}
+
 export function buildAnchoredSmoothStepRelationDraws(
   opts: AnchoredRelationBuildOptions,
 ): AnchoredRelationDraw[] {
@@ -72,17 +122,13 @@ export function buildAnchoredSmoothStepRelationDraws(
     const sourceY = (srcPt.y - rootRect.top) * scale
     const targetX = (tgtPt.x - rootRect.left) * scale
     const targetY = (tgtPt.y - rootRect.top) * scale
-    const leftToRight = sourceX <= targetX
-
-    const [path, labelX, labelY] = getSmoothStepPath({
+    const [path, labelX, labelY] = smoothHorizontalStepPath(
       sourceX,
       sourceY,
-      sourcePosition: leftToRight ? Position.Right : Position.Left,
       targetX,
       targetY,
-      targetPosition: leftToRight ? Position.Left : Position.Right,
       borderRadius,
-    })
+    )
 
     draws.push({
       id: rel.id,

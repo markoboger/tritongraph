@@ -12,7 +12,16 @@ defineProps<{
 </script>
 
 <template>
-  <div v-if="packages.length" class="package-box__inner-package-stack">
+  <div
+    v-if="packages.length"
+    class="package-box__inner-package-stack"
+    :class="{
+      'package-box__inner-package-stack--left-port-lane':
+        packages.some((child) => childPackagePortsById.get(childPackagePortId(child.id, 'left'))),
+      'package-box__inner-package-stack--right-port-lane':
+        packages.some((child) => childPackagePortsById.get(childPackagePortId(child.id, 'right'))),
+    }"
+  >
     <div v-for="child in packages" :key="child.id" class="package-box__inner-package-row">
       <div
         v-if="childPackagePortsById.get(childPackagePortId(child.id, 'left'))"
@@ -56,6 +65,7 @@ defineProps<{
 
 <style scoped>
 .package-box__inner-package-stack {
+  --triton-inner-package-port-lane: clamp(72px, 10cqw, 128px);
   flex: 0 0 clamp(156px, 22cqw, 232px);
   min-width: 0;
   min-height: 0;
@@ -67,6 +77,12 @@ defineProps<{
   justify-content: stretch;
   gap: 10px;
   overflow: visible;
+}
+.package-box__inner-package-stack--left-port-lane {
+  padding-left: var(--triton-inner-package-port-lane);
+}
+.package-box__inner-package-stack--right-port-lane {
+  padding-right: var(--triton-inner-package-port-lane);
 }
 .package-box__inner-package-row {
   position: relative;
@@ -88,10 +104,10 @@ defineProps<{
   z-index: 2;
 }
 .package-box__inner-package-port-anchor--left {
-  left: 0;
+  left: calc(-1 * var(--triton-inner-package-port-lane, 0px));
 }
 .package-box__inner-package-port-anchor--right {
-  right: 0;
+  right: calc(-1 * var(--triton-inner-package-port-lane, 0px));
 }
 .package-box__inner-slot--inner-package {
   flex: 1 1 0;
