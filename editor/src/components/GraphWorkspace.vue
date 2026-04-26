@@ -1229,8 +1229,14 @@ async function fitToViewport(opts?: {
       await setViewport({ x: 0, y: 0, zoom: 1 }, { duration })
       return
     }
-    const x = vp.width / 2 - (rect.x + rect.width / 2)
-    const y = vp.height / 2 - (rect.y + rect.height / 2)
+    const singletonOverviewPin = hasSingletonRootPackageScopeOverview()
+    const pad = 0.05
+    const x = singletonOverviewPin
+      ? vp.width * pad - rect.x
+      : vp.width / 2 - (rect.x + rect.width / 2)
+    const y = singletonOverviewPin
+      ? vp.height * pad - rect.y
+      : vp.height / 2 - (rect.y + rect.height / 2)
     await setViewport({ x, y, zoom: 1 }, { duration })
     return
   }

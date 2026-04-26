@@ -247,32 +247,17 @@ onUnmounted(() => {
         </div>
         <div
           class="general-focused-box__head-text"
-          :class="{ 'triton-vertical-rail-container': superslimLayout || (metricsBreakLayout && slimLayout) }"
         >
           <div
             ref="titleEl"
             class="title title--header"
-            :class="{
-              'title--metrics-break-vertical':
-                metricsBreakLayout && !superslimLayout && slimLayout,
-              'triton-vertical-rail-text triton-vertical-title-rail':
-                superslimLayout || (metricsBreakLayout && slimLayout),
-            }"
-            :title="
-              superslimLayout || (metricsBreakLayout && slimLayout)
-                ? undefined
-                : titleTooltip || undefined
-            "
+            :title="titleTooltip || undefined"
           >
             {{ title }}
           </div>
           <div
             v-if="showFocusedSubtitle"
             class="subtitle subtitle--header"
-            :class="{
-              'triton-vertical-rail-text triton-vertical-subtitle-rail':
-                superslimLayout || (metricsBreakLayout && slimLayout),
-            }"
           >
             <slot name="subtitle">{{ subtitle }}</slot>
           </div>

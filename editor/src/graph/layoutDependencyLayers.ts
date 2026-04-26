@@ -1297,6 +1297,26 @@ export function focusedModuleWidthForDrill(
   return Math.round(Math.max(baseW, Math.min(span, preferred)))
 }
 
+export function fullWidthFocusBoundsForLayerDrill(
+  viewportRoot: ViewportSize,
+  parentNode: string | undefined,
+  allNodes: readonly any[],
+): { x: number; width: number } {
+  if (!parentNode) {
+    return {
+      x: MARGIN_X,
+      width: Math.max(LEAF_MIN_W, viewportRoot.width - 2 * MARGIN_X),
+    }
+  }
+
+  const p = allNodes.find((n) => n.id === parentNode)
+  const parentWidth = readNodePixelDim(p?.style?.width, p?.width, GROUP_MIN_W)
+  return {
+    x: INNER_PAD_X,
+    width: Math.max(LEAF_MIN_W, parentWidth - 2 * INNER_PAD_X),
+  }
+}
+
 /** Vertical band height for maximizing a node in a layer drill (root vs nested group). */
 export function verticalBandForLayerDrill(
   allNodes: readonly any[],

@@ -9,6 +9,7 @@ import {
   computeLayerDrillColumnLayout,
   dependencyDepthsInRegion,
   focusedModuleWidthForDrill,
+  fullWidthFocusBoundsForLayerDrill,
   relayoutSubtreeIntoBounds,
   verticalBandForLayerDrill,
 } from '../graph/layoutDependencyLayers'
@@ -674,6 +675,20 @@ function collectRegionParticipants(
     }))
 }
 
+function hasExternalRegionDependency(
+  edges: readonly GraphEdge[],
+  focusId: string,
+  regionParticipantIds: ReadonlySet<string>,
+): boolean {
+  return edges.some((edge) => {
+    const source = String(edge.source)
+    const target = String(edge.target)
+    if (source === focusId) return regionParticipantIds.has(target)
+    if (target === focusId) return regionParticipantIds.has(source)
+    return false
+  })
+}
+
 async function applyLayerDrill(moduleId: string) {
   let nodes = getNodes.value
   let edges = getEdges.value
@@ -756,9 +771,15 @@ async function applyLayerDrill(moduleId: string) {
     target.data && typeof target.data === 'object' && typeof (target.data as Record<string, unknown>).preferredFocusWidth === 'number'
       ? ((target.data as Record<string, unknown>).preferredFocusWidth as number)
       : undefined
-  const focusW = focusedModuleWidthForDrill(vp, numCols, baseW, regionParent, nodes, preferredFocusWidth)
 
   const regionParticipants = collectRegionParticipants(nodes, regionParent, depths)
+  const regionParticipantIds = new Set(regionParticipants.map((participant) => participant.id))
+  const isolatedGroupFocus =
+    targetIsGroup && !hasExternalRegionDependency(edges, moduleId, regionParticipantIds)
+  const fullFocusBounds = isolatedGroupFocus
+    ? fullWidthFocusBoundsForLayerDrill(vp, regionParent, nodes)
+    : null
+  const focusW = fullFocusBounds?.width ?? focusedModuleWidthForDrill(vp, numCols, baseW, regionParent, nodes, preferredFocusWidth)
 
   const fd = depths.get(moduleId) ?? 0
 
@@ -782,7 +803,10 @@ async function applyLayerDrill(moduleId: string) {
   const layoutParticipants: typeof regionParticipants = []
   let anyHiddenSibling = false
   for (const m of regionParticipants) {
-    if (m.id !== moduleId &&
+    if (isolatedGroupFocus && m.id !== moduleId) {
+      hiddenSiblingIds.add(m.id)
+      anyHiddenSibling = true
+    } else if (m.id !== moduleId &&
         ((m.depth === fd || depthsWithPinned.has(m.depth)) && !pinnedIds.has(m.id))) {
       hiddenSiblingIds.add(m.id)
       anyHiddenSibling = true
@@ -813,6 +837,23 @@ async function applyLayerDrill(moduleId: string) {
     siblingWidthScale: 0.42,
     wideAtFocusDepthIds,
   })
+  if (fullFocusBounds) {
+    const geo = geoMap.get(moduleId)
+    const prevStyle =
+      geo?.style && typeof geo.style === 'object'
+        ? { ...(geo.style as Record<string, string | number>) }
+        : {}
+    geoMap.set(moduleId, {
+      position: { x: fullFocusBounds.x, y: target.position.y },
+      width: fullFocusBounds.width,
+      height: typeof target.height === 'number' ? target.height : 72,
+      style: {
+        ...prevStyle,
+        width: `${fullFocusBounds.width}px`,
+        height: `${typeof target.height === 'number' ? target.height : 72}px`,
+      },
+    })
+  }
 
   let nextNodes = nodes.map((n) => {
     const nParent = n.parentNode ? String(n.parentNode) : undefined
