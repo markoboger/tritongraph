@@ -275,6 +275,9 @@ onUnmounted(() => {
 .general-focused-box {
   --box-accent: steelblue;
   --box-fill: color-mix(in srgb, var(--box-accent) 8%, #ffffff);
+  --triton-focused-box-pad-x: clamp(6px, 1.35vmin, 14px);
+  --triton-focused-box-pad-y: clamp(6px, 1.2vmin, 14px);
+  --triton-focused-box-pad-bottom: clamp(2px, 0.35vmin, 6px);
   position: relative;
   width: 100%;
   height: 100%;
@@ -285,8 +288,8 @@ onUnmounted(() => {
   flex-direction: column;
   justify-content: flex-start;
   align-items: stretch;
-  padding: clamp(6px, 1.2vmin, 14px) clamp(6px, 1.35vmin, 14px);
-  padding-bottom: clamp(2px, 0.35vmin, 6px);
+  padding: var(--triton-focused-box-pad-y) var(--triton-focused-box-pad-x);
+  padding-bottom: var(--triton-focused-box-pad-bottom);
   border-radius: 8px;
   border: 1px solid rgb(30 41 59 / 0.88);
   background: color-mix(in srgb, var(--box-fill) 90%, transparent);

@@ -102,8 +102,10 @@ function scalaIconForKind(subtitle: string | undefined): string {
       class="package-box__inner-artefact-cols"
       :class="{
         'package-box__inner-artefact-cols--artefact-focus': innerArtefactFocusActive,
-        'package-box__inner-artefact-cols--left-root-lane': innerArtefactFocusActive && rootPackagePortsLeft.length > 0,
-        'package-box__inner-artefact-cols--right-root-lane': innerArtefactFocusActive && rootPackagePortsRight.length > 0,
+        'package-box__inner-artefact-cols--left-port-lane':
+          mode === 'focused' && (rootPackagePortsLeft.length > 0 || crossPackageExternalEndpoints.left.length > 0),
+        'package-box__inner-artefact-cols--right-port-lane':
+          mode === 'focused' && (rootPackagePortsRight.length > 0 || crossPackageExternalEndpoints.right.length > 0),
         'package-box__inner-artefact-cols--child-package-lane':
           innerArtefactFocusActive && childPackagePortsById.size > 0,
         'package-box__inner-artefact-cols--with-packages': mode === 'focused' && topLevelInnerPackages.length > 0,
@@ -285,10 +287,10 @@ function scalaIconForKind(subtitle: string | undefined): string {
 .package-box__inner-artefact-cols--artefact-focus.package-box__inner-artefact-cols--child-package-lane {
   gap: var(--triton-inner-child-package-edge-lane);
 }
-.package-box__inner-artefact-cols--artefact-focus.package-box__inner-artefact-cols--left-root-lane {
+.package-box__inner-artefact-cols--left-port-lane {
   padding-left: var(--triton-inner-container-port-lane);
 }
-.package-box__inner-artefact-cols--artefact-focus.package-box__inner-artefact-cols--right-root-lane {
+.package-box__inner-artefact-cols--right-port-lane {
   padding-right: var(--triton-inner-container-port-lane);
 }
 .package-box__inner-artefact-cols--with-packages {

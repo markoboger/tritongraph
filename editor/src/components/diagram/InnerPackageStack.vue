@@ -12,16 +12,7 @@ defineProps<{
 </script>
 
 <template>
-  <div
-    v-if="packages.length"
-    class="package-box__inner-package-stack"
-    :class="{
-      'package-box__inner-package-stack--left-port-lane':
-        packages.some((child) => childPackagePortsById.get(childPackagePortId(child.id, 'left'))),
-      'package-box__inner-package-stack--right-port-lane':
-        packages.some((child) => childPackagePortsById.get(childPackagePortId(child.id, 'right'))),
-    }"
-  >
+  <div v-if="packages.length" class="package-box__inner-package-stack">
     <div v-for="child in packages" :key="child.id" class="package-box__inner-package-row">
       <div
         v-if="childPackagePortsById.get(childPackagePortId(child.id, 'left'))"
@@ -65,7 +56,6 @@ defineProps<{
 
 <style scoped>
 .package-box__inner-package-stack {
-  --triton-inner-package-port-lane: clamp(72px, 10cqw, 128px);
   flex: 0 0 clamp(156px, 22cqw, 232px);
   min-width: 0;
   min-height: 0;
@@ -77,12 +67,6 @@ defineProps<{
   justify-content: stretch;
   gap: 10px;
   overflow: visible;
-}
-.package-box__inner-package-stack--left-port-lane {
-  padding-left: var(--triton-inner-package-port-lane);
-}
-.package-box__inner-package-stack--right-port-lane {
-  padding-right: var(--triton-inner-package-port-lane);
 }
 .package-box__inner-package-row {
   position: relative;
@@ -104,10 +88,10 @@ defineProps<{
   z-index: 2;
 }
 .package-box__inner-package-port-anchor--left {
-  left: calc(-1 * var(--triton-inner-package-port-lane, 0px));
+  left: 0;
 }
 .package-box__inner-package-port-anchor--right {
-  right: calc(-1 * var(--triton-inner-package-port-lane, 0px));
+  right: 0;
 }
 .package-box__inner-slot--inner-package {
   flex: 1 1 0;
@@ -139,16 +123,18 @@ defineProps<{
   flex: 0 0 auto;
   border-radius: 2px;
   box-sizing: border-box;
-  background: color-mix(in srgb, var(--box-accent, #64748b) 22%, #ffffff);
-  border: 1.5px solid color-mix(in srgb, var(--box-accent, #64748b) 76%, #0f172a);
-  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.92);
-  opacity: 0.94;
+  background: color-mix(in srgb, var(--box-accent, #64748b) 42%, #ffffff);
+  border: 2px solid color-mix(in srgb, var(--box-accent, #64748b) 82%, #0f172a);
+  box-shadow:
+    0 0 0 2px rgb(255 255 255 / 0.96),
+    0 1px 4px rgb(15 23 42 / 0.18);
+  opacity: 1;
   z-index: 2;
 }
 .package-box__inner-package-port-anchor > .package-box__port--left {
-  transform: translate(125%, -50%);
+  transform: translate(-50%, -50%);
 }
 .package-box__inner-package-port-anchor > .package-box__port--right {
-  transform: translate(-125%, -50%);
+  transform: translate(-50%, -50%);
 }
 </style>

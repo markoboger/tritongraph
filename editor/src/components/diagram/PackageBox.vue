@@ -1522,12 +1522,13 @@ function onHeaderDblClick() {
   flex: 1 1 0;
   min-height: 0;
   min-width: 0;
-  width: 100%;
+  width: calc(100% + 2 * var(--triton-focused-box-pad-x, 0px));
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 10px;
+  margin-inline: calc(-1 * var(--triton-focused-box-pad-x, 0px));
   padding: 0;
   border: 0;
   background: transparent;
