@@ -132,10 +132,12 @@ function measure() {
     return
   }
   const hasMetricsChrome = hasCoverage.value || simulatedMetrics.value.issueCount >= 0
-  const borderBoxWidth = Math.round(root.getBoundingClientRect().width)
-  superflatLayout.value = nextSuperflatLayout(borderBoxWidth, root.clientHeight, superflatLayout.value)
-  flatLayout.value = superflatLayout.value || nextFlatLayout(borderBoxWidth, root.clientHeight, flatLayout.value)
-  compactLayout.value = !flatLayout.value && nextCompactLayout(borderBoxWidth, root.clientHeight)
+  const borderBox = root.getBoundingClientRect()
+  const borderBoxWidth = Math.round(borderBox.width)
+  const borderBoxHeight = Math.round(borderBox.height)
+  superflatLayout.value = nextSuperflatLayout(borderBoxWidth, borderBoxHeight, superflatLayout.value)
+  flatLayout.value = superflatLayout.value || nextFlatLayout(borderBoxWidth, borderBoxHeight, flatLayout.value)
+  compactLayout.value = !flatLayout.value && nextCompactLayout(borderBoxWidth, borderBoxHeight)
   if (flatLayout.value) {
     metricsBreakLayout.value = false
     superslimLayout.value = false

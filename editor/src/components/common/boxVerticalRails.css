@@ -21,8 +21,31 @@
   transform: rotate(180deg) translateY(var(--triton-vertical-rail-shift-y, 0px)) !important;
   text-orientation: mixed !important;
   line-height: 1.15 !important;
-  text-align: start !important;
+  text-align: center !important;
   transition: none !important;
+}
+
+.project-box--slim-layout .project-box__header.triton-vertical-rail-container,
+.project-box--superslim-layout .project-box__header.triton-vertical-rail-container,
+.package-box--slim-layout .package-box__body.triton-vertical-rail-container,
+.package-box--superslim-layout .package-box__body.triton-vertical-rail-container,
+.general-focused-box--slim-layout .general-focused-box__head-text.triton-vertical-rail-container,
+.general-focused-box--superslim-layout .general-focused-box__head-text.triton-vertical-rail-container,
+.diagram-leaf-box--slim-layout .diagram-leaf-box__text.triton-vertical-rail-container,
+.diagram-leaf-box--superslim-layout .diagram-leaf-box__text.triton-vertical-rail-container {
+  align-items: stretch !important;
+}
+
+.project-box--slim-layout .triton-vertical-rail-text,
+.project-box--superslim-layout .triton-vertical-rail-text,
+.package-box--slim-layout .triton-vertical-rail-text,
+.package-box--superslim-layout .triton-vertical-rail-text,
+.general-focused-box--slim-layout .triton-vertical-rail-text,
+.general-focused-box--superslim-layout .triton-vertical-rail-text,
+.diagram-leaf-box--slim-layout .triton-vertical-rail-text,
+.diagram-leaf-box--superslim-layout .triton-vertical-rail-text {
+  align-self: stretch !important;
+  text-align: center !important;
 }
 
 .triton-vertical-title-rail.triton-vertical-title-rail,
@@ -80,11 +103,15 @@
 
 .project-box--superslim-layout .lang-icon-slot,
 .package-box--superslim-layout .lang-icon-slot,
-.general-focused-box--superslim-layout .general-focused-box__header-icon {
-  width: auto !important;
-  height: 44px !important;
+.general-focused-box--superslim-layout .general-focused-box__header-icon,
+.diagram-leaf-box--superslim-layout .diagram-leaf-box__icon {
+  flex: 0 0 40px !important;
+  width: 40px !important;
+  min-width: 40px !important;
+  max-width: 40px !important;
+  height: 40px !important;
   min-height: 40px !important;
-  max-height: 48px !important;
+  max-height: 40px !important;
 }
 
 .project-box--superslim-layout .lang-icon-slot .lang-svg,
@@ -92,10 +119,16 @@
 .package-box--superslim-layout .lang-icon-slot .lang-svg,
 .package-box--superslim-layout .lang-icon-slot svg,
 .general-focused-box--superslim-layout .general-focused-box__header-icon .lang-svg,
-.general-focused-box--superslim-layout .general-focused-box__header-icon svg {
+.general-focused-box--superslim-layout .general-focused-box__header-icon svg,
+.diagram-leaf-box--superslim-layout .diagram-leaf-box__icon-img {
+  flex: 0 0 40px !important;
+  width: 40px !important;
+  min-width: 40px !important;
+  max-width: 40px !important;
   height: 40px !important;
+  min-height: 40px !important;
   max-height: 40px !important;
-  width: auto !important;
+  object-fit: contain !important;
 }
 
 .triton-vertical-subtitle-rail.triton-vertical-subtitle-rail {

@@ -44,7 +44,6 @@ const shouldSuppressPaneClick =
 const fitWorkspaceViewport = inject<
   | ((opts?: {
       duration?: number
-      recenterStackShrink?: boolean
       preserveViewportPosition?: boolean
     }) => Promise<void>)
   | undefined

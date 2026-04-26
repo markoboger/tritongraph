@@ -6,8 +6,8 @@ import scalaClassIconUrl from '../../assets/language-icons/scala-class.svg'
 import scalaTraitIconUrl from '../../assets/language-icons/scala-trait.svg'
 import scalaObjectIconUrl from '../../assets/language-icons/scala-object.svg'
 import scalaEnumIconUrl from '../../assets/language-icons/scala-enum.svg'
-import BoxMetricStrip from '../common/BoxMetricStrip.vue'
 import type { BoxMetricDemo } from '../common/boxMetricDemo'
+import DiagramLeafBox from './DiagramLeafBox.vue'
 import ScalaArtefactBox from './ScalaArtefactBox.vue'
 import type { InnerEdgeDraw, PortEndpoint } from './innerArtefactGraphHelpers'
 import InnerArtefactEdgesSvg from './InnerArtefactEdgesSvg.vue'
@@ -181,27 +181,23 @@ function scalaIconForKind(subtitle: string | undefined): string {
             @mouseleave="mode === 'focused' ? handleArtefactSlotLeave(artId) : undefined"
             @click.stop="mode === 'focused' ? handleArtefactRowClick(artId) : undefined"
           >
-            <div class="package-box__artefact-row" :class="{ 'package-box__artefact-row--has-metrics': mode === 'focused' }">
-              <div v-if="mode === 'focused'" class="package-box__artefact-metrics">
-                <BoxMetricStrip
-                  :coverage-percent="artefactHasCoverage(artId) ? artefactCoveragePercent(artId) : null"
-                  :technical-debt-percent="artefactMetrics(artId).technicalDebtPercent"
-                  :issue-count="artefactMetrics(artId).issueCount"
-                  :issue-level="artefactMetrics(artId).issueLevel"
-                />
-              </div>
-              <span class="package-box__artefact-anchor package-box__artefact-anchor--in" :class="{ 'package-box__artefact-anchor--emph': mode === 'focused' && artefactEmphasized(artId) }" aria-hidden="true" />
-              <span class="package-box__artefact-anchor package-box__artefact-anchor--out" :class="{ 'package-box__artefact-anchor--emph': mode === 'focused' && artefactEmphasized(artId) }" aria-hidden="true" />
-              <div class="lang-icon-slot lang-icon-slot--artefact">
-                <img class="lang-svg" :src="scalaIconForKind(artefactCell(artId)!.subtitle)" :alt="artefactCell(artId)!.subtitle ?? ''" aria-hidden="true" decoding="async" />
-              </div>
-              <div class="package-box__artefact-text">
-                <div class="package-box__artefact-title">{{ artefactCell(artId)!.name }}</div>
-                <div v-if="artefactCell(artId)!.subtitle" class="package-box__artefact-subtitle">
-                  {{ artefactCell(artId)!.subtitle }}
-                </div>
-              </div>
-            </div>
+            <DiagramLeafBox
+              class="package-box__artefact-row"
+              :label="artefactCell(artId)!.name"
+              :subtitle="artefactCell(artId)!.subtitle ?? ''"
+              :icon-url="scalaIconForKind(artefactCell(artId)!.subtitle)"
+              :icon-alt="artefactCell(artId)!.subtitle ?? ''"
+              :accent="artefactAccent(artId)"
+              :coverage-percent="mode === 'focused' && artefactHasCoverage(artId) ? artefactCoveragePercent(artId) : null"
+              :technical-debt-percent="mode === 'focused' ? artefactMetrics(artId).technicalDebtPercent : null"
+              :issue-count="mode === 'focused' ? artefactMetrics(artId).issueCount : null"
+              :issue-level="mode === 'focused' ? artefactMetrics(artId).issueLevel : null"
+            >
+              <template #overlay>
+                <span class="package-box__artefact-anchor package-box__artefact-anchor--in" :class="{ 'package-box__artefact-anchor--emph': mode === 'focused' && artefactEmphasized(artId) }" aria-hidden="true" />
+                <span class="package-box__artefact-anchor package-box__artefact-anchor--out" :class="{ 'package-box__artefact-anchor--emph': mode === 'focused' && artefactEmphasized(artId) }" aria-hidden="true" />
+              </template>
+            </DiagramLeafBox>
           </div>
         </template>
       </div>
@@ -351,46 +347,6 @@ function scalaIconForKind(subtitle: string | undefined): string {
   align-self: stretch;
   cursor: pointer;
 }
-.package-box__artefact-row {
-  position: relative;
-  flex: 1 1 0;
-  min-height: 0;
-  min-width: 0;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px 8px 6px 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  border-radius: 8px;
-  border: 1px solid rgb(30 41 59 / 0.88);
-  background: color-mix(
-    in srgb,
-    color-mix(in srgb, var(--box-accent, steelblue) 8%, #ffffff) 90%,
-    transparent
-  );
-  box-shadow:
-    inset 5px 0 0 0 var(--box-accent, steelblue),
-    0 1px 2px rgb(15 23 42 / 0.08);
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
-  container-type: inline-size;
-  container-name: pkg-artefact-row;
-}
-.package-box__artefact-row--has-metrics {
-  padding-top: 20px;
-}
-.package-box__artefact-metrics {
-  position: absolute;
-  top: 1px;
-  right: 1px;
-  z-index: 2;
-  max-width: calc(100% - 2px);
-  pointer-events: none;
-}
 .package-box__artefact-anchor {
   position: absolute;
   top: 50%;
@@ -426,111 +382,5 @@ function scalaIconForKind(subtitle: string | undefined): string {
     0 0 0 1px rgb(255 255 255 / 0.85),
     0 0 0 2px var(--box-accent, #64748b),
     0 2px 8px rgb(15 23 42 / 0.08);
-}
-.lang-icon-slot--artefact {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  align-self: stretch;
-  width: 100%;
-  min-height: clamp(26px, min(20cqh, 36px), 36px);
-  max-height: 40px;
-  margin: 0;
-  flex-shrink: 0;
-  pointer-events: none;
-}
-.lang-icon-slot--artefact .lang-svg {
-  max-height: 30px;
-  height: min(100%, 30px);
-  width: auto;
-}
-.package-box__artefact-text {
-  flex: 0 1 auto;
-  min-width: 0;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  align-items: stretch;
-  text-align: center;
-}
-.package-box__artefact-title {
-  font-weight: 600;
-  font-size: clamp(0.72rem, min(1.6vmin, 2.4cqh), 0.95rem);
-  color: #0f172a;
-  line-height: 1.25;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: center;
-  align-self: stretch;
-  width: 100%;
-}
-.package-box__artefact-subtitle {
-  font-size: clamp(0.62rem, min(1.35vmin, 2cqh), 0.8rem);
-  color: #64748b;
-  line-height: 1.3;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: center;
-  align-self: stretch;
-  width: 100%;
-}
-@container pkg-artefact-row (max-width: 118px) {
-  .package-box__artefact-row {
-    gap: 4px;
-    padding: 6px 4px 5px 10px;
-  }
-  .package-box__artefact-row--has-metrics {
-    padding-top: 38px;
-  }
-  .package-box__artefact-metrics {
-    top: 1px;
-    right: 1px;
-    max-width: 40px;
-  }
-  .package-box__artefact-row .package-box__artefact-title {
-    writing-mode: vertical-rl;
-    transform: rotate(180deg);
-    text-orientation: mixed;
-    white-space: nowrap;
-    overflow: visible;
-    text-overflow: clip;
-    max-width: none;
-    line-height: 1.15;
-    text-align: center;
-    font-size: clamp(0.62rem, min(1.45vmin, 2.2cqh), 0.88rem);
-  }
-  .package-box__artefact-row .package-box__artefact-subtitle {
-    display: none;
-  }
-  .package-box__artefact-row .lang-icon-slot--artefact {
-    min-height: 28px;
-    max-height: 32px;
-  }
-}
-@container pkg-artefact-row (max-width: 80px) {
-  .package-box__artefact-metrics {
-    display: none;
-  }
-  .package-box__artefact-row--has-metrics {
-    padding-top: 6px;
-  }
-  .package-box__artefact-row .lang-icon-slot--artefact {
-    min-height: 22px;
-    max-height: 26px;
-  }
-}
-@container pkg-artefact-row (max-width: 60px) {
-  .package-box__artefact-row {
-    padding: 4px 2px 4px 8px;
-    gap: 2px;
-  }
-  .package-box__artefact-row .lang-icon-slot--artefact {
-    display: none;
-  }
 }
 </style>

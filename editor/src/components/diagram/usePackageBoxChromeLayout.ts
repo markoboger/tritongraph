@@ -96,8 +96,9 @@ export function usePackageBoxChromeLayout(options: PackageBoxChromeLayoutOptions
     const root = rootEl.value
     const title = titleEl.value
     if (root) {
-      const w = Math.round(root.getBoundingClientRect().width)
-      const h = root.clientHeight
+      const rect = root.getBoundingClientRect()
+      const w = Math.round(rect.width)
+      const h = Math.round(rect.height)
       superflatLayout.value = nextSuperflatLayout(w, h, superflatLayout.value)
       flatLayout.value = superflatLayout.value || nextFlatLayout(w, h, flatLayout.value)
       compactLayout.value = !flatLayout.value && nextCompactLayout(w, h)

@@ -623,7 +623,7 @@ async function applyDoc(
   text: string,
   name: string,
   preferSaved: boolean,
-  options: { moduleNodeType?: 'module' | 'package'; recenterStackShrink?: boolean } = {},
+  options: { moduleNodeType?: 'module' | 'package' } = {},
 ) {
   await whenOverlayStoreReady()
   const doc = parseIlographYaml(text)
@@ -664,7 +664,6 @@ async function applyDoc(
   graphRef.value?.resetNavigationAfterDocReplace?.()
   await graphRef.value?.fitToViewport?.({
     duration: 0,
-    ...(options.recenterStackShrink ? { recenterStackShrink: true } : {}),
   })
   await nextTick()
   yamlBaseline.value = yamlPreview.value
@@ -924,7 +923,6 @@ function buildPackageImportChainDojoDocument(chainLen: number): IlographDocument
       name: `import-link-${k}`,
       subtitle: `chain ${k} of ${n}`,
       'x-triton-package-scope': true,
-      'x-triton-preferred-leaf-height': 52,
       ...(k === 1 ? { 'x-triton-package-language': 'scala' } : {}),
     }
   })
@@ -1084,10 +1082,9 @@ function buildBreakpointLayoutsDojoDocument(): IlographDocument {
 
   function samplePosition(sample: BreakpointLayoutSample): { x: number; y: number } {
     const cellLeft = columnLefts.get(sample.kind) ?? LEFT
-    const cellWidth = columnWidths.get(sample.kind) ?? sample.sizes[sample.band].w
     const rowTop = rowTops.get(sample.state) ?? TOP
     return {
-      x: Math.round(cellLeft + (cellWidth - sample.sizes[sample.band].w) / 2),
+      x: cellLeft,
       y: rowTop,
     }
   }
@@ -1170,7 +1167,6 @@ function buildPackageStackingDojoDocument(count: number): IlographDocument {
         name: `stack-package-${level}`,
         subtitle: `stack ${level}`,
         'x-triton-package-scope': true,
-        'x-triton-preferred-leaf-height': 52,
         ...(level === 1 ? { 'x-triton-package-language': 'scala' } : {}),
       }
     }),
@@ -1195,7 +1191,6 @@ function buildPackageTreeDojoDocument(count: number): IlographDocument {
       name: `tree-package-${level}`,
       subtitle: `depth ${depth}`,
       'x-triton-package-scope': true,
-      'x-triton-preferred-leaf-height': 52,
       ...(level === 1 ? { 'x-triton-package-language': 'scala' } : {}),
     }
   })
@@ -1794,46 +1789,43 @@ async function loadPackageNestingDojo(depth: number) {
   status.value = `Loaded dojo fixture ${PACKAGE_NESTING_DOJO_ID} at depth ${normalizedDepth}.`
 }
 
-async function loadPackageStackingDojo(count: number, prevCount?: number) {
+async function loadPackageStackingDojo(count: number) {
   const normalizedCount = clampDojoStackCount(count)
-  const stackShrunk = typeof prevCount === 'number' && normalizedCount < prevCount
   dojoStackCount.value = normalizedCount
   sourcePath.value = `dojo/${PACKAGE_STACKING_DOJO_ID}.ilograph.yaml`
   await applyDoc(
     stringifyIlographYaml(buildPackageStackingDojoDocument(normalizedCount)),
     `${PACKAGE_STACKING_DOJO_ID}.ilograph.yaml`,
     false,
-    { moduleNodeType: 'package', ...(stackShrunk ? { recenterStackShrink: true } : {}) },
+    { moduleNodeType: 'package' },
   )
   if (activeTab.value) activeTab.value.dojoDepth = normalizedCount
   status.value = `Loaded dojo fixture ${PACKAGE_STACKING_DOJO_ID} with ${normalizedCount} packages.`
 }
 
-async function loadPackageImportChainDojo(chainLen: number, prevLen?: number) {
+async function loadPackageImportChainDojo(chainLen: number) {
   const n = clampDojoStackCount(chainLen)
-  const chainShrunk = typeof prevLen === 'number' && n < prevLen
   dojoImportChainLength.value = n
   sourcePath.value = `dojo/${PACKAGE_IMPORT_CHAIN_DOJO_ID}.ilograph.yaml`
   await applyDoc(
     stringifyIlographYaml(buildPackageImportChainDojoDocument(n)),
     `${PACKAGE_IMPORT_CHAIN_DOJO_ID}.ilograph.yaml`,
     false,
-    { moduleNodeType: 'package', ...(chainShrunk ? { recenterStackShrink: true } : {}) },
+    { moduleNodeType: 'package' },
   )
   if (activeTab.value) activeTab.value.dojoDepth = n
   status.value = `Loaded dojo fixture ${PACKAGE_IMPORT_CHAIN_DOJO_ID} with chain length ${n}.`
 }
 
-async function loadPackageTreeDojo(nodeCount: number, prevCount?: number) {
+async function loadPackageTreeDojo(nodeCount: number) {
   const n = clampDojoTreeCount(nodeCount)
-  const treeShrunk = typeof prevCount === 'number' && n < prevCount
   dojoTreeCount.value = n
   sourcePath.value = `dojo/${PACKAGE_TREE_DOJO_ID}.ilograph.yaml`
   await applyDoc(
     stringifyIlographYaml(buildPackageTreeDojoDocument(n)),
     `${PACKAGE_TREE_DOJO_ID}.ilograph.yaml`,
     false,
-    { moduleNodeType: 'package', ...(treeShrunk ? { recenterStackShrink: true } : {}) },
+    { moduleNodeType: 'package' },
   )
   if (activeTab.value) activeTab.value.dojoDepth = n
   syncUrlFromState()
@@ -2937,7 +2929,7 @@ watch(dojoStackCount, (count, prev) => {
   }
   if (normalized === prev) return
   if (activeDojoId.value !== PACKAGE_STACKING_DOJO_ID) return
-  void loadPackageStackingDojo(normalized, prev).then(() => {
+  void loadPackageStackingDojo(normalized).then(() => {
     snapshotActiveTab()
     syncUrlFromState()
   })
@@ -2951,7 +2943,7 @@ watch(dojoImportChainLength, (len, prev) => {
   }
   if (normalized === prev) return
   if (activeDojoId.value !== PACKAGE_IMPORT_CHAIN_DOJO_ID) return
-  void loadPackageImportChainDojo(normalized, prev).then(() => {
+  void loadPackageImportChainDojo(normalized).then(() => {
     snapshotActiveTab()
     syncUrlFromState()
   })
@@ -2965,7 +2957,7 @@ watch(dojoTreeCount, (count, prev) => {
   }
   if (normalized === prev) return
   if (activeDojoId.value !== PACKAGE_TREE_DOJO_ID) return
-  void loadPackageTreeDojo(normalized, prev).then(() => {
+  void loadPackageTreeDojo(normalized).then(() => {
     snapshotActiveTab()
     syncUrlFromState()
   })
@@ -3544,12 +3536,11 @@ onUnmounted(() => {
             <div v-else-if="activeDojoId === BREAKPOINT_LAYOUTS_DOJO_ID" class="dojo-panel">
               <div class="dojo-panel__header">
                 <div class="dojo-panel__title">Breakpoint layouts</div>
-                <div class="dojo-panel__meta">Min/max per layout state</div>
+                <div class="dojo-panel__meta">Minimal size per layout state</div>
               </div>
               <p class="dojo-panel__hint">
-                Each row is named by the target layout state. The left card is the minimal representative size in that
-                state; the right card is the maximal representative size before the next larger breakpoint. Compare
-                general, project, module, package, and Scala artefact boxes in one frozen diagram.
+                Layout states are arranged vertically and box types horizontally. Each matrix cell shows the minimal
+                representative size for general, project, module, package, and Scala artefact boxes.
               </p>
               <label class="dojo-panel__control dojo-panel__control--switch" for="dojo-breakpoint-linked-resize">
                 <span class="dojo-panel__label">Linked resize</span>

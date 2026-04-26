@@ -19,6 +19,8 @@ const MIN_STACK_BAND = 44
 
 const MODULE_W = 200
 const MODULE_H = 72
+const LEAF_MIN_W = 44
+const LEAF_MIN_H = 40
 const GROUP_MIN_W = 220
 const GROUP_MIN_H = 160
 
@@ -283,9 +285,9 @@ function requiredChildSize(child: any): { w: number; h: number } {
 function distributeColumnInners(maxD: number, usableW: number): number[] {
   const numCols = maxD + 1
   const gutter = Math.max(0, numCols - 1) * COLUMN_GUTTER
-  const spaceForTracks = Math.max(numCols * 64, usableW - gutter)
+  const spaceForTracks = Math.max(numCols * LEAF_MIN_W, usableW - gutter)
   const equalColW = spaceForTracks / numCols
-  const baseInner = Math.max(64, equalColW - 2 * COL_INSET)
+  const baseInner = Math.max(LEAF_MIN_W, equalColW - 2 * COL_INSET)
   const inner: number[] = []
   for (let d = 0; d <= maxD; d++) {
     inner[d] = baseInner
@@ -294,7 +296,7 @@ function distributeColumnInners(maxD: number, usableW: number): number[] {
   let st = sumTracks()
   if (st <= spaceForTracks + 0.5) return inner
 
-  const floorInner = 64
+  const floorInner = LEAF_MIN_W
   while (st > spaceForTracks + 0.5) {
     let pick = -1
     let best = -1
@@ -494,7 +496,7 @@ function layoutOneParent(
 
   const originX = parentId ? INNER_PAD_X : MARGIN_X
   const numCols = maxD + 1
-  const usableW = Math.max(numCols * 96, viewport.width - originX - MARGIN_X)
+  const usableW = Math.max(numCols * (LEAF_MIN_W + 2 * COL_INSET), viewport.width - originX - MARGIN_X)
   const columnInner = distributeColumnInners(maxD, usableW)
 
   let xCursor = originX
@@ -527,16 +529,12 @@ function layoutOneParent(
     )
     const numLeaves = visibleLayerNodes.reduce((s, c) => s + (isLeafBoxNode(c) ? 1 : 0), 0)
     const remainingH = Math.max(0, stackBand - sumGroupH - totalGaps)
-    const minLeafH = visibleLayerNodes.reduce(
-      (m, c, i) => (isLeafBoxNode(c) ? Math.max(m, childSizes[i]!.h) : m),
-      44,
-    )
-    const leafH = numLeaves > 0 ? Math.max(minLeafH, remainingH / numLeaves) : Math.max(44, stackBand)
+    const leafH = numLeaves > 0 ? Math.max(LEAF_MIN_H, remainingH / numLeaves) : Math.max(LEAF_MIN_H, stackBand)
     const maxGroupChildW = visibleLayerNodes.reduce(
       (m, c, i) => (isLeafBoxNode(c) ? m : Math.max(m, childSizes[i]!.w)),
       0,
     )
-    const baseColW = Math.max(64, columnInner[d] ?? 64)
+    const baseColW = Math.max(LEAF_MIN_W, columnInner[d] ?? LEAF_MIN_W)
     const boxW = Math.max(baseColW, maxGroupChildW)
     const colTrackW = boxW + 2 * COL_INSET
 
@@ -665,7 +663,7 @@ export function dependencyDepthsInRegion(
 /** Match `layoutOneParent` horizontal spacing (box sits inside track with COL_INSET padding). */
 const DRILL_COL_INSET = COL_INSET
 const DRILL_COLUMN_GUTTER = COLUMN_GUTTER
-const DRILL_MIN_BOX_W = 40
+const DRILL_MIN_BOX_W = LEAF_MIN_W
 
 export type LayerDrillLayoutRect = {
   position: { x: number; y: number }
@@ -1285,9 +1283,9 @@ export function focusedModuleWidthForDrill(
   const originX = parentNode ? INNER_PAD_X : MARGIN_X
   const marginX = parentNode ? INNER_PAD_X : MARGIN_X
   const vp: ViewportSize = { width: innerW, height: viewportRoot.height }
-  const usableW = Math.max(numCols * 96, vp.width - originX - marginX)
+  const usableW = Math.max(numCols * (LEAF_MIN_W + 2 * COL_INSET), vp.width - originX - marginX)
   const colW = (usableW - Math.max(0, numCols - 1) * COLUMN_GUTTER) / numCols
-  const colInnerW = Math.max(64, colW - 2 * COL_INSET)
+  const colInnerW = Math.max(LEAF_MIN_W, colW - 2 * COL_INSET)
   const span = Math.min(vp.width - originX - marginX - 8, colInnerW * 3.15 + COLUMN_GUTTER)
   const preferred =
     preferredWidth ??
@@ -1412,7 +1410,7 @@ export function layoutDepthInViewport(
    */
   const singletonRootLeaf = topVisible.length === 1 && isLeafBoxNode(topVisible[0]!) ? topVisible[0]! : null
   if (singletonRootLeaf) {
-    const innerW = Math.max(64, viewport.width - 2 * MARGIN_X)
+    const innerW = Math.max(LEAF_MIN_W, viewport.width - 2 * MARGIN_X)
     const innerH = Math.max(80, viewport.height - 2 * MARGIN_Y)
     const idx = out.findIndex((n) => n.id === singletonRootLeaf.id)
     if (idx !== -1) {
@@ -1513,8 +1511,8 @@ function lerp(min: number, preferred: number, t: number): number {
 }
 
 /**
- * Dedicated layout for the package-nesting dojo shape: a single-child chain of package containers
- * ending in one leaf package, with no dependency edges.
+ * Dedicated layout for a single-child chain of package containers ending in one leaf package,
+ * with no dependency edges.
  *
  * The generic dependency layout repeatedly rescales children from their current bounding boxes,
  * which compounds badly for deep chains (depth 11/12). Here we instead assign each level an
@@ -1582,16 +1580,14 @@ function relayoutNestedSingleChildPackageChainIntoBounds(
   const LEAF_PREFERRED_H = 96
   const LEAF_RENDER_MIN_W = 104
   const LEAF_RENDER_MIN_H = 132
-  const GROUP_RENDER_MIN_H = 96
-  const CHAIN_WIDTH_SAFETY = 0
-  const CHAIN_HEIGHT_SAFETY = 0
+  const CHAIN_WIDTH_SAFETY = 8
+  const CHAIN_HEIGHT_SAFETY = 8
   const SIDE_INSET_MIN = 0
   const SIDE_INSET_TARGET = 14
   const SIDE_INSET_MAX = 18
   const BOTTOM_INSET_MIN = 6
   const BOTTOM_INSET_TARGET = 12
   const BOTTOM_INSET_MAX = 14
-  const CHILD_PLACEMENT_SHIFT_MAX = 8
   const TOP_INSET_MIN = 10
   const TOP_INSET_TARGET = 36
   const TOP_INSET_MAX = 92
@@ -1599,47 +1595,56 @@ function relayoutNestedSingleChildPackageChainIntoBounds(
   const PARENT_HEADER_CLEARANCE_TARGET = 36
   const PARENT_HEADER_CLEARANCE_MAX = 96
 
+  const minimumSubtreeWidth = new Map<string, number>()
+  const minimumSubtreeHeight = new Map<string, number>()
   const preferredSubtreeWidth = new Map<string, number>()
   const preferredSubtreeHeight = new Map<string, number>()
 
-  preferredSubtreeWidth.set(terminalLeafId, LEAF_PREFERRED_W)
-  preferredSubtreeHeight.set(terminalLeafId, LEAF_PREFERRED_H)
+  minimumSubtreeWidth.set(terminalLeafId, LEAF_RENDER_MIN_W)
+  minimumSubtreeHeight.set(terminalLeafId, LEAF_RENDER_MIN_H)
+  preferredSubtreeWidth.set(terminalLeafId, Math.max(LEAF_PREFERRED_W, LEAF_RENDER_MIN_W))
+  preferredSubtreeHeight.set(terminalLeafId, Math.max(LEAF_PREFERRED_H, LEAF_RENDER_MIN_H))
 
   for (let i = groupChain.length - 1; i >= 0; i--) {
     const nodeId = groupChain[i]!
     const childId = i + 1 < groupChain.length ? groupChain[i + 1]! : terminalLeafId
+    const childIsTerminalLeaf = childId === terminalLeafId
+    const rootHeaderBoost = i === 0 ? 42 : 0
+    const childMinimumWidth = minimumSubtreeWidth.get(childId) ?? LEAF_RENDER_MIN_W
+    const childMinimumHeight = minimumSubtreeHeight.get(childId) ?? LEAF_RENDER_MIN_H
     const childPreferredWidth = preferredSubtreeWidth.get(childId) ?? LEAF_PREFERRED_W
     const childPreferredHeight = preferredSubtreeHeight.get(childId) ?? LEAF_PREFERRED_H
-    const preferredTopInset = Math.max(TOP_INSET_TARGET, PARENT_HEADER_CLEARANCE_TARGET)
+    const minTopInset = Math.max(TOP_INSET_MIN, PARENT_HEADER_CLEARANCE_MIN) + rootHeaderBoost
+    const preferredTopInset = Math.max(TOP_INSET_TARGET, PARENT_HEADER_CLEARANCE_TARGET) + rootHeaderBoost
+    const terminalLeafHeightSafety = childIsTerminalLeaf ? 64 : 20
+    minimumSubtreeWidth.set(nodeId, childMinimumWidth + 2 * SIDE_INSET_MIN + CHAIN_WIDTH_SAFETY)
+    minimumSubtreeHeight.set(
+      nodeId,
+      childMinimumHeight + minTopInset + BOTTOM_INSET_MIN + CHAIN_HEIGHT_SAFETY + terminalLeafHeightSafety,
+    )
     preferredSubtreeWidth.set(nodeId, childPreferredWidth + 2 * SIDE_INSET_TARGET + CHAIN_WIDTH_SAFETY)
     preferredSubtreeHeight.set(
       nodeId,
-      childPreferredHeight + preferredTopInset + BOTTOM_INSET_TARGET + CHAIN_HEIGHT_SAFETY,
+      childPreferredHeight + preferredTopInset + BOTTOM_INSET_TARGET + CHAIN_HEIGHT_SAFETY + terminalLeafHeightSafety,
     )
   }
 
-  writeNodeRect(out, rootGroupId, root.position ?? { x: 0, y: 0 }, { width: bounds.width, height: bounds.height })
+  const rootWidth = Math.max(bounds.width, minimumSubtreeWidth.get(rootGroupId) ?? GROUP_MIN_W)
+  const rootHeight = Math.max(bounds.height, minimumSubtreeHeight.get(rootGroupId) ?? GROUP_MIN_H)
+  writeNodeRect(out, rootGroupId, root.position ?? { x: 0, y: 0 }, { width: rootWidth, height: rootHeight })
 
-  let parentWidth = bounds.width
-  let parentHeight = bounds.height
+  let parentWidth = rootWidth
+  let parentHeight = rootHeight
   for (let i = 0; i < groupChain.length; i++) {
     const childId = i + 1 < groupChain.length ? groupChain[i + 1]! : terminalLeafId
     const childIsTerminalLeaf = childId === terminalLeafId
     const rootHeaderBoost = i === 0 ? 42 : 0
+    const childMinimumWidth = minimumSubtreeWidth.get(childId) ?? LEAF_RENDER_MIN_W
+    const childMinimumHeight = minimumSubtreeHeight.get(childId) ?? LEAF_RENDER_MIN_H
     const childPreferredWidth = preferredSubtreeWidth.get(childId) ?? LEAF_PREFERRED_W
     const childPreferredHeight = preferredSubtreeHeight.get(childId) ?? LEAF_PREFERRED_H
-    const descendantDepth = groupChain.length - i - 1
-    const childRenderableMinWidth =
-      LEAF_RENDER_MIN_W + descendantDepth * (2 * SIDE_INSET_MIN + CHAIN_WIDTH_SAFETY)
-    const childBaseMinHeight = childIsTerminalLeaf ? LEAF_RENDER_MIN_H : GROUP_RENDER_MIN_H
-    const childRenderableMinHeight =
-      childBaseMinHeight +
-      descendantDepth *
-        (Math.max(TOP_INSET_MIN, PARENT_HEADER_CLEARANCE_MIN) +
-          BOTTOM_INSET_MIN +
-          CHAIN_HEIGHT_SAFETY)
 
-    const minParentWidth = childRenderableMinWidth + 2 * SIDE_INSET_MIN + CHAIN_WIDTH_SAFETY
+    const minParentWidth = childMinimumWidth + 2 * SIDE_INSET_MIN + CHAIN_WIDTH_SAFETY
     const preferredParentWidth = childPreferredWidth + 2 * SIDE_INSET_TARGET + CHAIN_WIDTH_SAFETY
     const widthPressure = clamp01(
       preferredParentWidth <= minParentWidth
@@ -1651,16 +1656,17 @@ function relayoutNestedSingleChildPackageChainIntoBounds(
     )
     const maxSideInsetForFit = Math.max(
       SIDE_INSET_MIN,
-      Math.floor((parentWidth - childRenderableMinWidth - CHAIN_WIDTH_SAFETY) / 2),
+      Math.floor((parentWidth - childMinimumWidth - CHAIN_WIDTH_SAFETY) / 2),
     )
     const sideInset = Math.max(SIDE_INSET_MIN, Math.min(preferredSideInset, maxSideInsetForFit))
 
     const minTopInset = Math.max(TOP_INSET_MIN, PARENT_HEADER_CLEARANCE_MIN) + rootHeaderBoost
     const preferredTopInset = Math.max(TOP_INSET_TARGET, PARENT_HEADER_CLEARANCE_TARGET) + rootHeaderBoost
+    const terminalLeafHeightSafety = childIsTerminalLeaf ? 64 : 20
     const minParentHeight =
-      childRenderableMinHeight + minTopInset + BOTTOM_INSET_MIN + CHAIN_HEIGHT_SAFETY
+      childMinimumHeight + minTopInset + BOTTOM_INSET_MIN + CHAIN_HEIGHT_SAFETY + terminalLeafHeightSafety
     const preferredParentHeight =
-      childPreferredHeight + preferredTopInset + BOTTOM_INSET_TARGET + CHAIN_HEIGHT_SAFETY
+      childPreferredHeight + preferredTopInset + BOTTOM_INSET_TARGET + CHAIN_HEIGHT_SAFETY + terminalLeafHeightSafety
     const heightPressure = clamp01(
       preferredParentHeight <= minParentHeight
         ? 1
@@ -1678,7 +1684,7 @@ function relayoutNestedSingleChildPackageChainIntoBounds(
     )
     const maxInsetBudget = Math.max(
       minTopInset + BOTTOM_INSET_MIN,
-      parentHeight - childRenderableMinHeight - CHAIN_HEIGHT_SAFETY,
+      parentHeight - childMinimumHeight - CHAIN_HEIGHT_SAFETY - terminalLeafHeightSafety,
     )
     const clampedInsetBudget = Math.max(minTopInset + BOTTOM_INSET_MIN, maxInsetBudget)
     const preferredInsetBudget = preferredParentHeaderClearance + preferredBottomInset
@@ -1691,31 +1697,24 @@ function relayoutNestedSingleChildPackageChainIntoBounds(
       minTopInset,
       Math.min(TOP_INSET_MAX, insetBudget - bottomInset),
     )
-    const terminalLeafHeightSafety = childIsTerminalLeaf ? 64 : 20
-
-    const childWidth = Math.max(
-      childRenderableMinWidth,
-      Math.min(parentWidth, parentWidth - sideInset * 2 - CHAIN_WIDTH_SAFETY),
+    /**
+     * The root grows to satisfy `minimumSubtree*`, so this available inner rectangle is large
+     * enough for the child minimum while still filling any extra space from the visible viewport.
+     */
+    const childX = sideInset
+    const childY = topInset
+    const maxChildWidth = Math.max(1, parentWidth - childX - sideInset - CHAIN_WIDTH_SAFETY)
+    const maxChildHeight = Math.max(
+      1,
+      parentHeight - childY - bottomInset - CHAIN_HEIGHT_SAFETY - terminalLeafHeightSafety,
     )
-    const childHeight = Math.max(
-      childRenderableMinHeight,
-      Math.min(
-        parentHeight,
-        parentHeight - topInset - bottomInset - CHAIN_HEIGHT_SAFETY - terminalLeafHeightSafety,
-      ),
-    )
-
-    const actualBottomSlack =
-      parentHeight - topInset - childHeight - CHAIN_HEIGHT_SAFETY - terminalLeafHeightSafety
-    const childPlacementShift = Math.max(
-      0,
-      Math.min(CHILD_PLACEMENT_SHIFT_MAX, actualBottomSlack - BOTTOM_INSET_MIN),
-    )
+    const childWidth = Math.max(childMinimumWidth, maxChildWidth)
+    const childHeight = Math.max(childMinimumHeight, maxChildHeight)
 
     writeNodeRect(
       out,
       childId,
-      { x: sideInset, y: topInset + childPlacementShift },
+      { x: childX, y: childY },
       { width: childWidth, height: childHeight },
     )
     parentWidth = childWidth

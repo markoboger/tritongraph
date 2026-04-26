@@ -200,8 +200,7 @@ export interface IlographResource {
   'x-triton-project-compartments'?: readonly BoxCompartment[]
   /**
    * Non-standard: preferred compact leaf height for this resource in the dependency layout.
-   * Used by stress-test dojos and future box variants that can stay readable in a shorter row,
-   * so the layout can reduce intra-box bottom slack before the viewport camera starts zooming out.
+   * Use sparingly for real document resources whose semantic box variant has a stable preferred row height.
    */
   'x-triton-preferred-leaf-height'?: number
 }
