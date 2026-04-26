@@ -41,7 +41,6 @@ const LEAF_MIN_LAYOUT_H = 40
 const PACKAGE_SCOPE_GROUP_MIN_LAYOUT_H = 40
 const OTHER_GROUP_MIN_LAYOUT_H = 76
 const CROSS_PACKAGE_PREVIEW_LAYOUT_H = 400
-const RELATION_FOCUS_PACKAGE_LAYOUT_H = 360
 
 /** Subpixel / border slack so a graph that visually fits does not enable pan rails. */
 const PAN_RAIL_FIT_SLACK_PX = 8
@@ -374,6 +373,7 @@ function applyPackageRelationFocusVisibility(): boolean {
       delete data.__packageRelationFocusBasePreferredLeafHeight
       delete data.__packageRelationFocusBasePreferredGroupHeight
       delete data.__crossPackageFocus
+      delete data.__relationFocusPackage
       if (typeof basePreferredLeafHeight === 'number') {
         data.preferredLeafHeight = basePreferredLeafHeight
       } else {
@@ -393,6 +393,11 @@ function applyPackageRelationFocusVisibility(): boolean {
     const crossPackageFocus = !!focusState && visibleIds.has(String(n.id)) && String(n.id) !== focusState.focusedNodeId
     const hasInnerArtefactPreview =
       Array.isArray(data.innerArtefacts) && (data.innerArtefacts as unknown[]).length > 0
+    if (crossPackageFocus && String(n.type ?? '') === 'package') {
+      data.__relationFocusPackage = true
+    } else {
+      delete data.__relationFocusPackage
+    }
     if (crossPackageFocus && hasInnerArtefactPreview) {
       data.__crossPackageFocus = true
       data.preferredLeafHeight = Math.max(
@@ -411,12 +416,7 @@ function applyPackageRelationFocusVisibility(): boolean {
       } else {
         delete data.preferredLeafHeight
       }
-      if (crossPackageFocus && data.packageScope === true) {
-        data.preferredGroupHeight = Math.max(
-          typeof basePreferredGroupHeight === 'number' ? basePreferredGroupHeight : 0,
-          RELATION_FOCUS_PACKAGE_LAYOUT_H,
-        )
-      } else if (typeof basePreferredGroupHeight === 'number') {
+      if (typeof basePreferredGroupHeight === 'number') {
         data.preferredGroupHeight = basePreferredGroupHeight
       } else {
         delete data.preferredGroupHeight
@@ -429,6 +429,7 @@ function applyPackageRelationFocusVisibility(): boolean {
       data.__packageRelationFocusBasePreferredLeafHeight === basePreferredLeafHeight &&
       data.__packageRelationFocusBasePreferredGroupHeight === basePreferredGroupHeight &&
       ((n.data ?? {}) as Record<string, unknown>).__crossPackageFocus === data.__crossPackageFocus &&
+      ((n.data ?? {}) as Record<string, unknown>).__relationFocusPackage === data.__relationFocusPackage &&
       ((n.data ?? {}) as Record<string, unknown>).preferredLeafHeight === data.preferredLeafHeight &&
       ((n.data ?? {}) as Record<string, unknown>).preferredGroupHeight === data.preferredGroupHeight
     ) return n
@@ -593,15 +594,21 @@ async function relayoutViewport(opts?: { skipDrillReapply?: boolean }) {
   await nextTick()
   await doubleRaf()
   const vp = readFlowViewport()
-  nodes.value = layoutDepthInViewport(nodes.value, edges.value, vp)
-  edges.value = mergeEdgeHiddenForInvisibleEndpoints(
-    routeSmoothstepEdgesInViewport(nodes.value, edges.value, vp),
-    nodes.value,
+  const laidOut = layoutDepthInViewport(nodes.value, edges.value, vp)
+  const routedEdges = mergeEdgeHiddenForInvisibleEndpoints(
+    routeSmoothstepEdgesInViewport(laidOut, edges.value, vp),
+    laidOut,
     {
       hideEdgeForRelation: (e) => shouldHideEdgeForRelationFilter(e, props.relationTypeVisibility),
     },
   )
-  nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
+  const alignedNodes = applyHandleAnchorAlignment(laidOut, routedEdges)
+  nodes.value = alignedNodes
+  edges.value = routedEdges
+  setNodes(alignedNodes)
+  setEdges(routedEdges)
+  await nextTick()
+  updateNodeInternals()
   void nextTick(() => syncEdgeVisualState())
   /**
    * Re-apply an active layer drill against the new viewport. Without this, the drill geometry
@@ -974,6 +981,7 @@ function nodeViewportStabilizerToken(n: any): string {
     innerFocus,
     drillPath,
     d.__crossPackageFocus === true ? 1 : 0,
+    d.__relationFocusPackage === true ? 1 : 0,
     flipStr,
   ].join(':')
 }

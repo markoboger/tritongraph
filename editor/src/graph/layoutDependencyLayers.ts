@@ -65,6 +65,12 @@ function nodeIsPackageScopeGroup(node: { type?: string; data?: unknown }): boole
   return !!(d && typeof d === 'object' && (d as Record<string, unknown>).packageScope === true)
 }
 
+function nodeIsRelationFocusPackage(node: { type?: string; data?: unknown }): boolean {
+  if (String(node.type ?? '') !== 'package') return false
+  const d = node.data
+  return !!(d && typeof d === 'object' && (d as Record<string, unknown>).__relationFocusPackage === true)
+}
+
 /**
  * Fit natural column heights into `avail` vertical pixels with per-row minimums, keeping taller
  * rows proportionally larger when possible.
@@ -476,18 +482,19 @@ function layoutOneParent(
 ): void {
   const children = out.filter((n) => (parentId ? String(n.parentNode) === parentId : !n.parentNode))
   if (!children.length) return
+  const visibleChildren = children.filter((n) => !(n as { hidden?: boolean }).hidden)
 
   // Pre-build id→index map so all findIndex calls below are O(1) instead of O(n).
   // Elements are replaced in-place (out[idx] = {...}), so indices stay stable.
   const outIdxById = new Map<string, number>(out.map((n, i) => [String(n.id), i]))
 
-  const childIds = new Set(children.map((c) => c.id))
+  const childIds = new Set(visibleChildren.map((c) => c.id))
   const internal = edges.filter(
     (e) => childIds.has(e.source) && childIds.has(e.target) && edgeContributesToClasspathDepth(e),
   )
   const depths = computeLayerDepths(childIds, internal)
 
-  for (const c of children) {
+  for (const c of visibleChildren) {
     if (!internal.some((e) => e.source === c.id || e.target === c.id)) {
       depths.set(c.id, 0)
     }
@@ -496,7 +503,7 @@ function layoutOneParent(
   const maxD = depths.size ? Math.max(0, ...depths.values()) : 0
   const byDepth = new Map<number, typeof children>()
   for (let d = 0; d <= maxD; d++) byDepth.set(d, [])
-  for (const c of children) {
+  for (const c of visibleChildren) {
     const d = Math.min(maxD, Math.max(0, depths.get(c.id) ?? 0))
     byDepth.get(d)!.push(c)
   }
@@ -555,6 +562,7 @@ function layoutOneParent(
     const slotHeights: number[] = visibleLayerNodes.map((node, i) => {
       if (!isLeafBoxNode(node)) return childSizes[i]!.h
       const preferredH = childSizes[i]!.h
+      if (nodeIsRelationFocusPackage(node)) return leafH
       return preferredH > MODULE_H ? Math.max(leafH, preferredH) : leafH
     })
     if (numLeaves === 0 && n > 0) {
@@ -624,10 +632,31 @@ function layoutOneParent(
     xCursor += colTrackW + COLUMN_GUTTER
   }
 
+  for (const node of children) {
+    if (!(node as { hidden?: boolean }).hidden) continue
+    const idx = outIdxById.get(String(node.id)) ?? -1
+    if (idx === -1) continue
+    const prevStyle = out[idx].style && typeof out[idx].style === 'object' ? { ...out[idx].style } : {}
+    out[idx] = {
+      ...out[idx],
+      position: { x: originX, y: stackTop },
+      width: 1,
+      height: 1,
+      style: {
+        ...prevStyle,
+        width: '1px',
+        height: '1px',
+        opacity: 0,
+        pointerEvents: 'none',
+      },
+    }
+  }
+
   if (parentId) {
     let maxR = 0
     let maxB = 0
     for (const c of children) {
+      if ((c as { hidden?: boolean }).hidden) continue
       const n = out[outIdxById.get(String(c.id)) ?? -1]
       if (!n) continue
       const { w, h } = sizeOf(n)
