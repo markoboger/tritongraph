@@ -137,6 +137,7 @@ const examplesMenu = ref<HTMLDetailsElement | null>(null)
 /** Checked relation types are visible (`false` means hidden). Synced from current edges’ labels. */
 const relationTypeVisibility = ref<Record<string, boolean>>({})
 const metricTooltipsEnabled = ref(false)
+const focusRelationDepth = ref(1)
 const metricVisibility = ref<Record<'coverage' | 'debt' | 'issues', boolean>>({
   coverage: true,
   debt: false,
@@ -531,6 +532,7 @@ const activeExample = computed<{ root: string; dir: string } | null>(() => {
 provide('tritonActiveExample', activeExample)
 provide('tritonRelationTypeVisibility', relationTypeVisibility)
 provide('tritonMetricTooltipsEnabled', metricTooltipsEnabled)
+provide('tritonFocusRelationDepth', focusRelationDepth)
 provide('tritonMetricVisibility', metricVisibility)
 
 const nodeTypes = {
@@ -3214,9 +3216,11 @@ onUnmounted(() => {
           :relation-types="relationTypesList"
           :relation-type-visibility="relationTypeVisibility"
           :metric-tooltips-enabled="metricTooltipsEnabled"
+          :focus-relation-depth="focusRelationDepth"
           :metric-visibility="metricVisibility"
           @update:relation-type-visible="setRelationTypeVisible"
           @update:metric-tooltips-enabled="(v) => (metricTooltipsEnabled = v)"
+          @update:focus-relation-depth="(v) => (focusRelationDepth = v)"
           @update:metric-visible="
             (metricKey, visible) => (metricVisibility = { ...metricVisibility, [metricKey]: visible })
           "
@@ -3245,6 +3249,7 @@ onUnmounted(() => {
           :node-types="nodeTypes"
           :relation-type-visibility="relationTypeVisibility"
           :abstraction-dojo-resize="abstractionDojoResizeForGraph"
+          :focus-relation-depth="focusRelationDepth"
           :nodes-draggable="
             activeTab?.key === `dojo:${ABSTRACTION_LAYERS_DOJO_ID}` ||
             activeTab?.key === `dojo:${BREAKPOINT_LAYOUTS_DOJO_ID}`

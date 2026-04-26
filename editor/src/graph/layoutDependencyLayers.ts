@@ -240,9 +240,11 @@ function sizeOf(n: {
     return { w: MODULE_W, h: preferredLeafHeight(n) }
   }
   if (n.type === 'group') {
+    const styleH = Number(n.style?.height)
+    const preferredH = preferredGroupHeight(n)
     return {
       w: Number(n.style?.width) || GROUP_MIN_W,
-      h: Number(n.style?.height) || GROUP_MIN_H,
+      h: Math.max(Number.isFinite(styleH) && styleH > 0 ? styleH : GROUP_MIN_H, preferredH ?? GROUP_MIN_H),
     }
   }
   return { w: MODULE_W, h: MODULE_H }
@@ -254,6 +256,14 @@ function preferredLeafHeight(n: { data?: unknown }): number {
       ? (n.data as Record<string, unknown>).preferredLeafHeight
       : undefined
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : MODULE_H
+}
+
+function preferredGroupHeight(n: { data?: unknown }): number | null {
+  const raw =
+    n.data && typeof n.data === 'object'
+      ? (n.data as Record<string, unknown>).preferredGroupHeight
+      : undefined
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null
 }
 
 /**
@@ -275,9 +285,10 @@ function requiredChildSize(child: any): { w: number; h: number } {
   if (isLeafBoxNode(child)) return { w: MODULE_W, h: preferredLeafHeight(child) }
   const w = Number(child.style?.width)
   const h = Number(child.style?.height)
+  const preferredH = preferredGroupHeight(child)
   return {
     w: Number.isFinite(w) && w > 0 ? w : GROUP_MIN_W,
-    h: Number.isFinite(h) && h > 0 ? h : GROUP_MIN_H,
+    h: Math.max(Number.isFinite(h) && h > 0 ? h : GROUP_MIN_H, preferredH ?? GROUP_MIN_H),
   }
 }
 
@@ -541,9 +552,11 @@ function layoutOneParent(
     const colTrackW = boxW + 2 * COL_INSET
 
     /** Per-row pixel height for this column (groups may shrink to fit the stack band). */
-    const slotHeights: number[] = visibleLayerNodes.map((node, i) =>
-      isLeafBoxNode(node) ? leafH : childSizes[i]!.h,
-    )
+    const slotHeights: number[] = visibleLayerNodes.map((node, i) => {
+      if (!isLeafBoxNode(node)) return childSizes[i]!.h
+      const preferredH = childSizes[i]!.h
+      return preferredH > MODULE_H ? Math.max(leafH, preferredH) : leafH
+    })
     if (numLeaves === 0 && n > 0) {
       const sumSlots = slotHeights.reduce((a, b) => a + b, 0) + totalGaps
       if (sumSlots > stackBand) {

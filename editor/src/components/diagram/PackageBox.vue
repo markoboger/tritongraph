@@ -196,6 +196,7 @@ const relationTypeVisibilityRef = inject<Ref<Record<string, boolean>>>(
   'tritonRelationTypeVisibility',
   ref({}),
 )
+const focusRelationDepthRef = inject<Ref<number>>('tritonFocusRelationDepth', ref(1))
 
 const {
   innerCoverageVersion,
@@ -301,6 +302,7 @@ const {
   crossArtefactRelations: () => props.crossArtefactRelations,
   focusedInnerArtefactId: () => props.focusedInnerArtefactId ?? null,
   globalFocusedArtefactId: () => props.globalFocusedArtefactId ?? null,
+  focusRelationDepth: () => focusRelationDepthRef.value,
 })
 
 /** Relations currently visible in the UI after applying the relation-type checkboxes. */
@@ -434,6 +436,8 @@ watch(innerDrillPathArr, (p, prev) => {
 })
 
 watch(crossPackagePreviewActive, () => void nextTick(() => scheduleInnerEdgeRefreshSettled()))
+
+watch(focusRelationDepthRef, () => void nextTick(() => scheduleInnerEdgeRefreshSettled()))
 
 watch(innerDiagramColsRef, () => void nextTick(() => updateInnerScrollMetrics()))
 

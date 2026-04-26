@@ -10,6 +10,65 @@ type InnerArtefactLayeringOptions = {
   crossArtefactRelations: () => readonly TritonInnerArtefactRelationSpec[]
   focusedInnerArtefactId: () => string | null | undefined
   globalFocusedArtefactId: () => string | null | undefined
+  focusRelationDepth: () => number
+}
+
+function normalizedFocusDepth(value: number): number {
+  return Number.isFinite(value) ? Math.max(1, Math.min(3, Math.round(value))) : 1
+}
+
+function directedRelationNeighborhood(
+  seeds: { outgoing: Iterable<string>; incoming: Iterable<string> },
+  rels: readonly TritonInnerArtefactRelationSpec[],
+  maxDepth: number,
+): Set<string> {
+  const depth = Number.isFinite(maxDepth) ? Math.max(0, Math.min(3, Math.round(maxDepth))) : 1
+  const visible = new Set<string>()
+  const outgoing = new Map<string, Set<string>>()
+  const incoming = new Map<string, Set<string>>()
+  const ensure = (map: Map<string, Set<string>>, id: string) => {
+    let next = map.get(id)
+    if (!next) {
+      next = new Set<string>()
+      map.set(id, next)
+    }
+    return next
+  }
+
+  for (const rel of rels) {
+    if (!rel.from || !rel.to) continue
+    ensure(outgoing, rel.from).add(rel.to)
+    ensure(incoming, rel.to).add(rel.from)
+    ensure(outgoing, rel.to)
+    ensure(incoming, rel.from)
+  }
+
+  const visit = (seedIds: Iterable<string>, map: Map<string, Set<string>>) => {
+    const frontier: string[] = []
+    const distance = new Map<string, number>()
+    for (const id of seedIds) {
+      if (!id) continue
+      visible.add(id)
+      frontier.push(id)
+      distance.set(id, 0)
+    }
+
+    for (let i = 0; i < frontier.length; i++) {
+      const id = frontier[i]!
+      const currentDepth = distance.get(id) ?? 0
+      if (currentDepth >= depth) continue
+      for (const next of map.get(id) ?? []) {
+        if (distance.has(next)) continue
+        visible.add(next)
+        distance.set(next, currentDepth + 1)
+        frontier.push(next)
+      }
+    }
+  }
+
+  visit(seeds.outgoing, outgoing)
+  visit(seeds.incoming, incoming)
+  return visible
 }
 
 export function useInnerArtefactLayering(options: InnerArtefactLayeringOptions) {
@@ -27,36 +86,31 @@ export function useInnerArtefactLayering(options: InnerArtefactLayeringOptions) 
     const innerArtefacts = options.innerArtefacts()
     const localIds = new Set(innerArtefacts.map((a) => a.id))
     const focusedInnerArtefactId = options.focusedInnerArtefactId()
+    const focusDepth = normalizedFocusDepth(options.focusRelationDepth())
 
     if (innerArtefactFocusActive.value && focusedInnerArtefactId) {
-      const direct = new Set<string>([focusedInnerArtefactId])
-      for (const rel of rels) {
-        if (rel.from === focusedInnerArtefactId) direct.add(rel.to)
-        if (rel.to === focusedInnerArtefactId) direct.add(rel.from)
-      }
-      const visible = new Set(direct)
-      for (const rel of rels) {
-        if (direct.has(rel.from)) visible.add(rel.to)
-        if (direct.has(rel.to)) visible.add(rel.from)
-      }
-      return visible
+      return directedRelationNeighborhood(
+        { outgoing: [focusedInnerArtefactId], incoming: [focusedInnerArtefactId] },
+        rels,
+        focusDepth,
+      )
     }
 
     const globalId = options.globalFocusedArtefactId()
     if (globalId && !localIds.has(globalId)) {
       const crossRels = options.crossArtefactRelations()
-      const locallyConnected = new Set<string>()
+      const outgoingSeeds = new Set<string>()
+      const incomingSeeds = new Set<string>()
       for (const rel of crossRels) {
-        if (rel.from === globalId && localIds.has(rel.to)) locallyConnected.add(rel.to)
-        if (rel.to === globalId && localIds.has(rel.from)) locallyConnected.add(rel.from)
+        if (rel.from === globalId && localIds.has(rel.to)) outgoingSeeds.add(rel.to)
+        if (rel.to === globalId && localIds.has(rel.from)) incomingSeeds.add(rel.from)
       }
-      if (!locallyConnected.size) return null
-      const visible = new Set(locallyConnected)
-      for (const rel of rels) {
-        if (locallyConnected.has(rel.from)) visible.add(rel.to)
-        if (locallyConnected.has(rel.to)) visible.add(rel.from)
-      }
-      return visible
+      if (!outgoingSeeds.size && !incomingSeeds.size) return null
+      return directedRelationNeighborhood(
+        { outgoing: outgoingSeeds, incoming: incomingSeeds },
+        rels,
+        focusDepth - 1,
+      )
     }
 
     return null

@@ -5,12 +5,14 @@ defineProps<{
   relationTypes: readonly string[]
   relationTypeVisibility: Record<string, boolean>
   metricTooltipsEnabled: boolean
+  focusRelationDepth: number
   metricVisibility: Record<'coverage' | 'debt' | 'issues', boolean>
 }>()
 
 const emit = defineEmits<{
   'update:relation-type-visible': [relationKey: string, visible: boolean]
   'update:metric-tooltips-enabled': [visible: boolean]
+  'update:focus-relation-depth': [depth: number]
   'update:metric-visible': [metricKey: 'coverage' | 'debt' | 'issues', visible: boolean]
 }>()
 
@@ -31,6 +33,13 @@ function onTooltipToggle(ev: Event) {
 function onMetricToggle(metricKey: 'coverage' | 'debt' | 'issues', ev: Event) {
   const target = ev.target as HTMLInputElement | null
   emit('update:metric-visible', metricKey, !!target?.checked)
+}
+
+function onFocusDepthInput(ev: Event) {
+  const target = ev.target as HTMLInputElement | null
+  const raw = Number(target?.value ?? 1)
+  const depth = Number.isFinite(raw) ? Math.max(1, Math.min(3, Math.round(raw))) : 1
+  emit('update:focus-relation-depth', depth)
 }
 </script>
 
@@ -116,6 +125,21 @@ function onMetricToggle(metricKey: 'coverage' | 'debt' | 'issues', ev: Event) {
         />
         <span class="diagram-top-bar__check-text">Tooltips</span>
       </label>
+      <label
+        class="diagram-top-bar__focus-depth"
+        title="Relation distance shown around a focused Scala artefact"
+      >
+        <span class="diagram-top-bar__check-text">Focus depth {{ focusRelationDepth }}</span>
+        <input
+          type="range"
+          min="1"
+          max="3"
+          step="1"
+          :value="focusRelationDepth"
+          aria-label="Focus relation depth"
+          @input="onFocusDepthInput"
+        />
+      </label>
     </div>
   </div>
 </template>
@@ -197,6 +221,21 @@ function onMetricToggle(metricKey: 'coverage' | 'debt' | 'issues', ev: Event) {
 
 .diagram-top-bar__check-text {
   line-height: 1.2;
+}
+
+.diagram-top-bar__focus-depth {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  user-select: none;
+  white-space: nowrap;
+  font-size: 11px;
+  color: #334155;
+}
+
+.diagram-top-bar__focus-depth input {
+  width: 54px;
+  margin: 0;
 }
 
 .diagram-top-bar__sep {

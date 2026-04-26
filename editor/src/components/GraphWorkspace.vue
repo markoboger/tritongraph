@@ -40,6 +40,8 @@ const MODULE_LAYOUT_H = 72
 const LEAF_MIN_LAYOUT_H = 40
 const PACKAGE_SCOPE_GROUP_MIN_LAYOUT_H = 40
 const OTHER_GROUP_MIN_LAYOUT_H = 76
+const CROSS_PACKAGE_PREVIEW_LAYOUT_H = 400
+const RELATION_FOCUS_PACKAGE_LAYOUT_H = 360
 
 /** Subpixel / border slack so a graph that visually fits does not enable pan rails. */
 const PAN_RAIL_FIT_SLACK_PX = 8
@@ -54,10 +56,12 @@ const props = withDefaults(
     relationTypeVisibility?: Record<string, boolean>
     /** Abstraction dojo: show resize handles and optional linked resize across listed node ids. */
     abstractionDojoResize?: AbstractionDojoResizeConfig | null
+    /** Relation distance shown around a focused Scala artefact. */
+    focusRelationDepth?: number
     /** When true, nodes can be dragged on the pane (abstraction-layers dojo only). */
     nodesDraggable?: boolean
   }>(),
-  { nodesDraggable: false },
+  { focusRelationDepth: 1, nodesDraggable: false },
 )
 
 const emit = defineEmits<{
@@ -219,24 +223,36 @@ function mergeEdgeEmphClass(existing: string | undefined, emph: boolean): string
   return out || undefined
 }
 
+function normalizedFocusRelationDepth(): number {
+  const raw = Number(props.focusRelationDepth ?? 1)
+  return Number.isFinite(raw) ? Math.max(1, Math.min(3, Math.round(raw))) : 1
+}
+
 function packageFocusState() {
   for (const n of nodes.value) {
     const data = (n.data ?? {}) as Record<string, unknown>
     const focusedInnerArtefactId = typeof data.innerArtefactFocusId === 'string' ? data.innerArtefactFocusId : ''
-    if (!focusedInnerArtefactId) continue
-    const innerArtefacts = Array.isArray(data.innerArtefacts) ? data.innerArtefacts : []
-    const containerArtefactIds = new Set<string>()
-    for (const art of innerArtefacts) {
-      const id = art && typeof art === 'object' ? (art as Record<string, unknown>).id : undefined
-      if (typeof id === 'string' && id) containerArtefactIds.add(id)
-    }
-    if (!containerArtefactIds.size) containerArtefactIds.add(focusedInnerArtefactId)
-    return {
-      focusedNodeId: String(n.id),
-      focusedInnerArtefactId,
-      containerArtefactIds,
+    if (focusedInnerArtefactId) {
+      return {
+        focusedNodeId: String(n.id),
+        seedIds: [focusedInnerArtefactId],
+      }
     }
   }
+
+  for (const n of nodes.value) {
+    const data = (n.data ?? {}) as Record<string, unknown>
+    if (data.layerDrillFocus !== true) continue
+    const innerArtefacts = Array.isArray(data.innerArtefacts) ? data.innerArtefacts : []
+    const seedArtefactIds = innerArtefacts
+      .map((art) => (art && typeof art === 'object' ? (art as Record<string, unknown>).id : undefined))
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    return {
+      focusedNodeId: String(n.id),
+      seedIds: [String(n.id), ...seedArtefactIds],
+    }
+  }
+
   return null
 }
 
@@ -244,20 +260,79 @@ function computePackageRelationVisibleNodeIds(): Set<string> | null {
   const state = packageFocusState()
   if (!state) return null
 
-  const visible = new Set<string>([state.focusedNodeId])
+  const entityOwner = new Map<string, string>()
+  const outgoing = new Map<string, Set<string>>()
+  const incoming = new Map<string, Set<string>>()
+  const ensureAdjacency = (map: Map<string, Set<string>>, id: string) => {
+    let neighbors = map.get(id)
+    if (!neighbors) {
+      neighbors = new Set<string>()
+      map.set(id, neighbors)
+    }
+    return neighbors
+  }
+  const ensureEntity = (id: string) => {
+    ensureAdjacency(outgoing, id)
+    ensureAdjacency(incoming, id)
+  }
+  const addDirectedRelation = (from: string, to: string) => {
+    if (!from || !to) return
+    ensureAdjacency(outgoing, from).add(to)
+    ensureAdjacency(incoming, to).add(from)
+    ensureEntity(to)
+    ensureEntity(from)
+  }
+
   for (const n of nodes.value) {
+    const nodeId = String(n.id)
+    entityOwner.set(nodeId, nodeId)
+    ensureEntity(nodeId)
     const data = (n.data ?? {}) as Record<string, unknown>
+    const innerArtefacts = Array.isArray(data.innerArtefacts) ? data.innerArtefacts : []
+    for (const art of innerArtefacts) {
+      const id = art && typeof art === 'object' ? (art as Record<string, unknown>).id : undefined
+      if (typeof id === 'string' && id) {
+        entityOwner.set(id, nodeId)
+        ensureEntity(id)
+      }
+    }
+
     const cross = Array.isArray(data.crossArtefactRelations) ? data.crossArtefactRelations : []
     const inner = Array.isArray(data.innerArtefactRelations) ? data.innerArtefactRelations : []
-    const rels = [...cross, ...inner]
-    const touchesFocusedContainer = rels.some((rel) => {
-      if (!rel || typeof rel !== 'object') return false
+    for (const rel of [...cross, ...inner]) {
+      if (!rel || typeof rel !== 'object') continue
       const from = typeof (rel as Record<string, unknown>).from === 'string' ? String((rel as Record<string, unknown>).from) : ''
       const to = typeof (rel as Record<string, unknown>).to === 'string' ? String((rel as Record<string, unknown>).to) : ''
-      return state.containerArtefactIds.has(from) || state.containerArtefactIds.has(to)
-    })
-    if (touchesFocusedContainer) visible.add(String(n.id))
+      addDirectedRelation(from, to)
+    }
   }
+
+  for (const edge of edges.value) {
+    const source = edge && typeof edge === 'object' ? String((edge as Record<string, unknown>).source ?? '') : ''
+    const target = edge && typeof edge === 'object' ? String((edge as Record<string, unknown>).target ?? '') : ''
+    addDirectedRelation(source, target)
+  }
+
+  const visible = new Set<string>([state.focusedNodeId])
+  const maxDepth = normalizedFocusRelationDepth()
+  const visitDirectional = (map: Map<string, Set<string>>) => {
+    const frontier = [...state.seedIds]
+    const distances = new Map<string, number>(state.seedIds.map((id) => [id, 0]))
+    for (let i = 0; i < frontier.length; i++) {
+      const id = frontier[i]!
+      const owner = entityOwner.get(id)
+      if (owner) visible.add(owner)
+      const depth = distances.get(id) ?? 0
+      if (depth >= maxDepth) continue
+      for (const next of map.get(id) ?? []) {
+        if (distances.has(next)) continue
+        distances.set(next, depth + 1)
+        frontier.push(next)
+      }
+    }
+  }
+  visitDirectional(outgoing)
+  visitDirectional(incoming)
 
   let changed = true
   while (changed) {
@@ -276,6 +351,7 @@ function computePackageRelationVisibleNodeIds(): Set<string> | null {
 
 function applyPackageRelationFocusVisibility(): boolean {
   const visibleIds = computePackageRelationVisibleNodeIds()
+  const focusState = packageFocusState()
   let changed = false
   const nextNodes = nodes.value.map((n) => {
     const data = { ...((n.data ?? {}) as Record<string, unknown>) }
@@ -284,27 +360,89 @@ function applyPackageRelationFocusVisibility(): boolean {
       managed && typeof data.__packageRelationFocusBaseHidden === 'boolean'
         ? Boolean(data.__packageRelationFocusBaseHidden)
         : Boolean((n as { hidden?: boolean }).hidden)
+    const basePreferredLeafHeight = managed
+      ? data.__packageRelationFocusBasePreferredLeafHeight
+      : data.preferredLeafHeight
+    const basePreferredGroupHeight = managed
+      ? data.__packageRelationFocusBasePreferredGroupHeight
+      : data.preferredGroupHeight
 
     if (!visibleIds) {
       if (!managed) return n
       delete data.__packageRelationFocusManaged
       delete data.__packageRelationFocusBaseHidden
+      delete data.__packageRelationFocusBasePreferredLeafHeight
+      delete data.__packageRelationFocusBasePreferredGroupHeight
+      delete data.__crossPackageFocus
+      if (typeof basePreferredLeafHeight === 'number') {
+        data.preferredLeafHeight = basePreferredLeafHeight
+      } else {
+        delete data.preferredLeafHeight
+      }
+      if (typeof basePreferredGroupHeight === 'number') {
+        data.preferredGroupHeight = basePreferredGroupHeight
+      } else {
+        delete data.preferredGroupHeight
+      }
       changed = true
       return { ...n, hidden: baseHidden, data }
     }
 
     const shouldHide = !visibleIds.has(String(n.id))
     const newHidden = baseHidden || shouldHide
+    const crossPackageFocus = !!focusState && visibleIds.has(String(n.id)) && String(n.id) !== focusState.focusedNodeId
+    const hasInnerArtefactPreview =
+      Array.isArray(data.innerArtefacts) && (data.innerArtefacts as unknown[]).length > 0
+    if (crossPackageFocus && hasInnerArtefactPreview) {
+      data.__crossPackageFocus = true
+      data.preferredLeafHeight = Math.max(
+        typeof basePreferredLeafHeight === 'number' ? basePreferredLeafHeight : 0,
+        CROSS_PACKAGE_PREVIEW_LAYOUT_H,
+      )
+      if (typeof basePreferredGroupHeight === 'number') {
+        data.preferredGroupHeight = basePreferredGroupHeight
+      } else {
+        delete data.preferredGroupHeight
+      }
+    } else {
+      delete data.__crossPackageFocus
+      if (typeof basePreferredLeafHeight === 'number') {
+        data.preferredLeafHeight = basePreferredLeafHeight
+      } else {
+        delete data.preferredLeafHeight
+      }
+      if (crossPackageFocus && data.packageScope === true) {
+        data.preferredGroupHeight = Math.max(
+          typeof basePreferredGroupHeight === 'number' ? basePreferredGroupHeight : 0,
+          RELATION_FOCUS_PACKAGE_LAYOUT_H,
+        )
+      } else if (typeof basePreferredGroupHeight === 'number') {
+        data.preferredGroupHeight = basePreferredGroupHeight
+      } else {
+        delete data.preferredGroupHeight
+      }
+    }
     if (
       (n as { hidden?: boolean }).hidden === newHidden &&
       managed &&
-      data.__packageRelationFocusBaseHidden === baseHidden
+      data.__packageRelationFocusBaseHidden === baseHidden &&
+      data.__packageRelationFocusBasePreferredLeafHeight === basePreferredLeafHeight &&
+      data.__packageRelationFocusBasePreferredGroupHeight === basePreferredGroupHeight &&
+      ((n.data ?? {}) as Record<string, unknown>).__crossPackageFocus === data.__crossPackageFocus &&
+      ((n.data ?? {}) as Record<string, unknown>).preferredLeafHeight === data.preferredLeafHeight &&
+      ((n.data ?? {}) as Record<string, unknown>).preferredGroupHeight === data.preferredGroupHeight
     ) return n
     changed = true
     return {
       ...n,
       hidden: newHidden,
-      data: { ...data, __packageRelationFocusManaged: true, __packageRelationFocusBaseHidden: baseHidden },
+      data: {
+        ...data,
+        __packageRelationFocusManaged: true,
+        __packageRelationFocusBaseHidden: baseHidden,
+        __packageRelationFocusBasePreferredLeafHeight: basePreferredLeafHeight,
+        __packageRelationFocusBasePreferredGroupHeight: basePreferredGroupHeight,
+      },
     }
   })
 
@@ -319,8 +457,7 @@ async function applyPackageRelationFocusVisibilityAndRelayout() {
   packageFocusRelayoutQueued.value = true
   try {
     await nextTick()
-    /** Same camera rules as other relayouts — never a standalone zoom-out-to-whole-graph fit. */
-    await fitToViewport({ duration: 0 })
+    await relayoutViewport({ skipDrillReapply: true })
   } finally {
     packageFocusRelayoutQueued.value = false
   }
@@ -392,15 +529,16 @@ watch(
 watch(
   () => {
     // Only include nodes that carry inner-artefact data — skips the majority of nodes on each tick.
-    let sig = ''
+    let sig = `depth:${normalizedFocusRelationDepth()}|`
     for (const n of nodes.value) {
       const d = (n.data ?? {}) as Record<string, unknown>
       const focus = typeof d.innerArtefactFocusId === 'string' ? d.innerArtefactFocusId : ''
+      const layerFocus = d.layerDrillFocus === true ? 1 : 0
       const innerArts = Array.isArray(d.innerArtefacts) ? d.innerArtefacts.length : 0
       const cross = Array.isArray(d.crossArtefactRelations) ? d.crossArtefactRelations.length : 0
       const inner = Array.isArray(d.innerArtefactRelations) ? d.innerArtefactRelations.length : 0
-      if (focus || innerArts || cross || inner)
-        sig += `${String(n.id)}:${focus}:${innerArts}:${cross}:${inner}|`
+      if (focus || layerFocus || innerArts || cross || inner)
+        sig += `${String(n.id)}:${focus}:${layerFocus}:${innerArts}:${cross}:${inner}|`
     }
     return sig
   },
