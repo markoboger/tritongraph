@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, useSlots, watch } from 'vue'
 import BoxMetricStrip from './BoxMetricStrip.vue'
-import { nextMetricsBreakLayout } from '../diagram/boxMetricBreakLayout'
-import { nextMetricsBreakSuperslim } from '../diagram/metricsBreakChromeLayout'
+import { nextCompactLayout, nextFlatLayout, nextMetricsBreakLayout, nextSuperflatLayout, nextSuperslimLayout } from '../diagram/boxChromeLayout'
 
 const props = defineProps<{
   accent: string
@@ -34,8 +33,11 @@ const rootEl = ref<HTMLElement | null>(null)
 const shellEl = ref<HTMLElement | null>(null)
 const titleEl = ref<HTMLElement | null>(null)
 const metricsBreakLayout = ref(false)
-const metricsBreakSuperslim = ref(false)
-const metricsBreakVerticalBody = ref(false)
+const superslimLayout = ref(false)
+const slimLayout = ref(false)
+const flatLayout = ref(false)
+const superflatLayout = ref(false)
+const compactLayout = ref(false)
 
 const hasMetricsChrome = computed(() => {
   if (props.hasCoverage) return true
@@ -46,14 +48,14 @@ const hasMetricsChrome = computed(() => {
 
 function syncMetricsBreakChrome(root: HTMLElement) {
   if (!metricsBreakLayout.value) {
-    metricsBreakSuperslim.value = false
-    metricsBreakVerticalBody.value = false
+    superslimLayout.value = false
+    slimLayout.value = false
     return
   }
   const w = root.clientWidth
-  metricsBreakSuperslim.value = nextMetricsBreakSuperslim(w, metricsBreakSuperslim.value)
-  if (metricsBreakSuperslim.value) {
-    metricsBreakVerticalBody.value = false
+  superslimLayout.value = nextSuperslimLayout(w, superslimLayout.value)
+  if (superslimLayout.value) {
+    slimLayout.value = false
     return
   }
   /**
@@ -61,36 +63,63 @@ function syncMetricsBreakChrome(root: HTMLElement) {
    * headline treatment as long Scala declaration subtitles; short subtitles rarely make the
    * body column taller than it is wide, so aspect-ratio heuristics never tripped for projects.
    */
-  metricsBreakVerticalBody.value = true
+  slimLayout.value = true
 }
 
 function measure() {
   const root = rootEl.value
   if (!root) {
     metricsBreakLayout.value = false
-    metricsBreakSuperslim.value = false
-    metricsBreakVerticalBody.value = false
+    superslimLayout.value = false
+    slimLayout.value = false
+    flatLayout.value = false
+    superflatLayout.value = false
+    compactLayout.value = false
+    return
+  }
+  const borderBoxWidth = Math.round(root.getBoundingClientRect().width)
+  superflatLayout.value = nextSuperflatLayout(borderBoxWidth, root.clientHeight, superflatLayout.value)
+  flatLayout.value = superflatLayout.value || nextFlatLayout(borderBoxWidth, root.clientHeight, flatLayout.value)
+  compactLayout.value = !flatLayout.value && nextCompactLayout(borderBoxWidth, root.clientHeight)
+  if (flatLayout.value) {
+    metricsBreakLayout.value = false
+    superslimLayout.value = false
+    slimLayout.value = false
+    return
+  }
+  if (compactLayout.value) {
+    metricsBreakLayout.value = false
+    superslimLayout.value = false
+    slimLayout.value = false
     return
   }
   if (!hasMetricsChrome.value) {
     metricsBreakLayout.value = false
-    metricsBreakSuperslim.value = false
-    metricsBreakVerticalBody.value = false
+    superslimLayout.value = false
+    slimLayout.value = false
+  } else {
+    metricsBreakLayout.value = nextMetricsBreakLayout(
+      root.clientWidth,
+      root.clientHeight,
+      metricsBreakLayout.value,
+    )
+    syncMetricsBreakChrome(root)
+  }
+  if (metricsBreakLayout.value) {
+    flatLayout.value = false
+    superflatLayout.value = false
+    compactLayout.value = false
     return
   }
-  metricsBreakLayout.value = nextMetricsBreakLayout(
-    root.clientWidth,
-    root.clientHeight,
-    metricsBreakLayout.value,
-  )
-  syncMetricsBreakChrome(root)
 }
 
 const showFocusedSubtitle = computed(() => {
-  if (metricsBreakSuperslim.value) return false
   const hasSub = !!(String(props.subtitle ?? '').trim() || slots.subtitle)
   if (!hasSub) return false
-  if (metricsBreakLayout.value && metricsBreakVerticalBody.value) return true
+  if (compactLayout.value) return false
+  if (superflatLayout.value) return false
+  if (superslimLayout.value) return false
+  if (metricsBreakLayout.value && slimLayout.value) return true
   return hasSub
 })
 
@@ -157,10 +186,12 @@ onUnmounted(() => {
       'general-focused-box--has-metrics':
         hasCoverage || technicalDebtPercent != null || issueCount != null,
       'general-focused-box--allow-overflow': allowOverflow,
+      'general-focused-box--flat-layout': flatLayout,
+      'general-focused-box--superflat-layout': superflatLayout,
+      'general-focused-box--compact-layout': compactLayout,
       'general-focused-box--metrics-break': metricsBreakLayout,
-      'general-focused-box--metrics-superslim': metricsBreakSuperslim,
-      'general-focused-box--metrics-break-vertical-body':
-        metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+      'general-focused-box--superslim-layout': superslimLayout,
+      'general-focused-box--slim-layout': metricsBreakLayout && !superslimLayout && slimLayout,
     }"
     :style="{ '--box-accent': accent }"
   >
@@ -212,19 +243,35 @@ onUnmounted(() => {
         <div class="general-focused-box__header-icon">
           <slot name="header-icon" />
         </div>
-        <div class="general-focused-box__head-text">
+        <div
+          class="general-focused-box__head-text"
+          :class="{ 'triton-vertical-rail-container': superslimLayout || (metricsBreakLayout && slimLayout) }"
+        >
           <div
             ref="titleEl"
             class="title title--header"
             :class="{
               'title--metrics-break-vertical':
-                metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+                metricsBreakLayout && !superslimLayout && slimLayout,
+              'triton-vertical-rail-text triton-vertical-title-rail':
+                superslimLayout || (metricsBreakLayout && slimLayout),
             }"
-            :title="titleTooltip || undefined"
+            :title="
+              superslimLayout || (metricsBreakLayout && slimLayout)
+                ? undefined
+                : titleTooltip || undefined
+            "
           >
             {{ title }}
           </div>
-          <div v-if="showFocusedSubtitle" class="subtitle subtitle--header">
+          <div
+            v-if="showFocusedSubtitle"
+            class="subtitle subtitle--header"
+            :class="{
+              'triton-vertical-rail-text triton-vertical-subtitle-rail':
+                superslimLayout || (metricsBreakLayout && slimLayout),
+            }"
+          >
             <slot name="subtitle">{{ subtitle }}</slot>
           </div>
         </div>
@@ -277,7 +324,7 @@ onUnmounted(() => {
   padding-top: clamp(28px, 6vmin, 44px);
 }
 
-.general-focused-box--has-metrics.general-focused-box--metrics-break.general-focused-box--metrics-superslim {
+.general-focused-box--has-metrics.general-focused-box--metrics-break.general-focused-box--superslim-layout {
   padding-top: clamp(28px, 6vmin, 44px);
 }
 
@@ -308,7 +355,7 @@ onUnmounted(() => {
   padding-right: clamp(44px, 10cqw, 104px);
 }
 
-.general-focused-box--metrics-break:not(.general-focused-box--metrics-superslim) .general-focused-box__header {
+.general-focused-box--metrics-break:not(.general-focused-box--superslim-layout) .general-focused-box__header {
   padding-top: clamp(2px, 0.5vmin, 6px);
 }
 
@@ -319,8 +366,140 @@ onUnmounted(() => {
   justify-content: flex-start;
 }
 
-.general-focused-box--metrics-break:not(.general-focused-box--metrics-superslim) .general-focused-box__header-icon,
-.general-focused-box--metrics-break.general-focused-box--metrics-superslim .general-focused-box__header-icon {
+.general-focused-box--flat-layout .general-focused-box__shell {
+  justify-content: center;
+  padding-top: 0;
+}
+
+.general-focused-box--has-metrics.general-focused-box--flat-layout {
+  padding-top: 12px;
+  padding-bottom: 2px;
+}
+
+.general-focused-box--flat-layout .general-focused-box__header {
+  align-items: center;
+  margin-bottom: 0;
+  gap: 8px;
+}
+
+.general-focused-box--flat-layout .general-focused-box__header-icon {
+  align-self: center;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+}
+
+.general-focused-box--flat-layout .general-focused-box__head-text {
+  justify-content: center;
+  text-align: left;
+  gap: 0;
+}
+
+.general-focused-box--flat-layout .title--header,
+.general-focused-box--flat-layout .subtitle--header {
+  text-align: left;
+  line-height: 1.05;
+}
+
+.general-focused-box--superflat-layout {
+  padding: 0;
+}
+
+.general-focused-box--has-metrics.general-focused-box--superflat-layout {
+  padding: 0;
+}
+
+.general-focused-box--superflat-layout .general-focused-box__shell {
+  padding-top: 0;
+}
+
+.general-focused-box--superflat-layout .general-focused-box__header {
+  margin-bottom: 0;
+  padding-right: 0;
+  gap: 0;
+}
+
+.general-focused-box--superflat-layout .general-focused-box__header-icon {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  align-self: stretch;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.general-focused-box--superflat-layout .general-focused-box__header-icon :deep(.lang-svg),
+.general-focused-box--superflat-layout .general-focused-box__header-icon :deep(svg) {
+  width: 40px;
+  height: 40px;
+  max-width: 40px;
+  max-height: 40px;
+}
+
+.general-focused-box--superflat-layout .general-focused-box__head-text {
+  gap: 0;
+}
+
+.general-focused-box--superflat-layout .title--header,
+.general-focused-box--superflat-layout .subtitle--header {
+  line-height: 1.05;
+}
+
+.general-focused-box--superflat-layout .general-focused-box__body {
+  display: none;
+}
+
+.general-focused-box--compact-layout .general-focused-box__shell {
+  justify-content: flex-start;
+  padding-top: 8px;
+}
+
+.general-focused-box--has-metrics.general-focused-box--compact-layout {
+  padding-top: 20px;
+}
+
+.general-focused-box--compact-layout .general-focused-box__header {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 0;
+}
+
+.general-focused-box--compact-layout .general-focused-box__header-icon {
+  justify-content: center;
+  align-self: center;
+  width: 100%;
+  height: 44px;
+  min-height: 40px;
+  max-height: 48px;
+}
+
+.general-focused-box--compact-layout .general-focused-box__header-icon :deep(.lang-svg),
+.general-focused-box--compact-layout .general-focused-box__header-icon :deep(svg) {
+  height: 40px;
+  max-height: 40px;
+  width: auto;
+}
+
+.general-focused-box--compact-layout .general-focused-box__head-text {
+  align-items: stretch;
+  text-align: center;
+  gap: 0;
+}
+
+.general-focused-box--compact-layout .title--header {
+  text-align: center;
+  line-height: 1.1;
+}
+
+.general-focused-box--compact-layout .general-focused-box__body {
+  display: none;
+}
+
+.general-focused-box--metrics-break:not(.general-focused-box--superslim-layout) .general-focused-box__header-icon,
+.general-focused-box--metrics-break.general-focused-box--superslim-layout .general-focused-box__header-icon {
   position: absolute;
   top: 1px;
   left: 1px;
@@ -342,9 +521,14 @@ onUnmounted(() => {
   align-items: flex-start;
 }
 
-.general-focused-box--metrics-break:not(.general-focused-box--metrics-superslim) .general-focused-box__head-text,
-.general-focused-box--metrics-break.general-focused-box--metrics-superslim .general-focused-box__head-text {
+.general-focused-box--metrics-break:not(.general-focused-box--superslim-layout) .general-focused-box__head-text,
+.general-focused-box--metrics-break.general-focused-box--superslim-layout .general-focused-box__head-text {
   padding-left: clamp(40px, 12cqw, 52px);
+}
+
+.general-focused-box--slim-layout .general-focused-box__head-text,
+.general-focused-box--superslim-layout .general-focused-box__head-text {
+  padding-left: 0;
 }
 
 .general-focused-box__body {
@@ -386,34 +570,10 @@ onUnmounted(() => {
   max-width: 100%;
 }
 
-.general-focused-box--metrics-break-vertical-body:not(.general-focused-box--metrics-superslim)
+.general-focused-box--slim-layout:not(.general-focused-box--superslim-layout)
   .general-focused-box__head-text {
-  flex-direction: row;
-  justify-content: center;
-  align-items: stretch;
-  gap: 8px;
+  --triton-vertical-title-rail-shift-y: -4px;
   width: 100%;
-}
-
-.general-focused-box--metrics-break-vertical-body:not(.general-focused-box--metrics-superslim)
-  .title.title--metrics-break-vertical,
-.general-focused-box--metrics-break-vertical-body:not(.general-focused-box--metrics-superslim)
-  .subtitle.subtitle--header {
-  white-space: nowrap;
-  overflow: visible;
-  text-overflow: clip;
-  max-width: none;
-  align-self: stretch;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  text-orientation: mixed;
-  line-height: 1.15;
-  text-align: left;
-}
-
-.general-focused-box--metrics-break-vertical-body:not(.general-focused-box--metrics-superslim)
-  .subtitle.subtitle--header {
-  margin-top: 0;
 }
 
 .tool-btn {
@@ -472,22 +632,11 @@ onUnmounted(() => {
   max-width: 100%;
 }
 
-.title--header {
+.title--header:not(.triton-vertical-rail-text) {
   text-align: left;
   writing-mode: horizontal-tb;
   transform: none;
   align-self: stretch;
-}
-
-/**
- * `.title--header` is declared after the vertical-metrics block and resets `writing-mode`;
- * repeat vertical chrome here so slim tall cards (and focused shells) cannot snap back to horizontal.
- */
-.general-focused-box--metrics-break-vertical-body:not(.general-focused-box--metrics-superslim)
-  .title.title--header.title--metrics-break-vertical {
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  text-orientation: mixed;
 }
 
 .subtitle {
@@ -503,26 +652,42 @@ onUnmounted(() => {
   text-align: left;
 }
 
+.general-focused-box--superslim-layout .general-focused-box__head-text {
+  width: 100%;
+}
+
+.general-focused-box--superslim-layout .title.title--header {
+  order: 0;
+}
+
+.general-focused-box--superslim-layout .subtitle.subtitle--header {
+  order: 1;
+}
+
+.general-focused-box--superslim-layout .general-focused-box__body {
+  display: none;
+}
+
 /**
  * Wide focused cards: stack icon above title so the logo is centered in the full box width;
  * title/subtitle span the header and use centered text. Skip when metrics strip stacks — that
  * chrome uses its own corner / vertical-title rules (parity with {@link ProjectBox}).
  */
 @container (min-width: 168px) {
-  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--metrics-superslim)
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout)
     .general-focused-box__header {
     flex-direction: column;
     align-items: stretch;
     gap: 10px;
   }
 
-  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--metrics-superslim)
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout)
     .general-focused-box__header-icon {
     justify-content: center;
     width: 100%;
   }
 
-  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--metrics-superslim)
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout)
     .general-focused-box__head-text {
     flex: 0 1 auto;
     align-items: stretch;
@@ -530,9 +695,9 @@ onUnmounted(() => {
     text-align: center;
   }
 
-  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--metrics-superslim)
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout)
     .title--header,
-  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--metrics-superslim)
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout)
     .subtitle--header {
     text-align: center;
   }

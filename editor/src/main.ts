@@ -3,5 +3,6 @@ import App from './App.vue'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
+import './components/common/boxVerticalRails.css'
 
 createApp(App).mount('#app')

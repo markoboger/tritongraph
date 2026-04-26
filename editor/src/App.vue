@@ -45,6 +45,21 @@ import {
   buildScalaPackageGraph,
   scalaPackageGraphToIlographDocument,
 } from './scala/scalaPackagesToIlograph'
+import {
+  COMPACT_LAYOUT_MAX_WIDTH_PX,
+  COMPACT_LAYOUT_MAX_HEIGHT_PX,
+  COMPACT_LAYOUT_MIN_HEIGHT_PX,
+  COMPACT_LAYOUT_MIN_WIDTH_PX,
+  DEFAULT_LAYOUT_MIN_HEIGHT_PX,
+  DEFAULT_LAYOUT_MIN_WIDTH_PX,
+  DIAGRAM_LEAF_MIN_HEIGHT_PX,
+  DIAGRAM_LEAF_MIN_WIDTH_PX,
+  FLAT_LAYOUT_MAX_H_PX,
+  FLAT_LAYOUT_MIN_WIDTH_PX,
+  SLIM_LAYOUT_MIN_WIDTH_PX,
+  SUPERFLAT_LAYOUT_MAX_H_PX,
+  SUPERSLIM_LAYOUT_ENTER_PX,
+} from './components/diagram/boxChromeLayout'
 import { buildScalaWorkspacePayload } from '../../packages/triton-core/src/tritonWorkspacePayload'
 import {
   clearScalaDocsForWorkspace,
@@ -185,6 +200,7 @@ const PACKAGE_IMPORT_CHAIN_DOJO_ID = 'package-import-chain'
 const PACKAGE_TREE_DOJO_ID = 'package-tree'
 const ARTEFACT_HIERARCHY_DOJO_ID = 'artefact-hierarchy'
 const ABSTRACTION_LAYERS_DOJO_ID = 'abstraction-layers'
+const BREAKPOINT_LAYOUTS_DOJO_ID = 'breakpoint-layouts'
 
 const ABSTRACTION_RESIZE_NODE_IDS: readonly string[] = [
   'abstraction-general',
@@ -193,6 +209,103 @@ const ABSTRACTION_RESIZE_NODE_IDS: readonly string[] = [
   'abstraction-package',
   'abstraction-artefact',
 ]
+
+type BreakpointDojoKind = 'general' | 'project' | 'module' | 'package' | 'artefact'
+type BreakpointDojoBand = 'min' | 'max'
+
+type BreakpointLayoutSpec = {
+  state: string
+  title: string
+  kinds: readonly BreakpointDojoKind[]
+  sizes: Record<BreakpointDojoBand, { w: number; h: number }>
+}
+
+type BreakpointLayoutSample = BreakpointLayoutSpec & {
+  kind: BreakpointDojoKind
+  band: BreakpointDojoBand
+  id: string
+}
+
+const BREAKPOINT_LAYOUT_KIND_LABELS: Record<BreakpointDojoKind, string> = {
+  general: 'General box',
+  project: 'Project',
+  module: 'Module',
+  package: 'Package',
+  artefact: 'Scala artefact',
+}
+
+const BREAKPOINT_LAYOUT_SPECS: readonly BreakpointLayoutSpec[] = [
+  {
+    state: 'default',
+    title: 'default layout state',
+    kinds: ['general', 'project', 'module', 'package', 'artefact'],
+    sizes: { min: { w: DEFAULT_LAYOUT_MIN_WIDTH_PX, h: DEFAULT_LAYOUT_MIN_HEIGHT_PX }, max: { w: 420, h: 220 } },
+  },
+  {
+    state: 'compact-layout',
+    title: 'compact-layout',
+    kinds: ['general', 'project', 'module', 'package', 'artefact'],
+    sizes: {
+      min: { w: COMPACT_LAYOUT_MIN_WIDTH_PX, h: COMPACT_LAYOUT_MIN_HEIGHT_PX },
+      max: { w: COMPACT_LAYOUT_MAX_WIDTH_PX, h: COMPACT_LAYOUT_MAX_HEIGHT_PX },
+    },
+  },
+  {
+    state: 'flat-layout',
+    title: 'flat-layout',
+    kinds: ['general', 'project', 'module', 'package', 'artefact'],
+    sizes: { min: { w: FLAT_LAYOUT_MIN_WIDTH_PX, h: SUPERFLAT_LAYOUT_MAX_H_PX + 1 }, max: { w: 520, h: FLAT_LAYOUT_MAX_H_PX } },
+  },
+  {
+    state: 'superflat-layout',
+    title: 'superflat-layout',
+    kinds: ['general', 'project', 'module', 'package', 'artefact'],
+    sizes: { min: { w: FLAT_LAYOUT_MIN_WIDTH_PX, h: DIAGRAM_LEAF_MIN_HEIGHT_PX }, max: { w: 520, h: SUPERFLAT_LAYOUT_MAX_H_PX } },
+  },
+  {
+    state: 'tight',
+    title: 'tight layout state',
+    kinds: ['general', 'project', 'module', 'package', 'artefact'],
+    sizes: { min: { w: 176, h: 180 }, max: { w: 240, h: 220 } },
+  },
+  {
+    state: 'slim-layout',
+    title: 'slim-layout',
+    kinds: ['general', 'project', 'module', 'package', 'artefact'],
+    sizes: { min: { w: SLIM_LAYOUT_MIN_WIDTH_PX, h: 206 }, max: { w: 240, h: 284 } },
+  },
+  {
+    state: 'superslim-layout',
+    title: 'superslim-layout',
+    kinds: ['general', 'project', 'module', 'package', 'artefact'],
+    sizes: { min: { w: DIAGRAM_LEAF_MIN_WIDTH_PX, h: 140 }, max: { w: SUPERSLIM_LAYOUT_ENTER_PX, h: 204 } },
+  },
+]
+
+function breakpointLayoutNodeId(state: string, kind: BreakpointDojoKind, band: BreakpointDojoBand): string {
+  return `breakpoint-${state}-${kind}-${band}`.replace(/[^a-zA-Z0-9_-]+/g, '-')
+}
+
+function buildBreakpointLayoutSamples(): BreakpointLayoutSample[] {
+  return BREAKPOINT_LAYOUT_SPECS.flatMap((spec) =>
+    spec.kinds.map((kind) => ({
+      ...spec,
+      kind,
+      band: 'min' as const,
+      id: breakpointLayoutNodeId(spec.state, kind, 'min'),
+    })),
+  )
+}
+
+const BREAKPOINT_LAYOUT_RESIZE_NODE_IDS: readonly string[] = buildBreakpointLayoutSamples().map((sample) => sample.id)
+
+function pascalFromLayoutState(state: string): string {
+  return state
+    .split('-')
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join('')
+}
 
 function clampDojoDepth(raw: number): number {
   if (!Number.isFinite(raw)) return 4
@@ -255,6 +368,7 @@ const dojoExamples = computed(() => [
   { id: PACKAGE_TREE_DOJO_ID, title: 'Package tree' },
   { id: ARTEFACT_HIERARCHY_DOJO_ID, title: 'Artefact hierarchy' },
   { id: ABSTRACTION_LAYERS_DOJO_ID, title: 'Abstraction layers' },
+  { id: BREAKPOINT_LAYOUTS_DOJO_ID, title: 'Breakpoint layouts' },
   ...dojoFixtures.map((fixture) => ({ id: fixture.id, title: fixture.title })),
 ])
 
@@ -923,6 +1037,116 @@ function buildAbstractionDojoDocument(): IlographDocument {
         'x-triton-layout-frozen': true,
       },
     ],
+    perspectives: [
+      {
+        id: 'dependencies',
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        relations: [],
+      },
+    ],
+  }
+}
+
+function buildBreakpointLayoutsDojoDocument(): IlographDocument {
+  const samples = buildBreakpointLayoutSamples()
+  const LEFT = 56
+  const TOP = 56
+  const COLUMN_GAP = 72
+  const LAYOUT_ROW_GAP = 48
+  const positions: NonNullable<NonNullable<IlographDocument['x-triton-editor']>['positions']> = {}
+  const sizes: NonNullable<NonNullable<IlographDocument['x-triton-editor']>['sizes']> = {}
+  const kinds = Object.keys(BREAKPOINT_LAYOUT_KIND_LABELS) as BreakpointDojoKind[]
+  const columnWidths = new Map<BreakpointDojoKind, number>()
+  const columnLefts = new Map<BreakpointDojoKind, number>()
+  const rowTops = new Map<string, number>()
+
+  for (const kind of kinds) {
+    const maxWidth = Math.max(
+      ...samples
+        .filter((sample) => sample.kind === kind)
+        .map((sample) => sample.sizes[sample.band].w),
+    )
+    columnWidths.set(kind, maxWidth)
+  }
+
+  let nextColumnLeft = LEFT
+  for (const kind of kinds) {
+    columnLefts.set(kind, nextColumnLeft)
+    nextColumnLeft += (columnWidths.get(kind) ?? 0) + COLUMN_GAP
+  }
+
+  let nextRowTop = TOP
+  for (const spec of BREAKPOINT_LAYOUT_SPECS) {
+    rowTops.set(spec.state, nextRowTop)
+    nextRowTop += spec.sizes.min.h + LAYOUT_ROW_GAP
+  }
+
+  function samplePosition(sample: BreakpointLayoutSample): { x: number; y: number } {
+    const cellLeft = columnLefts.get(sample.kind) ?? LEFT
+    const cellWidth = columnWidths.get(sample.kind) ?? sample.sizes[sample.band].w
+    const rowTop = rowTops.get(sample.state) ?? TOP
+    return {
+      x: Math.round(cellLeft + (cellWidth - sample.sizes[sample.band].w) / 2),
+      y: rowTop,
+    }
+  }
+
+  const resources = samples.map((sample) => {
+    const pos = samplePosition(sample)
+    const size = sample.sizes[sample.band]
+    positions[sample.id] = pos
+    sizes[sample.id] = size
+    const kindLabel = BREAKPOINT_LAYOUT_KIND_LABELS[sample.kind]
+    const subtitle = `${kindLabel} · minimum ${size.w}×${size.h}`
+    const base = {
+      id: sample.id,
+      name: sample.title,
+      subtitle,
+      description: `${kindLabel} sample for the ${sample.state} layout state at the minimal representative size.`,
+      'x-triton-layout-frozen': true,
+    }
+    if (sample.kind === 'package') {
+      return {
+        ...base,
+        'x-triton-node-type': 'package',
+        'x-triton-package-language': 'scala',
+        'x-triton-inner-packages': [
+          { id: `${sample.id}::api`, name: 'api', subtitle: 'inner package' },
+        ],
+      }
+    }
+    if (sample.kind === 'artefact') {
+      return {
+        ...base,
+        'x-triton-node-type': 'artefact',
+        'x-triton-declaration': `final class ${pascalFromLayoutState(sample.state)}Probe(config: ProbeConfig)`,
+        'x-triton-method-signatures': [
+          { signature: 'def inspectLayout(): LayoutReport', startRow: 1 },
+          { signature: 'def resize(width: Int, height: Int): Unit', startRow: 2 },
+        ],
+        'x-triton-source-file': 'BreakpointLayoutProbe.scala',
+        'x-triton-source-row': 1,
+      }
+    }
+    return {
+      ...base,
+      'x-triton-project-kind': sample.kind,
+      ...(sample.kind === 'project'
+        ? {
+            'x-triton-project-compartments': [
+              { id: 'layout', title: 'Layout state', rows: [{ label: 'state', value: sample.state }] },
+            ],
+          }
+        : {}),
+    }
+  })
+
+  return {
+    description:
+      'Dojo for breakpoint layout states. Layout states are arranged vertically and box types horizontally; each matrix cell shows the minimal representative size for that box type and layout.',
+    'x-triton-editor': { positions, sizes },
+    resources,
     perspectives: [
       {
         id: 'dependencies',
@@ -1643,6 +1867,17 @@ async function loadAbstractionLayersDojo() {
   status.value = `Loaded dojo fixture ${ABSTRACTION_LAYERS_DOJO_ID}.`
 }
 
+async function loadBreakpointLayoutsDojo() {
+  sourcePath.value = `dojo/${BREAKPOINT_LAYOUTS_DOJO_ID}.ilograph.yaml`
+  await applyDoc(
+    stringifyIlographYaml(buildBreakpointLayoutsDojoDocument()),
+    `${BREAKPOINT_LAYOUTS_DOJO_ID}.ilograph.yaml`,
+    true,
+    { moduleNodeType: 'module' },
+  )
+  status.value = `Loaded dojo fixture ${BREAKPOINT_LAYOUTS_DOJO_ID}.`
+}
+
 async function loadDojoFixture(id: string) {
   if (id === PACKAGE_NESTING_DOJO_ID) {
     await loadPackageNestingDojo(dojoNestingDepth.value)
@@ -1666,6 +1901,10 @@ async function loadDojoFixture(id: string) {
   }
   if (id === ABSTRACTION_LAYERS_DOJO_ID) {
     await loadAbstractionLayersDojo()
+    return
+  }
+  if (id === BREAKPOINT_LAYOUTS_DOJO_ID) {
+    await loadBreakpointLayoutsDojo()
     return
   }
   const fixture = getDojoFixture(id)
@@ -1694,7 +1933,9 @@ async function openDojoTab(id: string): Promise<void> {
               ? `${ARTEFACT_HIERARCHY_DOJO_ID}.ilograph.yaml`
               : id === ABSTRACTION_LAYERS_DOJO_ID
                 ? `${ABSTRACTION_LAYERS_DOJO_ID}.ilograph.yaml`
-                : fixture?.fileName ?? `${id}.ilograph.yaml`
+                : id === BREAKPOINT_LAYOUTS_DOJO_ID
+                  ? `${BREAKPOINT_LAYOUTS_DOJO_ID}.ilograph.yaml`
+                  : fixture?.fileName ?? `${id}.ilograph.yaml`
   await openOrActivateTab(
     { key: `dojo:${id}`, title, iconUrl: cubeIconUrl },
     () => loadDojoFixture(id),
@@ -1705,7 +1946,8 @@ async function openDojoTab(id: string): Promise<void> {
     id === PACKAGE_IMPORT_CHAIN_DOJO_ID ||
     id === PACKAGE_TREE_DOJO_ID ||
     id === ARTEFACT_HIERARCHY_DOJO_ID ||
-    id === ABSTRACTION_LAYERS_DOJO_ID
+    id === ABSTRACTION_LAYERS_DOJO_ID ||
+    id === BREAKPOINT_LAYOUTS_DOJO_ID
   ) {
     showYamlEditor.value = true
     sidePanelTab.value = 'dojo'
@@ -2645,12 +2887,15 @@ const showDojoPanel = computed(
     activeDojoId.value === PACKAGE_IMPORT_CHAIN_DOJO_ID ||
     activeDojoId.value === PACKAGE_TREE_DOJO_ID ||
     activeDojoId.value === ARTEFACT_HIERARCHY_DOJO_ID ||
-    activeDojoId.value === ABSTRACTION_LAYERS_DOJO_ID,
+    activeDojoId.value === ABSTRACTION_LAYERS_DOJO_ID ||
+    activeDojoId.value === BREAKPOINT_LAYOUTS_DOJO_ID,
 )
 
 const abstractionDojoResizeForGraph = computed(() =>
   activeTab.value?.key === `dojo:${ABSTRACTION_LAYERS_DOJO_ID}`
     ? { linked: dojoAbstractionLinkedResize.value, nodeIds: ABSTRACTION_RESIZE_NODE_IDS }
+    : activeTab.value?.key === `dojo:${BREAKPOINT_LAYOUTS_DOJO_ID}`
+      ? { linked: dojoAbstractionLinkedResize.value, nodeIds: BREAKPOINT_LAYOUT_RESIZE_NODE_IDS }
     : null,
 )
 
@@ -3006,7 +3251,10 @@ onUnmounted(() => {
           :node-types="nodeTypes"
           :relation-type-visibility="relationTypeVisibility"
           :abstraction-dojo-resize="abstractionDojoResizeForGraph"
-          :nodes-draggable="activeTab?.key === `dojo:${ABSTRACTION_LAYERS_DOJO_ID}`"
+          :nodes-draggable="
+            activeTab?.key === `dojo:${ABSTRACTION_LAYERS_DOJO_ID}` ||
+            activeTab?.key === `dojo:${BREAKPOINT_LAYOUTS_DOJO_ID}`
+          "
           @status="(s) => (status = s)"
           @link-action="onNodeLinkAction"
         />
@@ -3291,6 +3539,31 @@ onUnmounted(() => {
               <p class="dojo-panel__hint dojo-panel__hint--compact">
                 Off: each handle only resizes its own box. On: dragging any handle applies the new size to all five
                 boxes (positions stay put).
+              </p>
+            </div>
+            <div v-else-if="activeDojoId === BREAKPOINT_LAYOUTS_DOJO_ID" class="dojo-panel">
+              <div class="dojo-panel__header">
+                <div class="dojo-panel__title">Breakpoint layouts</div>
+                <div class="dojo-panel__meta">Min/max per layout state</div>
+              </div>
+              <p class="dojo-panel__hint">
+                Each row is named by the target layout state. The left card is the minimal representative size in that
+                state; the right card is the maximal representative size before the next larger breakpoint. Compare
+                general, project, module, package, and Scala artefact boxes in one frozen diagram.
+              </p>
+              <label class="dojo-panel__control dojo-panel__control--switch" for="dojo-breakpoint-linked-resize">
+                <span class="dojo-panel__label">Linked resize</span>
+                <input
+                  id="dojo-breakpoint-linked-resize"
+                  v-model="dojoAbstractionLinkedResize"
+                  class="dojo-panel__checkbox"
+                  type="checkbox"
+                  aria-label="When enabled, resizing one breakpoint demo box updates every breakpoint demo box to the same width and height"
+                />
+              </label>
+              <p class="dojo-panel__hint dojo-panel__hint--compact">
+                Uses the same resize handles as the abstraction dojo. Off: resize one sample. On: apply the dragged
+                size to every breakpoint sample while positions stay fixed.
               </p>
             </div>
           </div>

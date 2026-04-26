@@ -14,22 +14,13 @@ defineOptions({ name: 'PackageBox' })
  *   - Folder icon (hardcoded — packages are always folder-shaped).
  *   - Plain-text subtitle (no markdown link parsing; package boxes don't have outbound diagram links yet).
  */
-import { computed, inject, nextTick, onMounted, onScopeDispose, onUnmounted, ref, watch, type Ref } from 'vue'
-import { openInEditor } from '../../openInEditor'
+import { computed, inject, nextTick, ref, watch, type Ref } from 'vue'
 import type {
   TritonInnerArtefactRelationSpec,
   TritonInnerArtefactSpec,
   TritonInnerPackageSpec,
 } from '../../ilograph/types'
-import { boxColorForId, nextNamedBoxColor, type NamedBoxColor } from '../../graph/boxColors'
-import { dependencyEdgeLabelStyle } from '../../graph/edgeTheme'
-import {
-  SCALA_CREATES_STROKE,
-  SCALA_EXTENDS_STROKE,
-  SCALA_HAS_TRAIT_STROKE,
-  SCALA_GETS_STROKE,
-} from '../../graph/relationKinds'
-import { assignInnerArtefactLayers } from '../../graph/innerArtefactLayerLayout'
+import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
 import folderIconUrl from '../../assets/language-icons/folder.svg'
 import scalaIconUrl from '../../assets/language-icons/scala.svg'
 import scalaClassIconUrl from '../../assets/language-icons/scala-class.svg'
@@ -37,17 +28,26 @@ import scalaTraitIconUrl from '../../assets/language-icons/scala-trait.svg'
 import scalaObjectIconUrl from '../../assets/language-icons/scala-object.svg'
 import scalaEnumIconUrl from '../../assets/language-icons/scala-enum.svg'
 import ShikiInlineCode from '../ShikiInlineCode.vue'
+import BoxEditDialog from '../common/BoxEditDialog.vue'
 import GeneralFocusedBox from '../common/GeneralFocusedBox.vue'
 import BoxMetricStrip from '../common/BoxMetricStrip.vue'
-import { simulatedMetricsForBox } from '../common/boxMetricDemo'
+import BoxToolbar from '../common/BoxToolbar.vue'
+import { buildFocusedBoxCompartments } from '../common/focusedBoxCompartments'
+import { useEditableBox } from '../common/useEditableBox'
+import { useBoxMetrics } from '../common/useBoxMetrics'
 import BoxCompartments from '../common/BoxCompartments.vue'
-import { useScalaCoverageKeyed } from '../../store/useOverlay'
-import { getScalaCoverage, onScalaCoverageChanged } from '../../store/overlayStore'
 import type { BoxCompartment } from '../../diagram/boxCompartments'
 import { shouldHideEdgeForRelationFilter } from '../../graph/relationVisibility'
-import { nextMetricsBreakLayout } from './boxMetricBreakLayout'
-import { nextMetricsBreakSuperslim } from './metricsBreakChromeLayout'
-import { buildAnchoredSmoothStepRelationDraws } from '../../graph/anchoredSmoothStepRelations'
+import { useInnerDiagramScroll } from './useInnerDiagramScroll'
+import PackageInnerDiagram from './PackageInnerDiagram.vue'
+import { useInnerArtefactRouting } from './useInnerArtefactRouting'
+import { useInnerArtefactEdges } from './useInnerArtefactEdges'
+import { usePackageBoxChromeLayout } from './usePackageBoxChromeLayout'
+import { useInnerArtefactState } from './useInnerArtefactState'
+import { useInnerPackageDrill } from './useInnerPackageDrill'
+import { useInnerArtefactLayering } from './useInnerArtefactLayering'
+import ScalaArtefactBox from './ScalaArtefactBox.vue'
+import InnerDiagramScrollRails from './InnerDiagramScrollRails.vue'
 
 /**
  * Pick the kind-specific Scala badge (class / trait / object / enum) for a Scala leaf
@@ -66,26 +66,10 @@ function scalaIconForKind(subtitle: string | undefined): string {
   if (k === 'enum') return scalaEnumIconUrl
   return scalaIconUrl
 }
-import ScalaArtefactBox from './ScalaArtefactBox.vue'
 
 export type InnerPackageSummary = TritonInnerPackageSpec
 export type InnerArtefactSummary = TritonInnerArtefactSpec
 export type InnerArtefactRelationSummary = TritonInnerArtefactRelationSpec
-
-function findSpecAtPath(
-  roots: readonly TritonInnerPackageSpec[],
-  path: readonly string[],
-): TritonInnerPackageSpec | null {
-  let level: readonly TritonInnerPackageSpec[] = roots
-  let found: TritonInnerPackageSpec | null = null
-  for (const segment of path) {
-    const hit = level.find((x) => x.id === segment)
-    if (!hit) return null
-    found = hit
-    level = hit.innerPackages ?? []
-  }
-  return found
-}
 
 const props = withDefaults(
   defineProps<{
@@ -198,81 +182,44 @@ const emit = defineEmits<{
 
 const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
 
-const focusedLegacyCompartments = computed<readonly BoxCompartment[]>(() => {
-  const out: BoxCompartment[] = []
-  if ((props.description ?? '').trim()) {
-    out.push({
-      id: 'purpose',
-      title: 'Purpose',
-      rows: [{ value: String(props.description ?? '') }],
-    })
-  }
-  if ((props.notes ?? '').trim()) {
-    out.push({
-      id: 'notes',
-      title: 'Notes',
-      rows: [{ value: String(props.notes ?? '') }],
-    })
-  }
-  return out
-})
+const focusedLegacyCompartments = computed<readonly BoxCompartment[]>(() =>
+  buildFocusedBoxCompartments({
+    description: props.description,
+    notes: props.notes,
+  }),
+)
 
 const isScalaLeaf = computed(() => props.leafVisual === 'artefact')
-/** Stacking / import-chain / tree dojos in `App.vue` — used for compact thresholds + tall icon-slot CSS. */
-const shortBandDojoPackage = computed(() => {
-  const id = String(props.boxId ?? '')
-  return id.startsWith('stack-package-') || id.startsWith('import-link-') || id.startsWith('tree-package-')
-})
-const preferCenteredStackLayout = computed(
-  () =>
-    !props.embedded &&
-    !props.focused &&
-    !isScalaLeaf.value &&
-    (props.innerPackages?.length ?? 0) === 0,
-)
 
-/**
- * `(root, dir)` of the tab's backing example — provided by `App.vue` so inner artefact cards
- * rendered inside a focused package can still translate their `sourceFile` + `sourceRow` into
- * an editor handoff. Absent for file-upload / builtin-example tabs (no disk anchor), in which
- * case the inner clicks are no-ops.
- */
-const activeExampleRef = inject<Ref<{ root: string; dir: string } | null> | undefined>(
-  'tritonActiveExample',
-  undefined,
-)
 
-/**
- * Dispatch an "open in editor" handoff for an inner artefact card. The `artId` lets us pick
- * the matching `TritonInnerArtefactSpec` out of `innerArtefactCell(artId)` to recover the
- * `sourceFile` anchor; `line` is an optional 0-indexed override emitted by a per-method
- * click in the Methods panel (undefined → the artefact's own `sourceRow`).
- */
-function openInnerArtefactInEditor(artId: string, line?: number): void {
-  const ex = activeExampleRef?.value
-  const cell = innerArtefactCell(artId)
-  if (!ex || !cell || !cell.sourceFile) return
-  const effectiveRow = line !== undefined ? line : (cell.sourceRow ?? 0)
-  openInEditor({
-    root: ex.root,
-    exampleDir: ex.dir,
-    relPath: cell.sourceFile,
-    line: effectiveRow + 1,
-  })
-}
-
-/** Template helper: true when the inner artefact card can dispatch an open-in-editor handoff. */
-function canOpenInnerArtefactInEditor(artId: string): boolean {
-  if (!activeExampleRef?.value) return false
-  return !!innerArtefactCell(artId)?.sourceFile
-}
-
-const workspaceKeyRef = inject<Ref<string>>('tritonWorkspaceKey', ref(''))
-const scalaCoverageRef = useScalaCoverageKeyed(workspaceKeyRef, String(props.boxId ?? ''))
 const relationTypeVisibilityRef = inject<Ref<Record<string, boolean>>>(
   'tritonRelationTypeVisibility',
   ref({}),
 )
+
+const {
+  innerCoverageVersion,
+  innerArtefactCell,
+  openInnerArtefactInEditor,
+  canOpenInnerArtefactInEditor,
+  innerHasCoverage,
+  innerCoveragePercentValue,
+  innerSimulatedMetrics,
+  isInnerArtefactPinned,
+  innerArtefactAccent,
+  onInnerArtefactTogglePin,
+  onInnerArtefactCycleColor,
+  onArtefactRowClick,
+  onFocusedArtefactBackgroundClick,
+} = useInnerArtefactState({
+  innerArtefacts: () => props.innerArtefacts,
+  innerArtefactPinned: () => props.innerArtefactPinned,
+  innerArtefactColors: () => props.innerArtefactColors,
+  updateInnerArtefactPinned: (next) => emit('update-inner-artefact-pinned', next),
+  updateInnerArtefactColors: (next) => emit('update-inner-artefact-colors', next),
+  updateInnerArtefactFocus: (id) => emit('update-inner-artefact-focus', id),
+})
+
 
 /**
  * Real coverage percentage from Scoverage (when available).
@@ -280,1152 +227,28 @@ const relationTypeVisibilityRef = inject<Ref<Record<string, boolean>>>(
  * Important: do not show any placeholder. When no coverage is known for this artefact,
  * we render **no** coverage indicator at all.
  */
-const coveragePercent = computed((): number | null => {
-  const v = scalaCoverageRef.value?.stmtPct
-  if (typeof v === 'number' && Number.isFinite(v)) return Math.round(v)
-  return null
-})
-
-const hasCoverage = computed(() => coveragePercent.value !== null)
-/** Safe numeric for template bindings (only used when `hasCoverage`). */
-const coveragePercentValue = computed(() => coveragePercent.value ?? 0)
-const simulatedMetrics = computed(() => simulatedMetricsForBox(props.boxId))
-
-function applyMetricsBreakLayout(root: HTMLElement | null) {
-  if (!root) {
-    metricsBreakLayout.value = false
-    return
-  }
-  const hasMetricsChrome = hasCoverage.value || simulatedMetrics.value.issueCount >= 0
-  metricsBreakLayout.value = hasMetricsChrome
-    ? nextMetricsBreakLayout(root.clientWidth, root.clientHeight, metricsBreakLayout.value)
-    : false
-}
-
-const metricsBreakSuperslim = ref(false)
-/** True in slim (metrics-break, non-superslim) chrome — vertical title rails for all leaf kinds. */
-const metricsBreakVerticalBody = ref(false)
-
-function syncMetricsBreakChrome(root: HTMLElement | null) {
-  if (!root || !metricsBreakLayout.value) {
-    metricsBreakSuperslim.value = false
-    metricsBreakVerticalBody.value = false
-    return
-  }
-  const w = root.clientWidth
-  metricsBreakSuperslim.value = nextMetricsBreakSuperslim(w, metricsBreakSuperslim.value)
-  if (metricsBreakSuperslim.value) {
-    metricsBreakVerticalBody.value = false
-    return
-  }
-  metricsBreakVerticalBody.value = true
-}
-
-const innerCoverageVersion = ref(0)
-const offInnerCoverage = onScalaCoverageChanged(() => {
-  innerCoverageVersion.value += 1
-})
-onScopeDispose(offInnerCoverage)
-
-function innerCoveragePercent(id: string): number | null {
-  void innerCoverageVersion.value
-  const ws = workspaceKeyRef.value ?? ''
-  const v = getScalaCoverage(ws, id)?.stmtPct
-  if (typeof v === 'number' && Number.isFinite(v)) return Math.round(v)
-  return null
-}
-
-function innerHasCoverage(id: string): boolean {
-  return innerCoveragePercent(id) !== null
-}
-
-function innerCoveragePercentValue(id: string): number {
-  return innerCoveragePercent(id) ?? 0
-}
-
-const innerDrillPathArr = computed(() => [...props.innerDrillPath])
-
-const activeInnerSpec = computed((): TritonInnerPackageSpec | null => {
-  const path = innerDrillPathArr.value
-  if (!path.length) return null
-  return findSpecAtPath(props.innerPackages, path)
-})
-
-const topLevelInnerPackages = computed((): readonly InnerPackageSummary[] => {
-  return Array.isArray(props.innerPackages) ? props.innerPackages : []
-})
-
-/**
- * Structural relations as produced by the graph builder, regardless of visibility toggles.
- *
- * Important: relation checkboxes are a rendering concern only. Layout, focus neighbourhoods,
- * and drill context should remain stable when a relation type is hidden, otherwise simply
- * unchecking a box causes nodes to jump around.
- */
-const allInnerArtefactRelations = computed((): readonly TritonInnerArtefactRelationSpec[] => {
-  return Array.isArray(props.innerArtefactRelations) ? props.innerArtefactRelations : []
-})
-
-/** Relations currently visible in the UI after applying the relation-type checkboxes. */
-const innerArtefactRelationList = computed((): readonly TritonInnerArtefactRelationSpec[] => {
-  const visibility = relationTypeVisibilityRef.value
-  return allInnerArtefactRelations.value.filter(
-    (rel) => !shouldHideEdgeForRelationFilter({ label: rel.label }, visibility),
-  )
-})
-
-/** Cross-package relations currently visible in the UI after applying the relation-type checkboxes. */
-const visibleCrossArtefactRelations = computed((): readonly TritonInnerArtefactRelationSpec[] => {
-  const visibility = relationTypeVisibilityRef.value
-  return (props.crossArtefactRelations ?? []).filter(
-    (rel) => !shouldHideEdgeForRelationFilter({ label: rel.label }, visibility),
-  )
-})
-
-function innerSimulatedMetrics(id: string) {
-  return simulatedMetricsForBox(id)
-}
-
-const innerArtefactById = computed(() => {
-  const m = new Map<string, InnerArtefactSummary>()
-  for (const a of props.innerArtefacts) m.set(a.id, a)
-  return m
-})
-
-/**
- * When focus is active, the subset of artefact IDs to show: the focused artefact itself,
- * its direct neighbours (1 hop, either direction), and their neighbours (2 hops). All
- * other artefacts are hidden so the diagram stays readable.
- *
- * Cross-package case: when the globally focused artefact lives in another package, this box
- * uses `crossArtefactRelations` to find which of its own artefacts are connected to that
- * foreign artefact, then shows those plus their same-package neighbours (1 hop).
- *
- * Returns `null` when no focus is active (show everything).
- */
-const focusFilteredIds = computed((): Set<string> | null => {
-  const rels = allInnerArtefactRelations.value
-  const localIds = new Set(props.innerArtefacts.map((a) => a.id))
-
-  // --- local focus: the focused artefact is in this package ---
-  if (innerArtefactFocusActive.value && props.focusedInnerArtefactId) {
-    const focusedId = props.focusedInnerArtefactId
-    const direct = new Set<string>([focusedId])
-    for (const rel of rels) {
-      if (rel.from === focusedId) direct.add(rel.to)
-      if (rel.to === focusedId) direct.add(rel.from)
-    }
-    const visible = new Set(direct)
-    for (const rel of rels) {
-      if (direct.has(rel.from)) visible.add(rel.to)
-      if (direct.has(rel.to)) visible.add(rel.from)
-    }
-    return visible
-  }
-
-  // --- cross-package focus: some other package has a focused artefact ---
-  const globalId = props.globalFocusedArtefactId
-  if (globalId && !localIds.has(globalId)) {
-    // Find local artefacts directly connected to the foreign focused artefact
-    const crossRels = props.crossArtefactRelations ?? []
-    const locallyConnected = new Set<string>()
-    for (const rel of crossRels) {
-      if (rel.from === globalId && localIds.has(rel.to)) locallyConnected.add(rel.to)
-      if (rel.to === globalId && localIds.has(rel.from)) locallyConnected.add(rel.from)
-    }
-    if (!locallyConnected.size) return null // no cross-connection, don't filter
-    // Expand by 1 hop within this package
-    const visible = new Set(locallyConnected)
-    for (const rel of rels) {
-      if (locallyConnected.has(rel.from)) visible.add(rel.to)
-      if (locallyConnected.has(rel.to)) visible.add(rel.from)
-    }
-    return visible
-  }
-
-  return null
-})
-
-/**
- * LR columns: abstract parents left → concrete subtypes right (see {@link assignInnerArtefactLayers}).
- *
- * All directional structural relations shape the column layout:
- *   - `extends` / `with`: parent (from) left → child (to) right.
- *   - `gets`: consumer (from) left → dependency (to) right.
- *   - `creates`: creator (from) left → created artefact (to) right.
- *
- * When focus is active only the filtered subset of artefacts and their connecting
- * edges are passed to the layout algorithm.
- */
-const innerArtefactLayerColumns = computed((): string[][] => {
-  const filter = focusFilteredIds.value
-  const allIds = props.innerArtefacts.map((a) => a.id)
-  const ids = filter ? allIds.filter((id) => filter.has(id)) : allIds
-  if (!ids.length) return []
-  const rels = allInnerArtefactRelations.value
-  const filteredRels = filter ? rels.filter((r) => filter.has(r.from) && filter.has(r.to)) : rels
-  if (!filteredRels.length) return [ids]
-  return assignInnerArtefactLayers(ids, filteredRels)
-})
-
-const innerEdgeMarkerId = computed(() =>
-  `tg-inner-inh-${String(props.boxId).replace(/[^a-zA-Z0-9_-]+/g, '-')}`,
-)
-
-type InnerEdgeDraw = {
-  id: string
-  path: string
-  labelX: number
-  labelY: number
-  /** YAML / graph value (`extends` | `with` | `gets` | `creates`). */
-  relationLabel: string
-  displayLabel: string
-  /**
-   * Rendering bucket — drives stroke color, display label, and SVG marker selection. We keep
-   * `'with'` and `'extends'` distinct from `'gets'` (instead of collapsing the two inheritance
-   * kinds) because the marker definitions are keyed on this value.
-   */
-  kind: 'extends' | 'with' | 'gets' | 'creates'
-  stroke: string
-  from: string
-  to: string
-  overlay: boolean
-}
-
-const innerArtefactDiagramRef = ref<HTMLElement | null>(null)
-// ── inner diagram scroll state ────────────────────────────────────────────
-const innerDiagramColsRef = ref<HTMLElement | null>(null)
-const innerScrollX = ref(0)
-const innerScrollY = ref(0)
-const innerContentW = ref(0)
-const innerViewportW = ref(0)
-const innerContentH = ref(0)
-const innerViewportH = ref(0)
-const innerEdgeDraws = ref<InnerEdgeDraw[]>([])
-const innerArtefactSlotEls = new Map<string, HTMLElement>()
-const innerHoverEdgeId = ref<string | null>(null)
-const innerHoverArtId = ref<string | null>(null)
-
-function innerEdgeLabelSvgStyleFor(draw: InnerEdgeDraw): Record<string, string> {
-  const s = dependencyEdgeLabelStyle(draw.stroke, innerEdgeEmphasized(draw))
-  return {
-    fill: String(s.fill ?? draw.stroke),
-    fontSize: String(s.fontSize ?? '11px'),
-    fontWeight: String(s.fontWeight ?? '500'),
-    opacity: String(s.opacity ?? '0.88'),
-  }
-}
-
-function innerArtefactRelationStroke(label: string): { kind: 'extends' | 'with' | 'gets' | 'creates'; stroke: string } {
-  if (label === 'with') return { kind: 'with', stroke: SCALA_HAS_TRAIT_STROKE }
-  if (label === 'gets') return { kind: 'gets', stroke: SCALA_GETS_STROKE }
-  if (label === 'creates') return { kind: 'creates', stroke: SCALA_CREATES_STROKE }
-  return { kind: 'extends', stroke: SCALA_EXTENDS_STROKE }
-}
-
-function innerArtefactEdgeDisplayLabel(kind: 'extends' | 'with' | 'gets' | 'creates', wrapperName?: string): string {
-  if (kind === 'with') return 'has trait'
-  if (kind === 'gets') return wrapperName ? `gets as ${wrapperName}` : 'gets'
-  if (kind === 'creates') return 'creates'
-  return 'extends'
-}
-
-function innerEdgeMarkerSuffix(kind: 'extends' | 'with' | 'gets' | 'creates'): string {
-  if (kind === 'with') return 'hastrait'
-  if (kind === 'gets') return 'gets'
-  if (kind === 'creates') return 'creates'
-  return 'extends'
-}
-
-const innerArtefactFocusActive = computed(
-  () => !!props.focusedInnerArtefactId && !innerDrillPathArr.value.length,
-)
-
-/**
- * True when this box is unfocused (no layer drill) but a cross-package focus is active —
- * i.e. another package has a focused artefact that is connected to artefacts in this package.
- * Drives the compact artefact preview shown in the unfocused box.
- */
-const crossPackagePreviewActive = computed(() => {
-  if (props.focused) return false
-  const ids = focusFilteredIds.value
-  return ids !== null && ids.size > 0
-})
-
-const routedOverlayInnerEdgeDraws = computed(() => innerEdgeDraws.value.filter((draw) => draw.overlay))
-const emphasizedInnerEdgeDraws = computed(() =>
-  innerEdgeDraws.value.filter((draw) => !draw.overlay && innerEdgeEmphasized(draw)),
-)
-const normalInnerEdgeDraws = computed(() =>
-  innerEdgeDraws.value.filter((draw) => !draw.overlay && !innerEdgeEmphasized(draw)),
-)
-
-// Trigger Vue Flow layout recalculation when cross-package preview becomes active
-watch(crossPackagePreviewActive, async (newValue, oldValue) => {
-  if (newValue && !oldValue) {
-    // Wait for DOM to update with expanded size
-    await nextTick()
-    await nextTick()
-    // Trigger a layout update by emitting an event to the parent
-    emit('layout-update-request')
-  }
-})
-
-
-function innerEdgeEmphasized(draw: InnerEdgeDraw): boolean {
-  const hid = innerHoverEdgeId.value
-  const aid = innerHoverArtId.value
-  if (hid) return draw.id === hid
-  if (aid) return draw.from === aid || draw.to === aid
-  return false
-}
-
-function innerArtefactEmphasized(artId: string): boolean {
-  if (innerHoverArtId.value === artId) return true
-  const hid = innerHoverEdgeId.value
-  if (!hid) return false
-  const d = innerEdgeDraws.value.find((x) => x.id === hid)
-  return !!(d && (d.from === artId || d.to === artId))
-}
-
-function onInnerEdgeEnter(draw: InnerEdgeDraw) {
-  innerHoverEdgeId.value = draw.id
-}
-
-function onInnerEdgeLeave(draw: InnerEdgeDraw) {
-  if (innerHoverEdgeId.value === draw.id) innerHoverEdgeId.value = null
-}
-
-function onInnerArtefactSlotEnter(artId: string) {
-  innerHoverArtId.value = artId
-}
-
-function onInnerArtefactSlotLeave(artId: string) {
-  if (innerHoverArtId.value === artId) innerHoverArtId.value = null
-}
-
-function bindInnerArtefactSlotEl(artId: string, el: unknown) {
-  if (el instanceof HTMLElement) innerArtefactSlotEls.set(artId, el)
-  else innerArtefactSlotEls.delete(artId)
-  scheduleInnerEdgeRefreshSettled()
-}
-
-function artefactPackageId(artefactId: string): string {
-  const sep = artefactId.indexOf('::')
-  return sep >= 0 ? artefactId.slice(0, sep) : ''
-}
-
-function artefactSimpleName(artefactId: string): string {
-  const sep = artefactId.lastIndexOf(':')
-  return sep >= 0 ? artefactId.slice(sep + 1) : artefactId
-}
-
-type BridgeRelation = {
-  from: string
-  to: string
-  label: string
-  wrapperName?: string
-}
-
-type PortEndpoint = {
-  id: string
-  side: 'left' | 'right'
-}
-
-type RoutedInnerRelation = {
-  from: string
-  to: string
-  label: string
-  wrapperName?: string
-  displayLabel?: string
-  overlay?: boolean
-}
-
-type BoundaryStubRelation = {
-  externalId: string
-  externalLabel: string
-  foreignArtefactId: string
-  localId: string
-  side: 'left' | 'right'
-  label: string
-  wrapperName?: string
-}
-
-/**
- * Cross-package relations whose foreign endpoint lives in one of this package's visible child
- * package boxes. We render them as package-box -> local-artefact bridges in the focused root
- * view so parent-package artefacts like `Mammal` / `Nursing` can show incoming edges from
- * `carnivores` / `herbivores` even though those child packages are not expanded to their
- * individual artefacts yet.
- */
-const crossPackageBridgeRelations = computed((): readonly BridgeRelation[] => {
-  if (innerDrillPathArr.value.length > 0) return []
-  if (!props.focused && !crossPackagePreviewActive) return []
-  if (!props.innerPackages.length || !props.innerArtefacts.length) return []
-
-  const localArtefactIds = new Set(props.innerArtefacts.map((a) => a.id))
-  const childPackageIds = props.innerPackages.map((p) => p.id)
-  const mapForeignArtefactToChildPackage = (artefactId: string): string | null => {
-    const pkgId = artefactPackageId(artefactId)
-    if (!pkgId) return null
-    for (const childId of childPackageIds) {
-      if (pkgId === childId || pkgId.startsWith(`${childId}.`)) return childId
-    }
-    return null
-  }
-
-  const out: BridgeRelation[] = []
-  const seen = new Set<string>()
-  for (const rel of visibleCrossArtefactRelations.value) {
-    const fromLocal = localArtefactIds.has(rel.from)
-    const toLocal = localArtefactIds.has(rel.to)
-    if (fromLocal === toLocal) continue
-    const localId = fromLocal ? rel.from : rel.to
-    const foreignId = fromLocal ? rel.to : rel.from
-    const childPackageId = mapForeignArtefactToChildPackage(foreignId)
-    if (!childPackageId) continue
-    const from = fromLocal ? localId : childPackageId
-    const to = fromLocal ? childPackageId : localId
-    const key = `${from}\u0001${to}\u0001${rel.label}\u0001${rel.wrapperName ?? ''}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push({ from, to, label: rel.label, ...(rel.wrapperName ? { wrapperName: rel.wrapperName } : {}) })
-  }
-  return out
-})
-
-/**
- * Cross-package relations whose far endpoint is NOT visible as an inner child package box.
- * Rendered as boundary stubs in the focused package view so local artefacts can still show
- * incoming/outgoing dependencies from foreign packages.
- */
-const crossPackageBoundaryStubRelations = computed((): readonly BoundaryStubRelation[] => {
-  if (innerDrillPathArr.value.length > 0) return []
-  if (!props.focused && !crossPackagePreviewActive) return []
-  if (!props.innerArtefacts.length) return []
-
-  const localArtefactIds = new Set(props.innerArtefacts.map((a) => a.id))
-  const focusedLocalId = props.focusedInnerArtefactId ?? null
-  const childPackageIds = props.innerPackages.map((p) => p.id)
-  const foreignIsVisibleChildPackage = (artefactId: string): boolean => {
-    const pkgId = artefactPackageId(artefactId)
-    if (!pkgId) return false
-    return childPackageIds.some((childId) => pkgId === childId || pkgId.startsWith(`${childId}.`))
-  }
-
-  const out: BoundaryStubRelation[] = []
-  const seen = new Set<string>()
-  for (const rel of visibleCrossArtefactRelations.value) {
-    const fromLocal = localArtefactIds.has(rel.from)
-    const toLocal = localArtefactIds.has(rel.to)
-    if (fromLocal === toLocal) continue
-    const localId = fromLocal ? rel.from : rel.to
-    const foreignId = fromLocal ? rel.to : rel.from
-    if (foreignIsVisibleChildPackage(foreignId)) continue
-    // In preview mode, show all cross-package relations (not filtered by focusedLocalId)
-    if (props.focused && focusedLocalId && localId !== focusedLocalId) continue
-    // For cross-package preview, anchor on left when local is target, right when local is source
-    const side: 'left' | 'right' = toLocal ? 'left' : 'right'
-    const foreignPkgId = artefactPackageId(foreignId)
-    const externalLabel = focusedLocalId
-      ? artefactSimpleName(foreignId)
-      : (foreignPkgId.split('.').pop() || foreignPkgId || 'external')
-    const externalId = focusedLocalId
-      ? `__ext-${side}:art:${foreignId}`
-      : `__ext-${side}:pkg:${foreignPkgId || foreignId}`
-    const key = `${externalId}\u0001${localId}\u0001${rel.label}\u0001${rel.wrapperName ?? ''}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push({
-      externalId,
-      externalLabel,
-      foreignArtefactId: foreignId,
-      localId,
-      side,
-      label: rel.label,
-      ...(rel.wrapperName ? { wrapperName: rel.wrapperName } : {}),
-    })
-  }
-  return out
-})
-
-const crossPackageExternalEndpoints = computed(() => {
-  const byId = new Map<string, { id: string; label: string; side: 'left' | 'right' }>()
-  for (const rel of crossPackageBoundaryStubRelations.value) {
-    if (!byId.has(rel.externalId)) {
-      byId.set(rel.externalId, { id: rel.externalId, label: rel.externalLabel, side: rel.side })
-    }
-  }
-  const all = [...byId.values()].sort((a, b) => a.label.localeCompare(b.label))
-  return {
-    left: all.filter((x) => x.side === 'left'),
-    right: all.filter((x) => x.side === 'right'),
-  }
-})
-
-function childPackagePortId(packageId: string, side: 'left' | 'right'): string {
-  return `__port:child:${side}:${packageId}`
-}
-
-function rootPackagePortId(side: 'left' | 'right'): string {
-  return `__port:root:${side}:${props.boxId}`
-}
-
-const childPackagePorts = computed(() => {
-  const out: PortEndpoint[] = []
-  const seen = new Set<string>()
-  for (const rel of crossPackageBridgeRelations.value) {
-    const childPackageId = rel.from
-    const localId = rel.to
-    const childToLocal = props.innerPackages.some((pkg) => pkg.id === childPackageId)
-      && props.innerArtefacts.some((art) => art.id === localId)
-    if (childToLocal) {
-      const id = childPackagePortId(childPackageId, 'right')
-      if (!seen.has(id)) {
-        seen.add(id)
-        out.push({ id, side: 'right' })
-      }
-      continue
-    }
-    if (props.innerArtefacts.some((art) => art.id === rel.from) && props.innerPackages.some((pkg) => pkg.id === rel.to)) {
-      const id = childPackagePortId(rel.to, 'left')
-      if (!seen.has(id)) {
-        seen.add(id)
-        out.push({ id, side: 'left' })
-      }
-    }
-  }
-  return out
-})
-
-const childPackagePortsById = computed(() => {
-  const out = new Map<string, PortEndpoint>()
-  for (const port of childPackagePorts.value) out.set(port.id, port)
-  return out
-})
-
-const rootPackagePorts = computed(() => {
-  const out: PortEndpoint[] = []
-  const needLeft = crossPackageBridgeRelations.value.some(
-    (rel) => props.innerPackages.some((pkg) => pkg.id === rel.from) && props.innerArtefacts.some((art) => art.id === rel.to),
-  )
-  const needRight = crossPackageBridgeRelations.value.some(
-    (rel) => props.innerArtefacts.some((art) => art.id === rel.from) && props.innerPackages.some((pkg) => pkg.id === rel.to),
-  )
-  if (needLeft) out.push({ id: rootPackagePortId('left'), side: 'left' })
-  if (needRight) out.push({ id: rootPackagePortId('right'), side: 'right' })
-  return out
-})
-
-const rootPackagePortsLeft = computed(() => rootPackagePorts.value.filter((p) => p.side === 'left'))
-const rootPackagePortsRight = computed(() => rootPackagePorts.value.filter((p) => p.side === 'right'))
-
-const routedCrossPackageBridgeRelations = computed((): readonly RoutedInnerRelation[] => {
-  if (!props.focused) {
-    return crossPackageBridgeRelations.value.map((rel) => ({
-      from: rel.from,
-      to: rel.to,
-      label: rel.label,
-      wrapperName: rel.wrapperName,
-      displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
-      overlay: false,
-    }))
-  }
-  const out: RoutedInnerRelation[] = []
-  for (const rel of crossPackageBridgeRelations.value) {
-    const fromIsChildPackage = props.innerPackages.some((pkg) => pkg.id === rel.from)
-    const toIsChildPackage = props.innerPackages.some((pkg) => pkg.id === rel.to)
-    const fromIsLocalArtefact = props.innerArtefacts.some((art) => art.id === rel.from)
-    const toIsLocalArtefact = props.innerArtefacts.some((art) => art.id === rel.to)
-
-    if (fromIsChildPackage && toIsLocalArtefact) {
-      const childPortId = childPackagePortId(rel.from, 'right')
-      const rootPortId = rootPackagePortId('left')
-      out.push({ from: rel.from, to: childPortId, label: rel.label, wrapperName: rel.wrapperName, overlay: true })
-      out.push({
-        from: childPortId,
-        to: rootPortId,
-        label: rel.label,
-        wrapperName: rel.wrapperName,
-        displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
-        overlay: true,
-      })
-      out.push({ from: rootPortId, to: rel.to, label: rel.label, wrapperName: rel.wrapperName, overlay: true })
-      continue
-    }
-
-    if (fromIsLocalArtefact && toIsChildPackage) {
-      const rootPortId = rootPackagePortId('right')
-      const childPortId = childPackagePortId(rel.to, 'left')
-      out.push({ from: rel.from, to: rootPortId, label: rel.label, wrapperName: rel.wrapperName, overlay: true })
-      out.push({
-        from: rootPortId,
-        to: childPortId,
-        label: rel.label,
-        wrapperName: rel.wrapperName,
-        displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
-        overlay: true,
-      })
-      out.push({ from: childPortId, to: rel.to, label: rel.label, wrapperName: rel.wrapperName, overlay: true })
-      continue
-    }
-
-    out.push({
-      from: rel.from,
-      to: rel.to,
-      label: rel.label,
-      wrapperName: rel.wrapperName,
-      displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
-      overlay: false,
-    })
-  }
-  return out
-})
-
-function refreshInnerArtefactEdges() {
-  const root = innerArtefactDiagramRef.value
-  const rels: RoutedInnerRelation[] = [
-    ...routedCrossPackageBridgeRelations.value,
-    ...crossPackageBoundaryStubRelations.value.map((rel) => ({
-      from: rel.side === 'left' ? rel.externalId : rel.localId,
-      to: rel.side === 'left' ? rel.localId : rel.externalId,
-      label: rel.label,
-      wrapperName: rel.wrapperName,
-      displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
-      overlay: false,
-    })),
-    ...innerArtefactRelationList.value.map((rel) => ({
-      from: rel.from,
-      to: rel.to,
-      label: rel.label,
-      wrapperName: rel.wrapperName,
-      displayLabel: innerArtefactEdgeDisplayLabel(innerArtefactRelationStroke(rel.label).kind, rel.wrapperName),
-      overlay: false,
-    })),
-  ]
-  if (!root || !rels.length) {
-    innerEdgeDraws.value = []
-    return
-  }
-  const sharedDraws = buildAnchoredSmoothStepRelationDraws({
-    rootEl: root,
-    relations: rels.map((rel, index) => ({
-      id: `ie-${props.boxId}-${index}`,
-      from: rel.from,
-      to: rel.to,
-    })),
-    slotEls: innerArtefactSlotEls,
-  })
-  const out: InnerEdgeDraw[] = []
-  for (let i = 0; i < sharedDraws.length; i++) {
-    const geom = sharedDraws[i]!
-    const rel = rels[i]!
-    const { kind, stroke } = innerArtefactRelationStroke(rel.label)
-    out.push({
-      id: geom.id,
-      path: geom.path,
-      labelX: geom.labelX,
-      labelY: geom.labelY,
-      relationLabel: rel.label,
-      displayLabel: rel.displayLabel ?? '',
-      kind,
-      stroke,
-      from: geom.from,
-      to: geom.to,
-      overlay: !!rel.overlay,
-    })
-  }
-  innerEdgeDraws.value = out
-}
-
-let innerArtefactRo: ResizeObserver | null = null
-let innerArtefactHostRo: ResizeObserver | null = null
-let innerEdgeRaf = 0
-
-/** Matches flex / gap transitions on `.package-box__inner-artefact-*` so edges use final anchor rects. */
-const INNER_EDGE_LAYOUT_SETTLE_MS = 480
-
-let innerEdgeSettleTimer: ReturnType<typeof setTimeout> | null = null
-const innerEdgeBurstTimers = new Set<ReturnType<typeof setTimeout>>()
-
-function scheduleInnerEdgeRefresh() {
-  if (innerEdgeRaf) return
-  innerEdgeRaf = requestAnimationFrame(() => {
-    innerEdgeRaf = 0
-    refreshInnerArtefactEdges()
-  })
-}
-
-function scheduleInnerEdgeRefreshSettled() {
-  scheduleInnerEdgeRefresh()
-  if (innerEdgeSettleTimer != null) {
-    clearTimeout(innerEdgeSettleTimer)
-    innerEdgeSettleTimer = null
-  }
-  for (const timer of innerEdgeBurstTimers) clearTimeout(timer)
-  innerEdgeBurstTimers.clear()
-  void nextTick(() => {
-    scheduleInnerEdgeRefresh()
-    requestAnimationFrame(() => {
-      scheduleInnerEdgeRefresh()
-      requestAnimationFrame(() => scheduleInnerEdgeRefresh())
-    })
-  })
-  for (const delay of [120, 240, 360, 520]) {
-    const timer = setTimeout(() => {
-      innerEdgeBurstTimers.delete(timer)
-      refreshInnerArtefactEdges()
-    }, delay)
-    innerEdgeBurstTimers.add(timer)
-  }
-  innerEdgeSettleTimer = setTimeout(() => {
-    innerEdgeSettleTimer = null
-    refreshInnerArtefactEdges()
-    updateInnerScrollMetrics()
-  }, INNER_EDGE_LAYOUT_SETTLE_MS)
-}
-
-// ── inner diagram scroll / pan ────────────────────────────────────────────
-function updateInnerScrollMetrics() {
-  const cols = innerDiagramColsRef.value
-  const container = innerArtefactDiagramRef.value
-  if (!cols || !container) return
-  innerViewportW.value = container.clientWidth
-  innerViewportH.value = container.clientHeight
-  innerContentW.value = cols.scrollWidth
-  innerContentH.value = cols.scrollHeight
-  const maxX = Math.max(0, innerContentW.value - innerViewportW.value)
-  const maxY = Math.max(0, innerContentH.value - innerViewportH.value)
-  if (-innerScrollX.value > maxX) innerScrollX.value = -maxX
-  if (-innerScrollY.value > maxY) innerScrollY.value = -maxY
-}
-
-const innerHScrollNeeded = computed(() => innerContentW.value > innerViewportW.value + 4)
-const innerVScrollNeeded = computed(() => innerContentH.value > innerViewportH.value + 4)
-
-const innerHThumbFraction = computed(() =>
-  !innerHScrollNeeded.value ? 1 : Math.max(0.06, innerViewportW.value / innerContentW.value),
-)
-const innerVThumbFraction = computed(() =>
-  !innerVScrollNeeded.value ? 1 : Math.max(0.06, innerViewportH.value / innerContentH.value),
-)
-const innerHScrollRatio = computed(() => {
-  const span = innerContentW.value - innerViewportW.value
-  return span > 0 ? (-innerScrollX.value / span) * 1000 : 0
-})
-const innerVScrollRatio = computed(() => {
-  const span = innerContentH.value - innerViewportH.value
-  return span > 0 ? (-innerScrollY.value / span) * 1000 : 0
-})
-const innerVThumbStyle = computed(() => {
-  const t = innerVScrollRatio.value / 1000
-  const frac = innerVThumbFraction.value
-  return { top: `${(t * (1 - frac) * 100).toFixed(3)}%`, height: `${(frac * 100).toFixed(3)}%` }
-})
-const innerHThumbStyle = computed(() => {
-  const t = innerHScrollRatio.value / 1000
-  const frac = innerHThumbFraction.value
-  return { left: `${(t * (1 - frac) * 100).toFixed(3)}%`, width: `${(frac * 100).toFixed(3)}%` }
-})
-
-function onInnerWheel(ev: WheelEvent) {
-  if (!innerHScrollNeeded.value && !innerVScrollNeeded.value) return
-  ev.preventDefault()
-  ev.stopPropagation()
-  const factor = ev.deltaMode === 2 ? 300 : ev.deltaMode === 1 ? 20 : 1
-  const dx = ev.deltaX * factor
-  const dy = ev.deltaY * factor
-  const maxX = Math.max(0, innerContentW.value - innerViewportW.value)
-  const maxY = Math.max(0, innerContentH.value - innerViewportH.value)
-  innerScrollX.value = Math.max(-maxX, Math.min(0, innerScrollX.value - dx))
-  innerScrollY.value = Math.max(-maxY, Math.min(0, innerScrollY.value - dy))
-}
-
-let innerPanDrag: { startX: number; startY: number; startScrollX: number; startScrollY: number } | null = null
-
-function onInnerPointerDown(ev: PointerEvent) {
-  if (ev.button !== 0) return
-  if (!(ev.target instanceof Element)) return
-  if (ev.target.closest('.package-box__inner-slot')) return
-  if (!innerHScrollNeeded.value && !innerVScrollNeeded.value) return
-  innerPanDrag = {
-    startX: ev.clientX,
-    startY: ev.clientY,
-    startScrollX: innerScrollX.value,
-    startScrollY: innerScrollY.value,
-  }
-  window.addEventListener('pointermove', onInnerPointerMove, { capture: true })
-  window.addEventListener('pointerup', onInnerPointerUp, { capture: true })
-}
-
-function onInnerPointerMove(ev: PointerEvent) {
-  if (!innerPanDrag) return
-  const dx = ev.clientX - innerPanDrag.startX
-  const dy = ev.clientY - innerPanDrag.startY
-  const maxX = Math.max(0, innerContentW.value - innerViewportW.value)
-  const maxY = Math.max(0, innerContentH.value - innerViewportH.value)
-  innerScrollX.value = Math.max(-maxX, Math.min(0, innerPanDrag.startScrollX + dx))
-  innerScrollY.value = Math.max(-maxY, Math.min(0, innerPanDrag.startScrollY + dy))
-}
-
-function onInnerPointerUp() {
-  innerPanDrag = null
-  window.removeEventListener('pointermove', onInnerPointerMove, true)
-  window.removeEventListener('pointerup', onInnerPointerUp, true)
-}
-
-function onInnerHSliderInput(ev: Event) {
-  const t = Number((ev.target as HTMLInputElement).value) / 1000
-  innerScrollX.value = -Math.max(0, innerContentW.value - innerViewportW.value) * t
-}
-
-function onInnerVSliderInput(ev: Event) {
-  const t = Number((ev.target as HTMLInputElement).value) / 1000
-  innerScrollY.value = -Math.max(0, innerContentH.value - innerViewportH.value) * t
-}
-
-/** Inner-diagram panel: child packages and/or Scala artefacts (artefacts only at top-level inner view). */
-const hasInnerDiagram = computed(
-  () =>
-    props.innerPackages.length > 0 || (props.innerArtefacts.length > 0 && !innerDrillPathArr.value.length),
-)
-
-function onInnerCardClick(id: string) {
-  const p = innerDrillPathArr.value
-  if (p.length && p[p.length - 1] === id) {
-    emit('update-inner-drill-path', p.slice(0, -1))
-    return
-  }
-  emit('update-inner-drill-path', [...p, id])
-}
-
-function clearInnerDrill() {
-  emit('update-inner-drill-path', [])
-  emit('update-inner-artefact-focus', null)
-}
-
-function onArtefactRowClick(id: string) {
-  emit('update-inner-artefact-focus', id)
-}
-
-/**
- * Per-inner-artefact pin / accent state — single source of truth lives in the parent
- * flow node's `data` (`innerArtefactPinned` / `innerArtefactColors` props), so it
- *
- *   1. Survives across {@link GraphDrillIn} layer-snapshot restores, and
- *   2. Is observable by the drill machinery — which uses the pinned map to refuse
- *      switching the layer drill away from a package whose inner artefact is pinned.
- *
- * This component is a lens over those props: read via the helpers below, write via the
- * `update-inner-artefact-pinned` / `update-inner-artefact-colors` events. Mirrors the
- * round-trip pattern already used for `focusedInnerArtefactId`.
- */
-function isInnerArtefactPinned(id: string): boolean {
-  return !!props.innerArtefactPinned?.[id]
-}
-
-function innerArtefactAccent(id: string): string {
-  return props.innerArtefactColors?.[id] ?? boxColorForId(id)
-}
-
-function onInnerArtefactTogglePin(id: string, ev: MouseEvent) {
-  ev.stopPropagation()
-  const cur = props.innerArtefactPinned ?? {}
-  const next = { ...cur }
-  if (next[id]) delete next[id]
-  else next[id] = true
-  emit('update-inner-artefact-pinned', next)
-}
-
-function onInnerArtefactCycleColor(id: string) {
-  const cur = props.innerArtefactColors ?? {}
-  const currentColor = cur[id] ?? boxColorForId(id)
-  emit('update-inner-artefact-colors', { ...cur, [id]: nextNamedBoxColor(currentColor) })
-}
-
-/**
- * Click on focused-artefact chrome (header / padding) → unfocus the artefact only.
- *
- * `stopPropagation` is critical: Vue Flow's `onNodeClick` listens on the entire node DOM
- * subtree, so without stopping here the click would bubble out of `PackageBox` and trigger
- * `applyLayerDrill(packageId)` in `GraphDrillIn.vue`, which would toggle the *outer*
- * package's layer-drill off as well. Tools and the artefact body have their own
- * `@click.stop` for the same reason.
- */
-function onFocusedArtefactBackgroundClick(ev: MouseEvent) {
-  ev.stopPropagation()
-  emit('update-inner-artefact-focus', null)
-}
-
-function innerArtefactCell(id: string): InnerArtefactSummary | undefined {
-  return innerArtefactById.value.get(id)
-}
-
-function innerDrillBackOne() {
-  const p = innerDrillPathArr.value
-  if (p.length) emit('update-inner-drill-path', p.slice(0, -1))
-}
-
-const rootEl = ref<HTMLElement | null>(null)
-const titleEl = ref<HTMLElement | null>(null)
-/** Unfocused + embedded roots: observe for vertical-body ratio when flex height changes without root width changing. */
-const packageBodyEl = ref<HTMLElement | null>(null)
-/** Title too wide for one line or title+subtitle overflow → vertical title; subtitle only when horizontal. */
-const tightLayout = ref(false)
-/** Short, wide unfocused box: folder icon left, title + subtitle to the right (no stacked column). */
-const wideShortRow = ref(false)
-/** Innermost unfocused package: when height is too tight, fall back to a top-left header row. */
-const compactHeaderLayout = ref(false)
-/**
- * Centered-stack cards (~4+ deep stacks): folder icon top-left at preferred size; optional second
- * row places the icon under the metrics strip when width is tight; title goes vertical before
- * horizontal truncation (`stackTitleVertical`).
- */
-const stackTopLeftLayout = ref(false)
-const stackIconBelowMetrics = ref(false)
-const stackTitleVertical = ref(false)
-/** Centered column stacks: 0 default padding, 1 / 2 = tighter horizontal inset before any reposition. */
-const stackHorizontalTightLevel = ref(0)
-/** When the metric strip stacks (narrow width), pin the logo top-left and keep metrics top-right. */
-const metricsBreakLayout = ref(false)
-
-/**
- * Subtitle hidden for stack-tl / generic tight, or metrics-break superslim.
- * Metrics-break **vertical** body shows subtitle next to vertical title.
- */
-const subtitleHiddenForVerticalTitle = computed(() => {
-  if (metricsBreakSuperslim.value) return true
-  if (metricsBreakLayout.value && metricsBreakVerticalBody.value) return false
-  return tightLayout.value || stackTitleVertical.value
-})
-
-let measureCanvas: CanvasRenderingContext2D | null = null
-
-function measureTitleWidth(label: string, title: HTMLElement): number {
-  if (!measureCanvas) {
-    measureCanvas = title.ownerDocument.createElement('canvas').getContext('2d')
-  }
-  const ctx = measureCanvas
-  if (!ctx) return 0
-  const cs = getComputedStyle(title)
-  ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
-  return ctx.measureText(label).width
-}
-
-/** Hysteresis so `tightLayout` / `wideShortRow` do not flip every ResizeObserver tick (layout ↔ measure feedback). */
-const TITLE_TIGHT_ENTER = 4
-const TITLE_TIGHT_EXIT = 14
-const WIDE_SHORT_MAX_H = 148
-const WIDE_SHORT_MIN_H_EXIT = 162
-const WIDE_SHORT_MIN_AR = 1.85
-const WIDE_SHORT_EXIT_AR = 1.72
-
-function measure() {
-  if (props.embedded) {
-    tightLayout.value = false
-    wideShortRow.value = false
-    compactHeaderLayout.value = false
-    stackTopLeftLayout.value = false
-    stackIconBelowMetrics.value = false
-    stackTitleVertical.value = false
-    stackHorizontalTightLevel.value = 0
-    applyMetricsBreakLayout(rootEl.value)
-    syncMetricsBreakChrome(rootEl.value)
-    return
-  }
-  if (props.focused) {
-    tightLayout.value = false
-    wideShortRow.value = false
-    compactHeaderLayout.value = false
-    stackTopLeftLayout.value = false
-    stackIconBelowMetrics.value = false
-    stackTitleVertical.value = false
-    stackHorizontalTightLevel.value = 0
-    metricsBreakLayout.value = false
-    metricsBreakSuperslim.value = false
-    metricsBreakVerticalBody.value = false
-    return
-  }
-  if (preferCenteredStackLayout.value) {
-    const root = rootEl.value
-    applyMetricsBreakLayout(root)
-    syncMetricsBreakChrome(root)
-    if (!root) return
-    const w = root.clientWidth
-    const h = root.clientHeight
-    const narrowBandPreferred = shortBandDojoPackage.value
-    const STACK_ULTRA_COMPACT_ENTER = narrowBandPreferred ? 118 : 58
-    const STACK_ULTRA_COMPACT_EXIT = narrowBandPreferred ? 132 : 70
-    /**
-     * When the metric strip stacks, use the same vertical-title chrome as Scala leaves — compact
-     * header fights `.package-box--metrics-break-vertical-body` (which excludes compact-header).
-     */
-    if (metricsBreakLayout.value) {
-      compactHeaderLayout.value = false
-    } else if (compactHeaderLayout.value) {
-      compactHeaderLayout.value = h <= STACK_ULTRA_COMPACT_EXIT
-    } else {
-      compactHeaderLayout.value = h <= STACK_ULTRA_COMPACT_ENTER
-    }
-    wideShortRow.value = false
-
-    /**
-     * Width hysteresis (per card). Stacked leaves share the column track width (~viewport minus
-     * diagram margins), so thresholds are tuned for real narrow panes — not package count alone.
-     *
-     * Apply **before** the ultra-compact (very short row height) early return: deep stacks shrink
-     * row height first; we still want tighter icon↔border inset from width while the centered stack
-     * chrome stays in the compact-header mode.
-     */
-    const HPAD_1_ENTER = 520
-    const HPAD_1_EXIT = 560
-    const HPAD_2_ENTER = 440
-    const HPAD_2_EXIT = 480
-    const lev = stackHorizontalTightLevel.value
-    let nextPad = 0
-    if (lev >= 2) {
-      nextPad = w < HPAD_2_EXIT ? 2 : w < HPAD_1_EXIT ? 1 : 0
-    } else if (lev === 1) {
-      nextPad = w < HPAD_2_ENTER ? 2 : w >= HPAD_1_EXIT ? 0 : 1
-    } else {
-      nextPad = w < HPAD_2_ENTER ? 2 : w < HPAD_1_ENTER ? 1 : 0
-    }
-    stackHorizontalTightLevel.value = nextPad
-
-    if (compactHeaderLayout.value) {
-      stackTopLeftLayout.value = false
-      stackIconBelowMetrics.value = false
-      stackTitleVertical.value = false
-      tightLayout.value = false
-      return
-    }
-    compactHeaderLayout.value = false
-
-    const title = titleEl.value
-    if (!title) {
-      stackTopLeftLayout.value = false
-      stackIconBelowMetrics.value = false
-      stackTitleVertical.value = false
-      stackHorizontalTightLevel.value = 0
-      tightLayout.value = false
-      return
-    }
-    /**
-     * Do not combine `stack-top-left` with `centered-stack`. Narrow column widths (e.g. abstraction
-     * dojo ~248px) used to flip `stackTopLeftLayout` when `w < 300px`, which layered the grid
-     * chrome on top of the centered column and produced icon | vertical-title instead of the
-     * same icon-over-title stack as every other simple package. Ellipsis + horizontal title handle
-     * overflow in the centered column.
-     */
-    stackTopLeftLayout.value = false
-    stackIconBelowMetrics.value = false
-    stackTitleVertical.value = false
-    tightLayout.value = false
-    return
-  }
-  stackHorizontalTightLevel.value = 0
-  stackTopLeftLayout.value = false
-  stackIconBelowMetrics.value = false
-  stackTitleVertical.value = false
-  compactHeaderLayout.value = false
-  const root = rootEl.value
-  const title = titleEl.value
-  applyMetricsBreakLayout(root)
-  syncMetricsBreakChrome(root)
-  if (!root || !title) return
-  /**
-   * Wide-shallow row mode skips the metrics-break vertical-title body row in CSS — force it off
-   * whenever the strip stacks so packages match Scala artefact leaves (narrow + low-wide can
-   * otherwise satisfy both predicates).
-   */
-  if (metricsBreakLayout.value) {
-    wideShortRow.value = false
-  }
-  /** Top-level Scala declaration leaves: match package vertical card — never use wide-shallow row mode. */
-  if (props.leafVisual === 'artefact') {
-    wideShortRow.value = false
-    const label = String(props.label ?? '')
-    const padX =
-      parseFloat(getComputedStyle(root).paddingLeft) + parseFloat(getComputedStyle(root).paddingRight)
-    const availW = Math.max(0, root.clientWidth - padX - 14)
-    const tw = measureTitleWidth(label, title)
-    const titleDemandsTight = tightLayout.value ? tw > availW - TITLE_TIGHT_EXIT : tw > availW + TITLE_TIGHT_ENTER
-    tightLayout.value = titleDemandsTight
-    return
-  }
-  const w = root.clientWidth
-  const h = root.clientHeight
-  const aspect = w / Math.max(1, h)
-  /** Low, wide chrome typical of LR-layout package nodes — prefer icon | text row over tall centered icon. */
-  if (wideShortRow.value) {
-    wideShortRow.value = h <= WIDE_SHORT_MIN_H_EXIT && aspect >= WIDE_SHORT_EXIT_AR
-  } else {
-    wideShortRow.value = h <= WIDE_SHORT_MAX_H && aspect >= WIDE_SHORT_MIN_AR
-  }
-  if (wideShortRow.value) {
-    tightLayout.value = false
-    return
-  }
-  /** Metrics-break chrome owns title/subtitle axis (superslim column or vertical-vs-horizontal body). */
-  if (metricsBreakLayout.value) {
-    tightLayout.value = false
-    return
-  }
-  const label = String(props.label ?? '')
-  const padX =
-    parseFloat(getComputedStyle(root).paddingLeft) + parseFloat(getComputedStyle(root).paddingRight)
-  const availW = Math.max(0, root.clientWidth - padX - 14)
-  const tw = measureTitleWidth(label, title)
-  /** Enter tight only on clear overflow; exit only when horizontal title clearly fits (avoids flip-flop at ±1px). */
-  const titleDemandsTight = tightLayout.value ? tw > availW - TITLE_TIGHT_EXIT : tw > availW + TITLE_TIGHT_ENTER
-  /** Only title width drives vertical writing mode — scroll-based overflow fought `v-if` on subtitle and flickered. */
-  tightLayout.value = titleDemandsTight
-}
-
-let ro: ResizeObserver | null = null
-let measureRaf = 0
-
-function scheduleMeasure() {
-  if (measureRaf) return
-  measureRaf = requestAnimationFrame(() => {
-    measureRaf = 0
-    measure()
-  })
-}
-
-onMounted(() => {
-  void nextTick(() => measure())
-})
-
-onUnmounted(() => {
-  if (measureRaf) {
-    cancelAnimationFrame(measureRaf)
-    measureRaf = 0
-  }
-  ro?.disconnect()
-  ro = null
-  innerArtefactRo?.disconnect()
-  innerArtefactRo = null
-  innerArtefactHostRo?.disconnect()
-  innerArtefactHostRo = null
-  if (innerEdgeRaf) {
-    cancelAnimationFrame(innerEdgeRaf)
-    innerEdgeRaf = 0
-  }
-  if (innerEdgeSettleTimer != null) {
-    clearTimeout(innerEdgeSettleTimer)
-    innerEdgeSettleTimer = null
-  }
-  for (const timer of innerEdgeBurstTimers) clearTimeout(timer)
-  innerEdgeBurstTimers.clear()
-  innerHoverEdgeId.value = null
-  innerHoverArtId.value = null
-  window.removeEventListener('pointermove', onInnerPointerMove, true)
-  window.removeEventListener('pointerup', onInnerPointerUp, true)
-})
-
-watch(
-  () => [
+const { hasCoverage, coveragePercentValue, simulatedMetrics } = useBoxMetrics(() => props.boxId)
+
+
+const {
+  rootEl,
+  titleEl,
+  packageBodyEl,
+  tightLayout,
+  flatLayout,
+  superflatLayout,
+  compactLayout,
+  metricsBreakLayout,
+  superslimLayout,
+  slimLayout,
+  subtitleHiddenForVerticalTitle,
+} = usePackageBoxChromeLayout({
+  embedded: () => props.embedded,
+  focused: () => props.focused,
+  label: () => String(props.label ?? ''),
+  hasCoverage: () => hasCoverage.value,
+  issueCount: () => simulatedMetrics.value.issueCount,
+  watchSources: () => [
     props.label,
     props.subtitle,
     props.focused,
@@ -1446,58 +269,136 @@ watch(
     simulatedMetrics.value.issueCount,
     innerCoverageVersion.value,
   ],
-  () => void nextTick(measure),
-)
-
-watch(innerArtefactDiagramRef, (el) => {
-  innerArtefactRo?.disconnect()
-  innerArtefactRo = null
-  if (el) {
-    innerArtefactRo = new ResizeObserver(() => {
-      scheduleInnerEdgeRefresh()
-      updateInnerScrollMetrics()
-    })
-    innerArtefactRo.observe(el)
-    scheduleInnerEdgeRefreshSettled()
-    updateInnerScrollMetrics()
-  }
 })
 
-/**
- * `ref="rootEl"` swaps between mutually exclusive templates (embedded / focused / default).
- * Re-attach the layout ResizeObserver whenever the root element changes — otherwise after a
- * layer-drill unfocus the observer stays on an unmounted element and compact-header state never
- * updates (Vue Flow docs use the same “rebind when target changes” idea as interactive MiniMap).
- */
-watch(packageBodyEl, (body) => {
-  if (!body || !rootEl.value) return
-  const r = ro
-  if (r) r.observe(body)
+
+const {
+  innerDrillPathArr,
+  activeInnerSpec,
+  topLevelInnerPackages,
+  hasInnerDiagram,
+  onInnerCardClick,
+  clearInnerDrill,
+  innerDrillBackOne,
+} = useInnerPackageDrill({
+  innerPackages: () => props.innerPackages,
+  innerArtefacts: () => props.innerArtefacts,
+  innerDrillPath: () => props.innerDrillPath,
+  updateInnerDrillPath: (path) => emit('update-inner-drill-path', [...path]),
+  updateInnerArtefactFocus: (id) => emit('update-inner-artefact-focus', id),
 })
 
-watch(
-  rootEl,
-  (el) => {
-    ro?.disconnect()
-    ro = null
-    if (el) {
-      const observer = new ResizeObserver(() => scheduleMeasure())
-      ro = observer
-      observer.observe(el)
-      void nextTick(() => {
-        if (packageBodyEl.value) observer.observe(packageBodyEl.value)
-        measure()
-      })
-    }
-    innerArtefactHostRo?.disconnect()
-    innerArtefactHostRo = null
-    if (el) {
-      innerArtefactHostRo = new ResizeObserver(() => scheduleInnerEdgeRefreshSettled())
-      innerArtefactHostRo.observe(el)
-    }
-  },
-  { flush: 'post' },
+const {
+  allInnerArtefactRelations,
+  innerArtefactFocusActive,
+  crossPackagePreviewActive,
+  innerArtefactLayerColumns,
+} = useInnerArtefactLayering({
+  focused: () => props.focused,
+  innerDrillPath: () => innerDrillPathArr.value,
+  innerArtefacts: () => props.innerArtefacts,
+  innerArtefactRelations: () => props.innerArtefactRelations,
+  crossArtefactRelations: () => props.crossArtefactRelations,
+  focusedInnerArtefactId: () => props.focusedInnerArtefactId ?? null,
+  globalFocusedArtefactId: () => props.globalFocusedArtefactId ?? null,
+})
+
+/** Relations currently visible in the UI after applying the relation-type checkboxes. */
+const innerArtefactRelationList = computed((): readonly TritonInnerArtefactRelationSpec[] => {
+  const visibility = relationTypeVisibilityRef.value
+  return allInnerArtefactRelations.value.filter(
+    (rel) => !shouldHideEdgeForRelationFilter({ label: rel.label }, visibility),
+  )
+})
+
+/** Cross-package relations currently visible in the UI after applying the relation-type checkboxes. */
+const visibleCrossArtefactRelations = computed((): readonly TritonInnerArtefactRelationSpec[] => {
+  const visibility = relationTypeVisibilityRef.value
+  return (props.crossArtefactRelations ?? []).filter(
+    (rel) => !shouldHideEdgeForRelationFilter({ label: rel.label }, visibility),
+  )
+})
+
+const innerEdgeMarkerId = computed(() =>
+  `tg-inner-inh-${String(props.boxId).replace(/[^a-zA-Z0-9_-]+/g, '-')}`,
 )
+
+const innerArtefactDiagramRef = ref<HTMLElement | null>(null)
+// ── inner diagram scroll state ────────────────────────────────────────────
+const innerDiagramColsRef = ref<HTMLElement | null>(null)
+const {
+  innerScrollX,
+  innerScrollY,
+  innerHScrollNeeded,
+  innerVScrollNeeded,
+  innerHScrollRatio,
+  innerVScrollRatio,
+  innerVThumbStyle,
+  innerHThumbStyle,
+  updateInnerScrollMetrics,
+  onInnerWheel,
+  onInnerPointerDown,
+  onInnerHSliderInput,
+  onInnerVSliderInput,
+  resetInnerScroll,
+} = useInnerDiagramScroll({
+  containerRef: innerArtefactDiagramRef,
+  colsRef: innerDiagramColsRef,
+})
+function bindInnerArtefactDiagramEl(el: unknown) {
+  innerArtefactDiagramRef.value = el instanceof HTMLElement ? el : null
+}
+
+function bindInnerDiagramColsEl(el: unknown) {
+  innerDiagramColsRef.value = el instanceof HTMLElement ? el : null
+}
+
+const {
+  crossPackageBoundaryStubRelations,
+  crossPackageExternalEndpoints,
+  childPackagePortsById,
+  rootPackagePortsLeft,
+  rootPackagePortsRight,
+  routedCrossPackageBridgeRelations,
+} = useInnerArtefactRouting({
+  boxId: () => props.boxId,
+  focused: () => props.focused,
+  innerDrillPath: () => innerDrillPathArr.value,
+  innerPackages: () => props.innerPackages,
+  innerArtefacts: () => props.innerArtefacts,
+  visibleCrossArtefactRelations: () => visibleCrossArtefactRelations.value,
+  crossPackagePreviewActive: () => crossPackagePreviewActive.value,
+  focusedInnerArtefactId: () => props.focusedInnerArtefactId ?? null,
+})
+
+const {
+  routedOverlayInnerEdgeDraws,
+  emphasizedInnerEdgeDraws,
+  normalInnerEdgeDraws,
+  innerEdgeLabelSvgStyleFor,
+  innerEdgeEmphasized,
+  innerArtefactEmphasized,
+  onInnerEdgeEnter,
+  onInnerEdgeLeave,
+  onInnerArtefactSlotEnter,
+  onInnerArtefactSlotLeave,
+  bindInnerArtefactSlotEl,
+  scheduleInnerEdgeRefresh,
+  scheduleInnerEdgeRefreshSettled,
+  observeInnerArtefactDiagram,
+  observeInnerArtefactHost,
+} = useInnerArtefactEdges({
+  boxId: () => props.boxId,
+  diagramRef: innerArtefactDiagramRef,
+  routedCrossPackageBridgeRelations: () => routedCrossPackageBridgeRelations.value,
+  crossPackageBoundaryStubRelations: () => crossPackageBoundaryStubRelations.value,
+  innerArtefactRelationList: () => innerArtefactRelationList.value,
+  updateScrollMetrics: updateInnerScrollMetrics,
+})
+
+watch(innerArtefactDiagramRef, observeInnerArtefactDiagram)
+
+watch(rootEl, observeInnerArtefactHost, { flush: 'post' })
 
 watch(
   () => [
@@ -1537,69 +438,21 @@ watch(crossPackagePreviewActive, () => void nextTick(() => scheduleInnerEdgeRefr
 watch(innerDiagramColsRef, () => void nextTick(() => updateInnerScrollMetrics()))
 
 watch([innerArtefactLayerColumns, () => props.focusedInnerArtefactId], () => {
-  innerScrollX.value = 0
-  innerScrollY.value = 0
+  resetInnerScroll()
 })
 
-const editing = ref(false)
-const draftLabel = ref('')
-const draftDescription = ref('')
-const labelInput = ref<HTMLInputElement | null>(null)
+const { editing, draftLabel, draftDescription, startEditing, commitEdit, cancelEdit } = useEditableBox({
+  label: () => props.label,
+  description: () => props.description,
+  canEdit: () => !props.embedded && props.leafVisual !== 'artefact',
+  onRename: (label) => emit('rename', label),
+  onDescriptionChange: (description) => emit('description-change', description),
+})
 
 /** Header dblclick on a Scala-leaf renders read-only chrome — no rename/description modal. */
 function onHeaderDblClick() {
   if (props.leafVisual === 'artefact') return
   startEditing()
-}
-
-function startEditing() {
-  if (props.embedded) return
-  if (props.leafVisual === 'artefact') return
-  if (editing.value) return
-  draftLabel.value = String(props.label ?? '')
-  draftDescription.value = String(props.description ?? '')
-  editing.value = true
-  void nextTick(() => {
-    const el = labelInput.value
-    if (el) {
-      el.focus()
-      el.select()
-    }
-  })
-}
-
-function commitEdit() {
-  if (!editing.value) return
-  const newLabel = draftLabel.value.trim()
-  if (newLabel && newLabel !== String(props.label ?? '')) {
-    emit('rename', newLabel)
-  }
-  const newDesc = draftDescription.value
-  if (newDesc !== String(props.description ?? '')) {
-    emit('description-change', newDesc)
-  }
-  editing.value = false
-}
-
-function cancelEdit() {
-  editing.value = false
-}
-
-function onLabelKeydown(ev: KeyboardEvent) {
-  if (ev.key === 'Enter') {
-    ev.preventDefault()
-    commitEdit()
-  } else if (ev.key === 'Escape') {
-    ev.preventDefault()
-    cancelEdit()
-  }
-}
-
-function onDescriptionKeydown(ev: KeyboardEvent) {
-  if (ev.key === 'Escape') {
-    ev.preventDefault()
-    cancelEdit()
-  }
 }
 </script>
 
@@ -1613,9 +466,8 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       'package-box--pinned': pinned,
       'package-box--has-metrics': true,
       'package-box--metrics-break': metricsBreakLayout,
-      'package-box--metrics-superslim': metricsBreakSuperslim,
-      'package-box--metrics-break-vertical-body':
-        metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+      'package-box--superslim-layout': superslimLayout,
+      'package-box--slim-layout': metricsBreakLayout && !superslimLayout && slimLayout,
     }"
     :style="{ '--box-accent': accent }"
   >
@@ -1630,18 +482,33 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     <div class="lang-icon-slot lang-icon-slot--embedded">
       <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
     </div>
-    <div ref="packageBodyEl" class="package-box__body package-box__body--embedded">
+    <div
+      ref="packageBodyEl"
+      class="package-box__body package-box__body--embedded"
+      :class="{ 'triton-vertical-rail-container': superslimLayout || (metricsBreakLayout && slimLayout) }"
+    >
       <div
         ref="titleEl"
         class="title"
         :class="{
           'title--metrics-break-vertical':
-            metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+            metricsBreakLayout && !superslimLayout && slimLayout,
+          'triton-vertical-rail-text triton-vertical-title-rail':
+            superslimLayout || (metricsBreakLayout && slimLayout),
         }"
       >
         {{ label }}
       </div>
-      <div v-if="subtitle && !subtitleHiddenForVerticalTitle" class="subtitle">{{ subtitle }}</div>
+      <div
+        v-if="subtitle && !subtitleHiddenForVerticalTitle"
+        class="subtitle"
+        :class="{
+          'triton-vertical-rail-text triton-vertical-subtitle-rail':
+            superslimLayout || (metricsBreakLayout && slimLayout),
+        }"
+      >
+        {{ subtitle }}
+      </div>
     </div>
   </div>
 
@@ -1737,499 +604,63 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
         </div>
 
         <template v-if="!innerDrillPathArr.length">
-          <div
+          <PackageInnerDiagram
             v-if="innerArtefactLayerColumns.length || topLevelInnerPackages.length"
-            ref="innerArtefactDiagramRef"
-            class="package-box__inner-artefact-diagram"
-            :class="{ 'package-box__inner-artefact-diagram--artefact-focus': innerArtefactFocusActive }"
-            @wheel.prevent.stop="onInnerWheel"
-            @pointerdown="onInnerPointerDown"
+            mode="focused"
+            :edge-marker-id="innerEdgeMarkerId"
+            :top-level-inner-packages="topLevelInnerPackages"
+            :inner-artefact-layer-columns="innerArtefactLayerColumns"
+            :focused-inner-artefact-id="focusedInnerArtefactId"
+            :inner-artefact-focus-active="innerArtefactFocusActive"
+            :notes="notes"
+            :normal-inner-edge-draws="normalInnerEdgeDraws"
+            :emphasized-inner-edge-draws="emphasizedInnerEdgeDraws"
+            :routed-overlay-inner-edge-draws="routedOverlayInnerEdgeDraws"
+            :cross-package-external-endpoints="crossPackageExternalEndpoints"
+            :child-package-ports-by-id="childPackagePortsById"
+            :root-package-ports-left="rootPackagePortsLeft"
+            :root-package-ports-right="rootPackagePortsRight"
+            :inner-scroll-x="innerScrollX"
+            :inner-scroll-y="innerScrollY"
+            :root-el-ref="bindInnerArtefactDiagramEl"
+            :cols-el-ref="bindInnerDiagramColsEl"
+            :bind-slot-el="bindInnerArtefactSlotEl"
+            :edge-emphasized="innerEdgeEmphasized"
+            :edge-label-style-for="innerEdgeLabelSvgStyleFor"
+            :artefact-emphasized="innerArtefactEmphasized"
+            :artefact-cell="innerArtefactCell"
+            :artefact-accent="innerArtefactAccent"
+            :artefact-pinned="isInnerArtefactPinned"
+            :artefact-has-coverage="innerHasCoverage"
+            :artefact-coverage-percent="innerCoveragePercentValue"
+            :artefact-metrics="innerSimulatedMetrics"
+            :can-open-artefact-in-editor="canOpenInnerArtefactInEditor"
+            :handle-wheel="onInnerWheel"
+            :handle-pointer-down="onInnerPointerDown"
+            :handle-inner-card-click="onInnerCardClick"
+            :handle-artefact-row-click="onArtefactRowClick"
+            :handle-focused-artefact-background-click="onFocusedArtefactBackgroundClick"
+            :handle-artefact-toggle-pin="onInnerArtefactTogglePin"
+            :handle-artefact-cycle-color="onInnerArtefactCycleColor"
+            :handle-open-artefact-in-editor="openInnerArtefactInEditor"
+            :handle-edge-enter="onInnerEdgeEnter"
+            :handle-edge-leave="onInnerEdgeLeave"
+            :handle-artefact-slot-enter="onInnerArtefactSlotEnter"
+            :handle-artefact-slot-leave="onInnerArtefactSlotLeave"
           >
-            <!--
-              Base edge SVG comes first in DOM so it paints below the artefact cols.
-              Both the SVG and cols are at z-index: 0, so DOM order determines stacking.
-              The overlay SVG (z-index: 2) still renders above cols via explicit z-index.
-            -->
-            <svg
-              v-if="innerEdgeDraws.length"
-              class="package-box__inner-artefact-edges"
-              aria-hidden="true"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <defs>
-                <marker
-                  :id="`${innerEdgeMarkerId}-extends`"
-                  class="package-box__inner-edge-marker"
-                  markerWidth="14"
-                  markerHeight="14"
-                  refX="12"
-                  refY="6"
-                  orient="auto"
-                  markerUnits="userSpaceOnUse"
-                >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--extends" />
-                </marker>
-                <marker
-                  :id="`${innerEdgeMarkerId}-hastrait`"
-                  class="package-box__inner-edge-marker"
-                  markerWidth="14"
-                  markerHeight="14"
-                  refX="12"
-                  refY="6"
-                  orient="auto"
-                  markerUnits="userSpaceOnUse"
-                >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--hastrait" />
-                </marker>
-                <marker
-                  :id="`${innerEdgeMarkerId}-gets`"
-                  class="package-box__inner-edge-marker"
-                  markerWidth="14"
-                  markerHeight="14"
-                  refX="12"
-                  refY="6"
-                  orient="auto"
-                  markerUnits="userSpaceOnUse"
-                >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--gets" />
-                </marker>
-                <marker
-                  :id="`${innerEdgeMarkerId}-creates`"
-                  class="package-box__inner-edge-marker"
-                  markerWidth="14"
-                  markerHeight="14"
-                  refX="12"
-                  refY="6"
-                  orient="auto"
-                  markerUnits="userSpaceOnUse"
-                >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--creates" />
-                </marker>
-              </defs>
-              <g v-for="e in normalInnerEdgeDraws" :key="e.id" class="package-box__inner-edge-group">
-                <path
-                  :d="e.path"
-                  class="package-box__inner-edge-hit"
-                  fill="none"
-                  @mouseenter="onInnerEdgeEnter(e)"
-                  @mouseleave="onInnerEdgeLeave(e)"
-                />
-                <path
-                  :d="e.path"
-                  :class="[
-                    'package-box__inner-edge-path',
-                    { 'package-box__inner-edge-path--emph': innerEdgeEmphasized(e) },
-                    e.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
-                    e.kind === 'creates' ? 'package-box__inner-edge-path--creates' : null,
-                  ]"
-                  fill="none"
-                  :style="{ stroke: e.stroke }"
-                  :marker-end="`url(#${innerEdgeMarkerId}-${innerEdgeMarkerSuffix(e.kind)})`"
-                />
-                <text
-                  :x="e.labelX"
-                  :y="e.labelY - 15"
-                  class="package-box__inner-edge-label"
-                  :class="{ 'package-box__inner-edge-label--emph': innerEdgeEmphasized(e) }"
-                  :style="innerEdgeLabelSvgStyleFor(e)"
-                  text-anchor="middle"
-                  dominant-baseline="middle"
-                >
-                  {{ e.displayLabel }}
-                </text>
-              </g>
-            </svg>
-            <!--
-              Focus inside an inheritance column: the focused column stretches to the full
-              sub-diagram height and replaces its rows with a single ScalaArtefactBox card.
-              Sibling artefacts in the same column are hidden (`v-if` skip) so the focus card
-              gets all the column space, but artefacts in **other** inheritance layers stay
-              fully visible — the user still sees the parent traits / classes (left columns)
-              and subclasses (right columns). Inheritance edges keep drawing throughout.
-            -->
-            <div
-              ref="innerDiagramColsRef"
-              class="package-box__inner-artefact-cols"
-              :class="{
-                'package-box__inner-artefact-cols--artefact-focus': innerArtefactFocusActive,
-                'package-box__inner-artefact-cols--with-packages': topLevelInnerPackages.length > 0,
-              }"
-              :style="innerScrollX || innerScrollY ? { transform: `translate(${innerScrollX}px,${innerScrollY}px)` } : undefined"
-            >
-              <div
-                v-if="topLevelInnerPackages.length"
-                class="package-box__inner-package-stack"
-              >
-                <div
-                  v-for="child in topLevelInnerPackages"
-                  :key="child.id"
-                  class="package-box__inner-package-row"
-                >
-                  <div
-                    v-if="childPackagePortsById.get(childPackagePortId(child.id, 'left'))"
-                    class="package-box__inner-package-port-anchor package-box__inner-package-port-anchor--left"
-                    aria-hidden="true"
-                  >
-                    <div
-                      :ref="(el) => bindInnerArtefactSlotEl(childPackagePortId(child.id, 'left'), el)"
-                      class="package-box__port package-box__port--left"
-                    />
-                  </div>
-                  <div
-                    :ref="(el) => bindInnerArtefactSlotEl(child.id, el)"
-                    class="package-box__inner-slot package-box__inner-slot--clickable package-box__inner-slot--inner-package"
-                    @click.stop="onInnerCardClick(child.id)"
-                  >
-                    <PackageBox
-                      embedded
-                      :box-id="child.id"
-                      :label="child.name"
-                      :subtitle="child.subtitle ?? ''"
-                      :focused="false"
-                      :pinned="false"
-                      :show-pin-tool="false"
-                      :show-color-tool="false"
-                    />
-                  </div>
-                  <div
-                    v-if="childPackagePortsById.get(childPackagePortId(child.id, 'right'))"
-                    class="package-box__inner-package-port-anchor package-box__inner-package-port-anchor--right"
-                    aria-hidden="true"
-                  >
-                    <div
-                      :ref="(el) => bindInnerArtefactSlotEl(childPackagePortId(child.id, 'right'), el)"
-                      class="package-box__port package-box__port--right"
-                    />
-                  </div>
-                </div>
-              </div>
-              <div
-                v-if="rootPackagePortsLeft.length"
-                class="package-box__root-ports package-box__root-ports--left"
-              >
-                <div
-                  v-for="port in rootPackagePortsLeft"
-                  :key="port.id"
-                  :ref="(el) => bindInnerArtefactSlotEl(port.id, el)"
-                  class="package-box__port package-box__port--left"
-                  aria-hidden="true"
-                />
-              </div>
-              <div
-                v-if="crossPackageExternalEndpoints.left.length"
-                class="package-box__external-endpoints package-box__external-endpoints--left"
-              >
-                <div
-                  v-for="ep in crossPackageExternalEndpoints.left"
-                  :key="ep.id"
-                  class="package-box__external-endpoint"
-                >
-                  <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
-                  <span
-                    :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
-                    class="package-box__port package-box__port--external package-box__port--right"
-                    aria-hidden="true"
-                  />
-                </div>
-              </div>
-              <div
-                v-for="(col, ci) in innerArtefactLayerColumns"
-                :key="'col-' + ci"
-                class="package-box__inner-artefact-col"
-                :class="{
-                  'package-box__inner-artefact-col--focus':
-                    innerArtefactFocusActive && col.includes(props.focusedInnerArtefactId ?? ''),
-                  'package-box__inner-artefact-col--peer':
-                    innerArtefactFocusActive && !col.includes(props.focusedInnerArtefactId ?? ''),
-                }"
-              >
-                <template v-for="artId in col" :key="artId">
-                  <!-- Focused row → swap for full-height ScalaArtefactBox card. -->
-                  <div
-                    v-if="innerArtefactFocusActive && focusedInnerArtefactId === artId && innerArtefactCell(artId)"
-                    :ref="(el) => bindInnerArtefactSlotEl(artId, el)"
-                    class="package-box__inner-slot package-box__inner-slot--artefact-layer package-box__inner-slot--artefact-focused-cell"
-                    :style="{ '--box-accent': innerArtefactAccent(artId) }"
-                    @click="onFocusedArtefactBackgroundClick"
-                  >
-                    <span
-                      class="package-box__artefact-anchor package-box__artefact-anchor--in"
-                      :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
-                      aria-hidden="true"
-                    />
-                    <span
-                      class="package-box__artefact-anchor package-box__artefact-anchor--out"
-                      :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
-                      aria-hidden="true"
-                    />
-                    <ScalaArtefactBox
-                      :box-id="artId"
-                      :label="innerArtefactCell(artId)!.name"
-                      :subtitle="innerArtefactCell(artId)!.subtitle ?? ''"
-                      :declaration="innerArtefactCell(artId)!.declaration"
-                      :constructor-params="innerArtefactCell(artId)!.constructorParams"
-                      :method-signatures="innerArtefactCell(artId)!.methodSignatures"
-                      :notes="notes"
-                      :box-color="innerArtefactAccent(artId)"
-                      :pinned="isInnerArtefactPinned(artId)"
-                      :show-pin-tool="true"
-                      :show-color-tool="true"
-                      :can-open-in-editor="canOpenInnerArtefactInEditor(artId)"
-                      class="package-box__inner-artefact-focus-card"
-                      @toggle-pin="(ev: MouseEvent) => onInnerArtefactTogglePin(artId, ev)"
-                      @cycle-color="onInnerArtefactCycleColor(artId)"
-                      @open-in-editor="(line?: number) => openInnerArtefactInEditor(artId, line)"
-                    />
-                  </div>
-                  <!--
-                    Sibling artefact in the focused column → hidden so the focus card claims
-                    the column. We render an empty placeholder (no element) so layout stays
-                    clean and the slot ref map drops the entry naturally.
-                  -->
-                  <template
-                    v-else-if="
-                      innerArtefactFocusActive
-                        && col.includes(props.focusedInnerArtefactId ?? '')
-                        && focusedInnerArtefactId !== artId
-                    "
-                  />
-                  <!-- All other artefacts (including other inheritance layers) → normal row. -->
-                  <div
-                    v-else-if="innerArtefactCell(artId)"
-                    :ref="(el) => bindInnerArtefactSlotEl(artId, el)"
-                    class="package-box__inner-slot package-box__inner-slot--artefact package-box__inner-slot--clickable package-box__inner-slot--artefact-layer"
-                    :class="{
-                      'package-box__inner-slot--inner-hovered': innerArtefactEmphasized(artId),
-                    }"
-                    :style="{ '--box-accent': innerArtefactAccent(artId) }"
-                    @mouseenter="onInnerArtefactSlotEnter(artId)"
-                    @mouseleave="onInnerArtefactSlotLeave(artId)"
-                    @click.stop="onArtefactRowClick(artId)"
-                  >
-                    <div class="package-box__artefact-row package-box__artefact-row--has-metrics">
-                      <div class="package-box__artefact-metrics">
-                        <BoxMetricStrip
-                          :coverage-percent="innerHasCoverage(artId) ? innerCoveragePercentValue(artId) : null"
-                          :technical-debt-percent="innerSimulatedMetrics(artId).technicalDebtPercent"
-                          :issue-count="innerSimulatedMetrics(artId).issueCount"
-                          :issue-level="innerSimulatedMetrics(artId).issueLevel"
-                        />
-                      </div>
-                      <span
-                        class="package-box__artefact-anchor package-box__artefact-anchor--in"
-                        :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
-                        aria-hidden="true"
-                      />
-                      <span
-                        class="package-box__artefact-anchor package-box__artefact-anchor--out"
-                        :class="{ 'package-box__artefact-anchor--emph': innerArtefactEmphasized(artId) }"
-                        aria-hidden="true"
-                      />
-                      <div class="lang-icon-slot lang-icon-slot--artefact">
-                        <img
-                          class="lang-svg"
-                          :src="scalaIconForKind(innerArtefactCell(artId)!.subtitle)"
-                          :alt="innerArtefactCell(artId)!.subtitle ?? ''"
-                          aria-hidden="true"
-                          decoding="async"
-                        />
-                      </div>
-                      <div class="package-box__artefact-text">
-                        <div class="package-box__artefact-title">{{ innerArtefactCell(artId)!.name }}</div>
-                        <div v-if="innerArtefactCell(artId)!.subtitle" class="package-box__artefact-subtitle">
-                          {{ innerArtefactCell(artId)!.subtitle }}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </template>
-              </div>
-              <div
-                v-if="rootPackagePortsRight.length"
-                class="package-box__root-ports package-box__root-ports--right"
-              >
-                <div
-                  v-for="port in rootPackagePortsRight"
-                  :key="port.id"
-                  :ref="(el) => bindInnerArtefactSlotEl(port.id, el)"
-                  class="package-box__port package-box__port--right"
-                  aria-hidden="true"
-                />
-              </div>
-              <div
-                v-if="crossPackageExternalEndpoints.right.length"
-                class="package-box__external-endpoints package-box__external-endpoints--right"
-              >
-                <div
-                  v-for="ep in crossPackageExternalEndpoints.right"
-                  :key="ep.id"
-                  class="package-box__external-endpoint package-box__external-endpoint--right"
-                >
-                  <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
-                  <span
-                    :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
-                    class="package-box__port package-box__port--external package-box__port--left"
-                    aria-hidden="true"
-                  />
-                </div>
-              </div>
-            </div>
-            <aside
-              v-if="innerVScrollNeeded"
-              class="inner-v-rail"
-              aria-label="Scroll inner diagram vertically"
-              @pointerdown.stop
-              @wheel.stop
-            >
-              <input
-                class="inner-v-rail__slider"
-                type="range"
-                min="0"
-                max="1000"
-                :value="innerVScrollRatio"
-                aria-orientation="vertical"
-                title="Scroll inner diagram vertically"
-                @input="onInnerVSliderInput"
+            <template #scroll-rails>
+              <InnerDiagramScrollRails
+                :horizontal-needed="innerHScrollNeeded"
+                :vertical-needed="innerVScrollNeeded"
+                :horizontal-ratio="innerHScrollRatio"
+                :vertical-ratio="innerVScrollRatio"
+                :horizontal-thumb-style="innerHThumbStyle"
+                :vertical-thumb-style="innerVThumbStyle"
+                :on-horizontal-input="onInnerHSliderInput"
+                :on-vertical-input="onInnerVSliderInput"
               />
-              <div class="inner-v-rail__thumb" :style="innerVThumbStyle" aria-hidden="true" />
-            </aside>
-            <aside
-              v-if="innerHScrollNeeded"
-              class="inner-h-rail"
-              aria-label="Scroll inner diagram horizontally"
-              @pointerdown.stop
-              @wheel.stop
-            >
-              <input
-                class="inner-h-rail__slider"
-                type="range"
-                min="0"
-                max="1000"
-                :value="innerHScrollRatio"
-                title="Scroll inner diagram horizontally"
-                @input="onInnerHSliderInput"
-              />
-              <div class="inner-h-rail__thumb" :style="innerHThumbStyle" aria-hidden="true" />
-            </aside>
-            <svg class="package-box__inner-artefact-edges package-box__inner-artefact-edges--overlay" aria-hidden="true">
-              <defs>
-                <marker
-                  :id="`${innerEdgeMarkerId}-overlay-extends`"
-                  class="package-box__inner-edge-marker"
-                  markerWidth="14"
-                  markerHeight="14"
-                  refX="12"
-                  refY="6"
-                  orient="auto"
-                  markerUnits="userSpaceOnUse"
-                >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--extends" />
-                </marker>
-                <marker
-                  :id="`${innerEdgeMarkerId}-overlay-hastrait`"
-                  class="package-box__inner-edge-marker"
-                  markerWidth="14"
-                  markerHeight="14"
-                  refX="12"
-                  refY="6"
-                  orient="auto"
-                  markerUnits="userSpaceOnUse"
-                >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--hastrait" />
-                </marker>
-                <marker
-                  :id="`${innerEdgeMarkerId}-overlay-gets`"
-                  class="package-box__inner-edge-marker"
-                  markerWidth="14"
-                  markerHeight="14"
-                  refX="12"
-                  refY="6"
-                  orient="auto"
-                  markerUnits="userSpaceOnUse"
-                >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--gets" />
-                </marker>
-                <marker
-                  :id="`${innerEdgeMarkerId}-overlay-creates`"
-                  class="package-box__inner-edge-marker"
-                  markerWidth="14"
-                  markerHeight="14"
-                  refX="12"
-                  refY="6"
-                  orient="auto"
-                  markerUnits="userSpaceOnUse"
-                >
-                  <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--creates" />
-                </marker>
-              </defs>
-              <g v-for="bridge in routedOverlayInnerEdgeDraws" :key="bridge.id" class="package-box__inner-edge-group">
-                <path
-                  :d="bridge.path"
-                  class="package-box__inner-edge-hit"
-                  fill="none"
-                  @mouseenter="onInnerEdgeEnter(bridge)"
-                  @mouseleave="onInnerEdgeLeave(bridge)"
-                />
-                <path
-                  :d="bridge.path"
-                  :class="[
-                    'package-box__inner-edge-path',
-                    'package-box__inner-edge-path--bridge',
-                    { 'package-box__inner-edge-path--emph': innerEdgeEmphasized(bridge) },
-                    bridge.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
-                    bridge.kind === 'creates' ? 'package-box__inner-edge-path--creates' : null,
-                  ]"
-                  fill="none"
-                  :style="{ stroke: bridge.stroke }"
-                  :marker-end="`url(#${innerEdgeMarkerId}-overlay-${innerEdgeMarkerSuffix(bridge.kind)})`"
-                />
-                <text
-                  v-if="bridge.displayLabel"
-                  :x="bridge.labelX"
-                  :y="bridge.labelY - 15"
-                  class="package-box__inner-edge-label package-box__inner-edge-label--bridge"
-                  :class="{ 'package-box__inner-edge-label--emph': innerEdgeEmphasized(bridge) }"
-                  :style="innerEdgeLabelSvgStyleFor(bridge)"
-                  text-anchor="middle"
-                  dominant-baseline="middle"
-                >
-                  {{ bridge.displayLabel }}
-                </text>
-              </g>
-              <g v-for="e in emphasizedInnerEdgeDraws" :key="`emph-${e.id}`" class="package-box__inner-edge-group">
-                <path
-                  :d="e.path"
-                  class="package-box__inner-edge-hit"
-                  fill="none"
-                  @mouseenter="onInnerEdgeEnter(e)"
-                  @mouseleave="onInnerEdgeLeave(e)"
-                />
-                <path
-                  :d="e.path"
-                  :class="[
-                    'package-box__inner-edge-path',
-                    { 'package-box__inner-edge-path--emph': innerEdgeEmphasized(e) },
-                    e.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
-                    e.kind === 'creates' ? 'package-box__inner-edge-path--creates' : null,
-                  ]"
-                  fill="none"
-                  :style="{ stroke: e.stroke }"
-                  :marker-end="`url(#${innerEdgeMarkerId}-overlay-${innerEdgeMarkerSuffix(e.kind)})`"
-                />
-                <text
-                  :x="e.labelX"
-                  :y="e.labelY - 15"
-                  class="package-box__inner-edge-label"
-                  :class="{ 'package-box__inner-edge-label--emph': innerEdgeEmphasized(e) }"
-                  :style="innerEdgeLabelSvgStyleFor(e)"
-                  text-anchor="middle"
-                  dominant-baseline="middle"
-                >
-                  {{ e.displayLabel }}
-                </text>
-              </g>
-            </svg>
-          </div>
+            </template>
+          </PackageInnerDiagram>
         </template>
 
         <template v-else-if="activeInnerSpec">
@@ -2279,44 +710,16 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       </slot>
     </GeneralFocusedBox>
 
-    <div
+    <BoxEditDialog
       v-if="editing"
       class="package-box__editor nodrag nopan"
-      role="dialog"
-      aria-label="Edit package"
-      @pointerdown.stop
-      @mousedown.stop
-      @click.stop
-      @dblclick.stop
-      @keydown.stop
-    >
-      <label class="editor-field">
-        <span class="editor-label">Name</span>
-        <input
-          ref="labelInput"
-          v-model="draftLabel"
-          class="title-input"
-          spellcheck="false"
-          @keydown="onLabelKeydown"
-        />
-      </label>
-      <label class="editor-field">
-        <span class="editor-label">Description / AI prompt purpose</span>
-        <textarea
-          v-model="draftDescription"
-          class="description-input"
-          rows="5"
-          spellcheck="false"
-          placeholder="Describe what this package contains (included in the generated AI prompt)…"
-          @keydown="onDescriptionKeydown"
-        />
-      </label>
-      <div class="editor-actions">
-        <span class="edit-hint">Enter in name to save · Esc to cancel</span>
-        <button type="button" class="editor-btn" @click="cancelEdit">Cancel</button>
-        <button type="button" class="editor-btn editor-btn--primary" @click="commitEdit">Save</button>
-      </div>
-    </div>
+      dialog-label="Edit package"
+      description-placeholder="Describe what this package contains (included in the generated AI prompt)..."
+      v-model:model-value-label="draftLabel"
+      v-model:model-value-description="draftDescription"
+      @save="commitEdit"
+      @cancel="cancelEdit"
+    />
   </div>
 
   <!-- Default (unfocused top-level): centered folder icon + title block. -->
@@ -2325,7 +728,9 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     ref="rootEl"
     class="package-box"
     :class="{
-      'package-box--wide-short-row': wideShortRow,
+      'package-box--flat-layout': flatLayout,
+      'package-box--superflat-layout': superflatLayout,
+      'package-box--compact-layout': compactLayout,
       'package-box--tight': tightLayout,
       'package-box--scala-leaf': isScalaLeaf,
       'package-box--pinned': pinned,
@@ -2334,19 +739,9 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       'package-box--editing': editing,
       'package-box--has-metrics': true,
       'package-box--cross-preview': crossPackagePreviewActive,
-      'package-box--short-band-dojo': shortBandDojoPackage,
-      'package-box--centered-stack': preferCenteredStackLayout,
-      'package-box--compact-header': compactHeaderLayout,
-      'package-box--stack-top-left': stackTopLeftLayout,
-      'package-box--stack-icon-below-metrics': stackIconBelowMetrics,
-      'package-box--stack-hpad-1':
-        preferCenteredStackLayout && !stackTopLeftLayout && stackHorizontalTightLevel === 1,
-      'package-box--stack-hpad-2':
-        preferCenteredStackLayout && !stackTopLeftLayout && stackHorizontalTightLevel === 2,
       'package-box--metrics-break': metricsBreakLayout,
-      'package-box--metrics-superslim': metricsBreakSuperslim,
-      'package-box--metrics-break-vertical-body':
-        metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+      'package-box--superslim-layout': superslimLayout,
+      'package-box--slim-layout': metricsBreakLayout && !superslimLayout && slimLayout,
     }"
     :style="{ '--box-accent': accent }"
   >
@@ -2358,45 +753,25 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
         :issue-level="simulatedMetrics.issueLevel"
       />
     </div>
-    <div
+    <BoxToolbar
       class="package-box__tools"
-      @pointerdown.stop
-    >
-      <button
-        v-if="showPinTool"
-        type="button"
-        class="tool-btn tool-btn--pin"
-        :class="{ 'tool-btn--active': pinned }"
-        :title="isScalaLeaf ? 'Pin — keep this declaration highlighted when another box is zoomed' : 'Pin — keep this package highlighted when another box is zoomed'"
-        :aria-pressed="pinned ? 'true' : 'false'"
-        :aria-label="
-          isScalaLeaf
-            ? 'Pin declaration (stays highlighted when zooming elsewhere)'
-            : 'Pin package (stays focused when zooming elsewhere)'
-        "
-        @click.stop="emit('toggle-pin', $event)"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true" class="tool-btn__icon tool-btn__icon--pin">
-          <path
-            fill="currentColor"
-            d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z"
-          />
-        </svg>
-      </button>
-      <button
-        v-if="showColorTool"
-        type="button"
-        class="tool-btn tool-btn--color"
-        :title="`Accent: ${accent}. Click for next color.`"
-        aria-label="Change box accent color"
-        @click.stop="emit('cycle-color')"
-      >
-        <svg viewBox="0 0 16 16" aria-hidden="true" class="tool-btn__icon tool-btn__icon--color">
-          <circle cx="6" cy="8" r="4.25" />
-          <circle cx="11" cy="8" r="3" opacity="0.45" />
-        </svg>
-      </button>
-    </div>
+      :accent="accent"
+      :pinned="pinned"
+      :show-pin-tool="showPinTool"
+      :show-color-tool="showColorTool"
+      :pin-title="
+        isScalaLeaf
+          ? 'Pin — keep this declaration highlighted when another box is zoomed'
+          : 'Pin — keep this package highlighted when another box is zoomed'
+      "
+      :pin-aria-label="
+        isScalaLeaf
+          ? 'Pin declaration (stays highlighted when zooming elsewhere)'
+          : 'Pin package (stays focused when zooming elsewhere)'
+      "
+      @toggle-pin="emit('toggle-pin', $event)"
+      @cycle-color="emit('cycle-color')"
+    />
 
     <div class="lang-icon-slot" :class="{ 'lang-icon-slot--scala-leaf': isScalaLeaf }">
       <img
@@ -2409,29 +784,50 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       />
     </div>
 
-    <div ref="packageBodyEl" class="package-box__body" @dblclick.stop="startEditing">
+    <div
+      ref="packageBodyEl"
+      class="package-box__body"
+      :class="{ 'triton-vertical-rail-container': superslimLayout || (metricsBreakLayout && slimLayout) }"
+      @dblclick.stop="startEditing"
+    >
       <div
         ref="titleEl"
         class="title"
         :class="{
-          'stack-title-vertical': stackTitleVertical,
           'title--metrics-break-vertical':
-            metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+            metricsBreakLayout && !superslimLayout && slimLayout,
+          'triton-vertical-rail-text triton-vertical-title-rail':
+            superslimLayout || (metricsBreakLayout && slimLayout),
         }"
-        :title="isScalaLeaf ? String(label ?? '') : 'Double-click to rename / edit description'"
+        :title="
+          superslimLayout || (metricsBreakLayout && slimLayout)
+            ? undefined
+            : isScalaLeaf
+              ? String(label ?? '')
+              : 'Double-click to rename / edit description'
+        "
       >
         {{ label }}
       </div>
-      <div v-if="subtitle && !subtitleHiddenForVerticalTitle" class="subtitle">{{ subtitle }}</div>
+      <div
+        v-if="subtitle && !subtitleHiddenForVerticalTitle"
+        class="subtitle"
+        :class="{
+          'triton-vertical-rail-text triton-vertical-subtitle-rail':
+            superslimLayout || (metricsBreakLayout && slimLayout),
+        }"
+      >
+        {{ subtitle }}
+      </div>
       <div
         v-if="
           !isScalaLeaf &&
           description &&
           !tightLayout &&
-          !wideShortRow &&
-          !stackTitleVertical &&
-          !metricsBreakSuperslim &&
-          !(metricsBreakLayout && metricsBreakVerticalBody)
+          !flatLayout &&
+          !compactLayout &&
+          !superslimLayout &&
+          !(metricsBreakLayout && slimLayout)
         "
         class="description-preview"
         :title="description"
@@ -2441,218 +837,61 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
     </div>
 
     <!-- Cross-package focus preview: show full inner diagram when a connected artefact elsewhere is focused -->
-    <div
+    <PackageInnerDiagram
       v-if="crossPackagePreviewActive && innerArtefactLayerColumns.length"
-      ref="innerArtefactDiagramRef"
-      class="package-box__inner-artefact-diagram nodrag nopan"
-      @pointerdown.stop
-      @wheel.stop
-    >
-      <!-- SVG first so DOM order places it below the cols (both at z-index: 0). -->
-      <svg
-        v-if="innerEdgeDraws.length"
-        class="package-box__inner-artefact-edges"
-        aria-hidden="true"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <defs>
-          <marker
-            :id="`${innerEdgeMarkerId}-extends`"
-            class="package-box__inner-edge-marker"
-            markerWidth="14"
-            markerHeight="14"
-            refX="12"
-            refY="6"
-            orient="auto"
-            markerUnits="userSpaceOnUse"
-          >
-            <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--extends" />
-          </marker>
-          <marker
-            :id="`${innerEdgeMarkerId}-hastrait`"
-            class="package-box__inner-edge-marker"
-            markerWidth="14"
-            markerHeight="14"
-            refX="12"
-            refY="6"
-            orient="auto"
-            markerUnits="userSpaceOnUse"
-          >
-            <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--hastrait" />
-          </marker>
-          <marker
-            :id="`${innerEdgeMarkerId}-gets`"
-            class="package-box__inner-edge-marker"
-            markerWidth="14"
-            markerHeight="14"
-            refX="12"
-            refY="6"
-            orient="auto"
-            markerUnits="userSpaceOnUse"
-          >
-            <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--gets" />
-          </marker>
-          <marker
-            :id="`${innerEdgeMarkerId}-creates`"
-            class="package-box__inner-edge-marker"
-            markerWidth="14"
-            markerHeight="14"
-            refX="12"
-            refY="6"
-            orient="auto"
-            markerUnits="userSpaceOnUse"
-          >
-            <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--creates" />
-          </marker>
-        </defs>
-        <g v-for="e in normalInnerEdgeDraws" :key="e.id" class="package-box__inner-edge-group">
-          <path
-            :d="e.path"
-            class="package-box__inner-edge-hit"
-            fill="none"
-            @mouseenter="onInnerEdgeEnter(e)"
-            @mouseleave="onInnerEdgeLeave(e)"
-          />
-          <path
-            :d="e.path"
-            :class="[
-              'package-box__inner-edge-path',
-              { 'package-box__inner-edge-path--emph': innerEdgeEmphasized(e) },
-              e.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
-              e.kind === 'creates' ? 'package-box__inner-edge-path--creates' : null,
-            ]"
-            fill="none"
-            :style="{ stroke: e.stroke }"
-            :marker-end="`url(#${innerEdgeMarkerId}-${innerEdgeMarkerSuffix(e.kind)})`"
-          />
-          <text
-            v-if="e.displayLabel"
-            :x="e.labelX"
-            :y="e.labelY - 15"
-            class="package-box__inner-edge-label"
-            :style="innerEdgeLabelSvgStyleFor(e)"
-            text-anchor="middle"
-            dominant-baseline="middle"
-            >{{ e.displayLabel }}</text
-          >
-        </g>
-      </svg>
-      <div class="package-box__inner-artefact-cols">
-        <div
-          v-if="crossPackageExternalEndpoints.left.length"
-          class="package-box__external-endpoints package-box__external-endpoints--left"
-        >
-          <div
-            v-for="ep in crossPackageExternalEndpoints.left"
-            :key="ep.id"
-            class="package-box__external-endpoint"
-          >
-            <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
-            <span
-              :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
-              class="package-box__port package-box__port--external package-box__port--right"
-              aria-hidden="true"
-            />
-          </div>
-        </div>
-        <div
-          v-for="(col, ci) in innerArtefactLayerColumns"
-          :key="'col-' + ci"
-          class="package-box__inner-artefact-col"
-        >
-          <template v-for="artId in col" :key="artId">
-            <div
-              v-if="innerArtefactCell(artId)"
-              :ref="(el) => bindInnerArtefactSlotEl(artId, el)"
-              class="package-box__inner-slot package-box__inner-slot--artefact package-box__inner-slot--artefact-layer"
-              :style="{ '--box-accent': innerArtefactAccent(artId) }"
-            >
-              <div class="package-box__artefact-row">
-                <span
-                  class="package-box__artefact-anchor package-box__artefact-anchor--in"
-                  aria-hidden="true"
-                />
-                <span
-                  class="package-box__artefact-anchor package-box__artefact-anchor--out"
-                  aria-hidden="true"
-                />
-                <div class="lang-icon-slot lang-icon-slot--artefact">
-                  <img
-                    class="lang-svg"
-                    :src="scalaIconForKind(innerArtefactCell(artId)!.subtitle)"
-                    :alt="innerArtefactCell(artId)!.subtitle ?? ''"
-                    aria-hidden="true"
-                    decoding="async"
-                  />
-                </div>
-                <div class="package-box__artefact-text">
-                  <div class="package-box__artefact-title">{{ innerArtefactCell(artId)!.name }}</div>
-                  <div v-if="innerArtefactCell(artId)!.subtitle" class="package-box__artefact-subtitle">
-                    {{ innerArtefactCell(artId)!.subtitle }}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </template>
-        </div>
-        <div
-          v-if="crossPackageExternalEndpoints.right.length"
-          class="package-box__external-endpoints package-box__external-endpoints--right"
-        >
-          <div
-            v-for="ep in crossPackageExternalEndpoints.right"
-            :key="ep.id"
-            class="package-box__external-endpoint package-box__external-endpoint--right"
-          >
-            <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
-            <span
-              :ref="(el) => bindInnerArtefactSlotEl(ep.id, el)"
-              class="package-box__port package-box__port--external package-box__port--left"
-              aria-hidden="true"
-            />
-          </div>
-        </div>
-      </div>
-    </div>
+      mode="cross-preview"
+      class="nodrag nopan"
+      :edge-marker-id="innerEdgeMarkerId"
+      :top-level-inner-packages="topLevelInnerPackages"
+      :inner-artefact-layer-columns="innerArtefactLayerColumns"
+      :focused-inner-artefact-id="focusedInnerArtefactId"
+      :inner-artefact-focus-active="false"
+      :notes="notes"
+      :normal-inner-edge-draws="normalInnerEdgeDraws"
+      :emphasized-inner-edge-draws="[]"
+      :routed-overlay-inner-edge-draws="[]"
+      :cross-package-external-endpoints="crossPackageExternalEndpoints"
+      :child-package-ports-by-id="childPackagePortsById"
+      :root-package-ports-left="[]"
+      :root-package-ports-right="[]"
+      :inner-scroll-x="0"
+      :inner-scroll-y="0"
+      :root-el-ref="bindInnerArtefactDiagramEl"
+      :bind-slot-el="bindInnerArtefactSlotEl"
+      :edge-emphasized="innerEdgeEmphasized"
+      :edge-label-style-for="innerEdgeLabelSvgStyleFor"
+      :artefact-emphasized="innerArtefactEmphasized"
+      :artefact-cell="innerArtefactCell"
+      :artefact-accent="innerArtefactAccent"
+      :artefact-pinned="isInnerArtefactPinned"
+      :artefact-has-coverage="innerHasCoverage"
+      :artefact-coverage-percent="innerCoveragePercentValue"
+      :artefact-metrics="innerSimulatedMetrics"
+      :can-open-artefact-in-editor="canOpenInnerArtefactInEditor"
+      :handle-wheel="onInnerWheel"
+      :handle-pointer-down="onInnerPointerDown"
+      :handle-inner-card-click="onInnerCardClick"
+      :handle-artefact-row-click="onArtefactRowClick"
+      :handle-focused-artefact-background-click="onFocusedArtefactBackgroundClick"
+      :handle-artefact-toggle-pin="onInnerArtefactTogglePin"
+      :handle-artefact-cycle-color="onInnerArtefactCycleColor"
+      :handle-open-artefact-in-editor="openInnerArtefactInEditor"
+      :handle-edge-enter="onInnerEdgeEnter"
+      :handle-edge-leave="onInnerEdgeLeave"
+      :handle-artefact-slot-enter="onInnerArtefactSlotEnter"
+      :handle-artefact-slot-leave="onInnerArtefactSlotLeave"
+    />
 
-    <div
+    <BoxEditDialog
       v-if="editing"
       class="package-box__editor nodrag nopan"
-      role="dialog"
-      :aria-label="isScalaLeaf ? 'Edit box' : 'Edit package'"
-      @pointerdown.stop
-      @mousedown.stop
-      @click.stop
-      @dblclick.stop
-      @keydown.stop
-    >
-      <label class="editor-field">
-        <span class="editor-label">Name</span>
-        <input
-          ref="labelInput"
-          v-model="draftLabel"
-          class="title-input"
-          spellcheck="false"
-          @keydown="onLabelKeydown"
-        />
-      </label>
-      <label class="editor-field">
-        <span class="editor-label">Description / AI prompt purpose</span>
-        <textarea
-          v-model="draftDescription"
-          class="description-input"
-          rows="5"
-          spellcheck="false"
-          placeholder="Describe what this package contains (included in the generated AI prompt)…"
-          @keydown="onDescriptionKeydown"
-        />
-      </label>
-      <div class="editor-actions">
-        <span class="edit-hint">Enter in name to save · Esc to cancel</span>
-        <button type="button" class="editor-btn" @click="cancelEdit">Cancel</button>
-        <button type="button" class="editor-btn editor-btn--primary" @click="commitEdit">Save</button>
-      </div>
-    </div>
+      :dialog-label="isScalaLeaf ? 'Edit box' : 'Edit package'"
+      description-placeholder="Describe what this package contains (included in the generated AI prompt)..."
+      v-model:model-value-label="draftLabel"
+      v-model:model-value-description="draftDescription"
+      @save="commitEdit"
+      @cancel="cancelEdit"
+    />
   </div>
 </template>
 
@@ -2676,8 +915,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
    * Body fill is a very light wash of the accent strip so packages, Scala leaves, and
    * inner artefact rows all share the same family-color identity (not just the strip).
    * The 90% alpha keeps every box slightly translucent so dependency / inheritance edges
-   * routed *under* a box (see `.package-box__inner-artefact-edges` z-index: 0 below, plus
-   * Vue Flow rendering edges below nodes by default) stay faintly visible through it.
+   * routed under a box stay faintly visible through it.
    */
   --box-fill: color-mix(in srgb, var(--box-accent) 8%, #ffffff);
   position: relative;
@@ -2722,10 +960,6 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   display: flex;
   flex-direction: column;
 }
-.package-box__inner-artefact-diagram--cross-preview {
-  margin-top: 8px;
-}
-
 /**
  * Scala leaf chrome is intentionally identical to a package card here — same left accent
  * strip (inset shadow), same border, same drop shadow. The two diverge only in the icon
@@ -2756,32 +990,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   padding-top: clamp(16px, 3.8vmin, 24px);
 }
 
-.package-box--has-metrics.package-box--metrics-break:not(.package-box--compact-header) {
-  padding-top: clamp(36px, 7.5vmin, 52px);
-}
-/**
- * Centered stack: reduce horizontal padding (icon → border) before any top-left reposition.
- * Metrics stay in the default absolute top-right slot from `.package-box__metrics`.
- */
-.package-box--centered-stack.package-box--stack-hpad-1:not(.package-box--stack-top-left) {
-  padding-left: max(5px, min(9px, 1.15vmin));
-  padding-right: max(5px, min(9px, 1.15vmin));
-}
-.package-box--centered-stack.package-box--stack-hpad-1:not(.package-box--stack-top-left).package-box--has-metrics {
-  padding-top: clamp(14px, 3.1vmin, 22px);
-}
-.package-box--centered-stack.package-box--stack-hpad-2:not(.package-box--stack-top-left) {
-  padding: max(1px, 4px) max(1px, 6px);
-}
-.package-box--centered-stack.package-box--stack-hpad-2:not(.package-box--stack-top-left).package-box--has-metrics {
-  padding-top: max(11px, min(18px, 3vmin));
-  padding-bottom: max(1px, 4px);
-}
-
-/** `stack-hpad-*` rules above win on specificity; bump top again when the metric strip stacks. */
-.package-box--centered-stack.package-box--has-metrics.package-box--metrics-break:not(
-    .package-box--compact-header
-  ) {
+.package-box--has-metrics.package-box--metrics-break {
   padding-top: clamp(36px, 7.5vmin, 52px);
 }
 /**
@@ -2858,9 +1067,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
  * Narrow width: metric strip stacks — pin folder / Scala badge top-left (same `top: 1px` as
  * `.package-box__metrics`), keep strip top-right. Skip wide-shallow / ultra-compact header modes.
  */
-.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
-    .package-box--compact-header
-  )
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--flat-layout)
   .lang-icon-slot:not(.lang-icon-slot--header):not(.lang-icon-slot--artefact) {
   position: absolute;
   top: 1px;
@@ -2876,21 +1083,17 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   margin: 0;
 }
 
-.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--flat-layout):not(
     .package-box--focused-layout
   )
   .package-box__body {
   justify-content: flex-start;
 }
 
-.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
-    .package-box--compact-header
-  )
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--flat-layout)
   .lang-icon-slot:not(.lang-icon-slot--header):not(.lang-icon-slot--artefact)
   :deep(.lang-svg),
-.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
-    .package-box--compact-header
-  )
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--flat-layout)
   .lang-icon-slot:not(.lang-icon-slot--header):not(.lang-icon-slot--artefact)
   :deep(svg) {
   height: 40px;
@@ -2927,31 +1130,19 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   width: auto;
 }
 
-.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
-    .package-box--compact-header
-  ):not(.package-box--focused-layout)
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--flat-layout):not(
+    .package-box--focused-layout
+  )
   .package-box__body
   > .title,
-.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
-    .package-box--compact-header
-  ):not(.package-box--focused-layout)
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--flat-layout):not(
+    .package-box--focused-layout
+  )
   .package-box__body
   > .subtitle,
-.package-box--has-metrics.package-box--metrics-break:not(.package-box--wide-short-row):not(
-    .package-box--compact-header
-  ):not(.package-box--focused-layout)
-  .package-box__body
-  > .description-preview {
-  text-align: left;
-}
-
-.package-box--centered-stack.package-box--has-metrics.package-box--metrics-break:not(.package-box--compact-header)
-  .package-box__body
-  > .title,
-.package-box--centered-stack.package-box--has-metrics.package-box--metrics-break:not(.package-box--compact-header)
-  .package-box__body
-  > .subtitle,
-.package-box--centered-stack.package-box--has-metrics.package-box--metrics-break:not(.package-box--compact-header)
+.package-box--has-metrics.package-box--metrics-break:not(.package-box--flat-layout):not(
+    .package-box--focused-layout
+  )
   .package-box__body
   > .description-preview {
   text-align: left;
@@ -2966,15 +1157,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
  * Superslim: subtitle hidden in script — keep metrics + tools pinned top-right (same as wide
  * break); reserve vertical space for the floating strip instead of in-flow stacking.
  */
-.package-box--has-metrics.package-box--metrics-break.package-box--metrics-superslim:not(
-    .package-box--compact-header
-  ) {
-  padding-top: clamp(36px, 7.5vmin, 52px);
-}
-
-.package-box--centered-stack.package-box--has-metrics.package-box--metrics-break.package-box--metrics-superslim:not(
-    .package-box--compact-header
-  ) {
+.package-box--has-metrics.package-box--metrics-break.package-box--superslim-layout {
   padding-top: clamp(36px, 7.5vmin, 52px);
 }
 
@@ -2982,34 +1165,18 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
  * Side-by-side chrome: when the body is taller than it is wide, title + subtitle use vertical
  * rails; otherwise they stay horizontal under the logo/metrics row.
  */
-.package-box--metrics-break-vertical-body:not(.package-box--metrics-superslim) .package-box__body,
-.package-box--embedded.package-box--metrics-break-vertical-body:not(.package-box--metrics-superslim)
+.package-box--slim-layout:not(.package-box--superslim-layout) .package-box__body,
+.package-box--embedded.package-box--slim-layout:not(.package-box--superslim-layout)
   .package-box__body--embedded {
-  flex-direction: row;
-  justify-content: center;
-  align-items: stretch;
-  gap: 8px;
+  width: 100%;
 }
 
-.package-box--metrics-break-vertical-body:not(.package-box--metrics-superslim)
-  .title.title--metrics-break-vertical,
-.package-box--metrics-break-vertical-body:not(.package-box--metrics-superslim) .package-box__body > .subtitle {
-  white-space: nowrap;
-  overflow: visible;
-  text-overflow: clip;
-  max-width: none;
-  align-self: stretch;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  text-orientation: mixed;
-  line-height: 1.15;
-  text-align: left;
+.package-box--slim-layout:not(.package-box--superslim-layout):not(.package-box--scala-leaf)
+  .package-box__body {
+  --triton-vertical-title-rail-shift-y: 3px;
 }
 
-.package-box--metrics-break-vertical-body:not(.package-box--metrics-superslim) .package-box__body > .subtitle {
-  margin-top: 0;
-  opacity: 1;
-  max-height: none;
+.package-box--slim-layout:not(.package-box--superslim-layout) .package-box__body > .subtitle {
   pointer-events: none;
 }
 
@@ -3066,32 +1233,40 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   z-index: 1;
 }
 
-/** Unfocused: wide + shallow node — icon column left, title/subtitle stack right (LR layout). */
-.package-box--wide-short-row {
+/** Unfocused flat node: icon column left, title/subtitle stack right (LR layout). */
+.package-box--flat-layout {
   flex-direction: row;
   align-items: center;
   justify-content: flex-start;
   gap: 0;
-  padding-top: clamp(4px, 1vmin, 10px);
-  padding-bottom: clamp(4px, 1vmin, 10px);
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
-.package-box--wide-short-row .lang-icon-slot {
+
+.package-box--has-metrics.package-box--flat-layout {
+  padding-top: 12px;
+  padding-bottom: 2px;
+}
+
+.package-box--flat-layout .lang-icon-slot {
   width: auto;
   min-width: 0;
   flex: 0 0 auto;
   align-self: center;
-  height: clamp(28px, min(18cqh, 72px), 64px);
-  max-height: min(100%, 72px);
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
   margin-bottom: 0;
-  margin-right: clamp(8px, 2.2cqw, 14px);
+  margin-right: 8px;
   justify-content: center;
 }
-.package-box--wide-short-row .lang-icon-slot :deep(.lang-svg) {
-  max-height: min(100%, 52px);
-  height: auto;
+.package-box--flat-layout .lang-icon-slot :deep(.lang-svg) {
+  height: 40px;
+  max-height: 40px;
+  max-width: 40px;
   width: auto;
 }
-.package-box--wide-short-row .package-box__body {
+.package-box--flat-layout .package-box__body {
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;
@@ -3099,14 +1274,19 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   justify-content: center;
   text-align: left;
 }
-.package-box--wide-short-row .title {
+.package-box--flat-layout .title {
   text-align: left;
   align-self: stretch;
 }
-.package-box--wide-short-row .subtitle {
+.package-box--flat-layout .subtitle {
   text-align: left;
   align-self: stretch;
   max-height: 2.8em;
+  line-height: 1.05;
+}
+
+.package-box--flat-layout .title {
+  line-height: 1.05;
 }
 
 .package-box__body {
@@ -3121,64 +1301,113 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   box-sizing: border-box;
 }
 
-.package-box--centered-stack {
+.package-box--superflat-layout {
+  flex-direction: row;
+  align-items: center;
   justify-content: flex-start;
+  gap: 0;
+  padding: 0;
 }
 
-.package-box--centered-stack .lang-icon-slot {
-  margin-bottom: clamp(8px, 1.7cqh, 18px);
+.package-box--has-metrics.package-box--superflat-layout {
+  padding: 0;
 }
 
-/**
- * Tall stacked leaves (e.g. stacking dojo count → 1): scoped to short-band fixtures only — the same
- * `height:auto` rule on generic nested `centered-stack` packages disturbed layout measurement in
- * the nesting dojo e2e (`centered-stack` class dropped).
- */
-.package-box--short-band-dojo.package-box--centered-stack:not(.package-box--compact-header):not(
-    .package-box--stack-top-left
-  ):not(.package-box--metrics-break)
-  .lang-icon-slot {
-  height: auto;
-  max-height: min(160px, min(30cqw, 28cqh));
-  align-items: flex-start;
-}
-
-.package-box--centered-stack .package-box__body {
+.package-box--superflat-layout .lang-icon-slot {
+  width: 40px;
+  min-width: 40px;
+  flex: 0 0 auto;
+  align-self: stretch;
   align-items: stretch;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  margin: 0;
+  justify-content: flex-start;
+}
+
+.package-box--superflat-layout .lang-icon-slot :deep(.lang-svg) {
+  height: 40px;
+  width: 40px;
+  max-height: 40px;
+  max-width: 40px;
+}
+
+.package-box--superflat-layout .package-box__body {
+  align-items: flex-start;
+  justify-content: center;
+  text-align: left;
+  gap: 0;
+}
+
+.package-box--superflat-layout .title,
+.package-box--superflat-layout .subtitle {
+  text-align: left;
+  align-self: stretch;
+}
+
+.package-box--superflat-layout .title,
+.package-box--superflat-layout .subtitle {
+  line-height: 1.05;
+}
+
+.package-box--compact-layout {
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  padding-top: 12px;
+  padding-bottom: 8px;
+}
+
+.package-box--has-metrics.package-box--compact-layout {
+  padding-top: 20px;
+}
+
+.package-box--compact-layout .lang-icon-slot {
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-self: center;
+  height: 44px;
+  min-height: 40px;
+  max-height: 48px;
+  margin-bottom: 2px;
+  justify-content: center;
+}
+
+.package-box--compact-layout .lang-icon-slot :deep(.lang-svg) {
+  height: 40px;
+  max-height: 40px;
+  width: auto;
+}
+
+.package-box--compact-layout .package-box__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: center;
   justify-content: flex-start;
   text-align: center;
+  gap: 0;
 }
 
-.package-box--centered-stack .title,
-.package-box--centered-stack .subtitle {
+.package-box--compact-layout .title {
   text-align: center;
-  align-self: stretch;
-  width: 100%;
-}
-
-.package-box--centered-stack .package-box__body > .description-preview {
-  text-align: center;
-  align-self: stretch;
-  width: 100%;
+  align-self: center;
+  max-width: 100%;
+  line-height: 1.1;
 }
 
 /**
  * Default / scala-leaf column: title + subtitle + description fill the body width and center
  * (same idea as {@link ProjectBox} — avoids shrink-wrapped lines sitting left of the icon).
  */
-.package-box:not(.package-box--tight):not(.package-box--wide-short-row):not(.package-box--stack-top-left):not(
-    .package-box--compact-header
-  ):not(.package-box--focused-layout)
+.package-box:not(.package-box--tight):not(.package-box--flat-layout):not(.package-box--focused-layout)
   .package-box__body
   > .title,
-.package-box:not(.package-box--tight):not(.package-box--wide-short-row):not(.package-box--stack-top-left):not(
-    .package-box--compact-header
-  ):not(.package-box--focused-layout)
+.package-box:not(.package-box--tight):not(.package-box--flat-layout):not(.package-box--focused-layout)
   .package-box__body
   > .subtitle,
-.package-box:not(.package-box--tight):not(.package-box--wide-short-row):not(.package-box--stack-top-left):not(
-    .package-box--compact-header
-  ):not(.package-box--focused-layout)
+.package-box:not(.package-box--tight):not(.package-box--flat-layout):not(.package-box--focused-layout)
   .package-box__body
   > .description-preview {
   text-align: center;
@@ -3194,165 +1423,6 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-}
-
-/**
- * Stacked package column (~4+ rows): icon pinned top-left at preferred size. Metrics stay
- * **fixed top-right** (same absolute slot as {@link ProjectBox} / general box) — not a grid-flow
- * row — so pin/color tools use the same `has-metrics` vertical offset as every other package card.
- * Narrow width may still drop the icon under the strip via `stack-icon-below-metrics`; title uses
- * `stackTitleVertical` before horizontal ellipsis.
- */
-.package-box.package-box--stack-top-left:not(.package-box--compact-header) {
-  display: grid;
-  min-width: min(100%, 124px);
-  column-gap: 8px;
-  row-gap: 6px;
-  align-items: start;
-  justify-items: stretch;
-}
-.package-box--stack-top-left:not(.package-box--stack-icon-below-metrics) {
-  grid-template-columns: 44px minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
-}
-.package-box--stack-top-left.package-box--stack-icon-below-metrics {
-  grid-template-columns: 1fr;
-  /** Metrics are out-of-flow (absolute); only icon row + body row. */
-  grid-template-rows: auto minmax(0, 1fr);
-}
-.package-box--stack-top-left:not(.package-box--stack-icon-below-metrics) .package-box__metrics,
-.package-box--stack-top-left.package-box--stack-icon-below-metrics .package-box__metrics {
-  position: absolute;
-  top: 1px;
-  right: 1px;
-  left: auto;
-  bottom: auto;
-  z-index: 4;
-  width: min(124px, calc(100% - 2px));
-  max-width: 124px;
-}
-.package-box--stack-top-left:not(.package-box--stack-icon-below-metrics) .lang-icon-slot {
-  grid-column: 1;
-  grid-row: 2;
-  width: 44px;
-  height: 44px;
-  min-width: 44px;
-  min-height: 44px;
-  max-width: 44px;
-  max-height: 44px;
-  margin-bottom: 0;
-  align-self: start;
-  justify-self: start;
-  justify-content: center;
-}
-.package-box--stack-top-left:not(.package-box--stack-icon-below-metrics) .package-box__body {
-  grid-column: 2;
-  grid-row: 2;
-  align-items: flex-start;
-  justify-content: flex-start;
-  text-align: left;
-  min-width: 0;
-}
-.package-box--stack-top-left.package-box--stack-icon-below-metrics .lang-icon-slot {
-  grid-column: 1;
-  grid-row: 1;
-  width: 44px;
-  height: 44px;
-  min-width: 44px;
-  min-height: 44px;
-  max-width: 44px;
-  max-height: 44px;
-  margin-bottom: 0;
-  justify-self: start;
-  justify-content: center;
-}
-.package-box--stack-top-left.package-box--stack-icon-below-metrics .package-box__body {
-  grid-column: 1;
-  grid-row: 2;
-  align-items: flex-start;
-  text-align: left;
-  min-width: 0;
-}
-.package-box--stack-top-left .lang-icon-slot :deep(.lang-svg) {
-  width: 40px;
-  height: 40px;
-  max-width: 44px;
-  max-height: 44px;
-}
-.package-box--stack-top-left .title {
-  text-align: left;
-  align-self: flex-start;
-}
-.package-box--stack-top-left .subtitle {
-  text-align: left;
-  align-self: flex-start;
-}
-.package-box--centered-stack.package-box--stack-top-left:not(.package-box--compact-header) .lang-icon-slot {
-  margin-bottom: 0;
-}
-.package-box--stack-top-left .title.stack-title-vertical {
-  white-space: nowrap;
-  overflow: visible;
-  text-overflow: clip;
-  max-width: none;
-  max-height: none;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  text-orientation: mixed;
-  line-height: 1.15;
-  align-self: center;
-  pointer-events: none;
-}
-
-.package-box--centered-stack.package-box--compact-header {
-  flex-direction: row;
-  align-items: flex-start;
-  justify-content: flex-start;
-  gap: 0;
-  padding-top: clamp(4px, 0.7vmin, 8px);
-  padding-left: clamp(8px, 1.1vmin, 12px);
-  padding-right: clamp(8px, 1.1vmin, 12px);
-  padding-bottom: clamp(4px, 0.7vmin, 8px);
-}
-
-.package-box--centered-stack.package-box--compact-header .lang-icon-slot {
-  width: auto;
-  min-width: 0;
-  flex: 0 0 auto;
-  align-self: flex-start;
-  height: 28px;
-  min-height: 28px;
-  max-height: 28px;
-  margin-bottom: 0;
-  margin-right: 8px;
-  justify-content: center;
-}
-
-.package-box--centered-stack.package-box--compact-header .lang-icon-slot :deep(.lang-svg) {
-  height: 28px;
-  max-height: 28px;
-  max-width: 28px;
-}
-
-.package-box--centered-stack.package-box--compact-header .package-box__body {
-  align-items: flex-start;
-  justify-content: flex-start;
-  text-align: left;
-  gap: 1px;
-}
-
-.package-box--centered-stack.package-box--compact-header .title,
-.package-box--centered-stack.package-box--compact-header .subtitle {
-  text-align: left;
-  align-self: stretch;
-}
-
-.package-box--centered-stack.package-box--compact-header .title {
-  line-height: 1.05;
-}
-
-.package-box--centered-stack.package-box--compact-header .subtitle {
-  line-height: 1.05;
 }
 
 /** Layer-drill focused root: header row + inner diagram (child packages). */
@@ -3466,377 +1536,6 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 .package-box--focused-layout .package-box__inner-diagram {
   padding-bottom: 0;
 }
-.package-box__inner-artefact-diagram {
-  position: relative;
-  flex: 1 1 0;
-  min-height: 0;
-  min-width: 0;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  overflow: hidden;
-  transition:
-    flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    min-height 0.45s cubic-bezier(0.4, 0, 0.2, 1);
-}
-/** When an inner artefact is focused, the diagram band claims the full vertical sub-diagram space. */
-.package-box__inner-artefact-diagram--artefact-focus {
-  flex: 1 1 0;
-  min-height: 0;
-}
-/**
- * Focused inner artefact card — fills the focused column's full height and width, with the same
- * focus chrome (accent strip, outline, tools cluster) as a focused PackageBox. Cursor stays
- * `default` because clicks on the card chrome unfocus (handled by the wrapper cell below); only
- * the explicit tool buttons / details body are interactive.
- */
-.package-box__inner-artefact-focus-card {
-  flex: 1 1 0;
-  min-height: 0;
-  min-width: 0;
-  width: 100%;
-  align-self: stretch;
-}
-/**
- * NOTE: the matching `.package-box__inner-slot--artefact-focused-cell` rule lives lower
- * in the file (after `.package-box__inner-slot--artefact-layer`) so it wins source-order
- * cascade over the `flex: 0 0 auto` collapse rule on equal specificity.
- */
-.package-box__inner-artefact-edges {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  /**
-   * Base edge SVG is placed *before* the cols in the DOM template so that with both at
-   * z-index: 0, DOM paint order makes the SVG render below the cols. This matches the
-   * "edges under artefact rows" feel without relying on a z-index difference that could
-   * interact badly with intermediate stacking contexts (container-type: size, overflow: auto).
-   */
-  z-index: 0;
-  overflow: visible;
-}
-.package-box__inner-artefact-edges--overlay {
-  z-index: 1;
-}
-.package-box__inner-edge-hit {
-  stroke: transparent;
-  stroke-width: 18;
-  pointer-events: stroke;
-  cursor: default;
-}
-.package-box__inner-edge-path {
-  stroke: var(--box-accent, #64748b);
-  stroke-width: 1.35;
-  opacity: 0.72;
-  vector-effect: non-scaling-stroke;
-  stroke-linecap: butt;
-  stroke-linejoin: miter;
-  pointer-events: none;
-  transition:
-    stroke-width 0.15s ease,
-    opacity 0.15s ease;
-}
-.package-box__inner-edge-path--emph {
-  stroke-width: 2.75;
-  opacity: 1;
-}
-.package-box__inner-edge-path--bridge {
-  stroke-width: 2.15;
-  opacity: 0.96;
-}
-.package-box__inner-edge-marker-shape {
-  fill: var(--box-accent, #64748b);
-}
-.package-box__inner-edge-marker-shape--extends {
-  fill: #1d4ed8;
-}
-.package-box__inner-edge-marker-shape--hastrait {
-  fill: #9333ea;
-}
-.package-box__inner-edge-path--hastrait {
-  stroke-dasharray: 8 3 2 3;
-  stroke-width: 2.35;
-}
-.package-box__inner-edge-marker-shape--gets {
-  fill: #d97706;
-}
-.package-box__inner-edge-marker-shape--creates {
-  fill: #059669;
-}
-/**
- * `gets` edges are dashed so they read as a structural reference rather than an inheritance
- * relation — same arrow head as `extends`, but the dashed body makes the distinction obvious
- * even in grayscale / when hovered for emphasis.
- */
-.package-box__inner-edge-path--gets {
-  stroke-dasharray: 5 3;
-}
-.package-box__inner-edge-path--creates {
-  stroke-dasharray: 2 2;
-}
-.package-box__inner-edge-label {
-  paint-order: stroke fill;
-  stroke: rgb(248 250 252);
-  stroke-width: 3px;
-  pointer-events: none;
-  transition: opacity 0.15s ease;
-}
-.package-box__inner-edge-label--emph {
-  opacity: 1 !important;
-  font-weight: 600 !important;
-}
-.package-box__inner-edge-label--bridge {
-  opacity: 0.98;
-}
-.package-box__inner-artefact-cols {
-  position: relative;
-  z-index: 0;
-  display: flex;
-  flex-direction: row;
-  flex-wrap: nowrap;
-  align-items: flex-start;
-  justify-content: center;
-  gap: clamp(18px, 5.5cqw, 36px);
-  flex: 0 0 auto;
-  min-height: min-content;
-  min-width: 0;
-  /* 6px horizontal inset keeps anchor dots (left: -5px / right: -5px) inside the clip container */
-  padding: 4px 6px 10px;
-  overflow: visible;
-  transition:
-    flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    min-height 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    gap 0.45s cubic-bezier(0.4, 0, 0.2, 1);
-}
-/**
- * In artefact-focus mode the cols container stretches its children vertically so the focused
- * column can fill the sub-diagram band. Default mode keeps `align-items: flex-start` (rows are
- * natural-height and pack to the top, mirroring how packages stack their card list).
- *
- * The wide `gap` is intentional — inheritance edges use {@link getSmoothStepPath} (the same
- * routing strategy as Vue Flow `imports` / dependency edges between modules), and the middle
- * vertical segment of an L-shaped step path is drawn at the midpoint between source and target
- * X. Generous gap + slim peer columns mean that vertical segment runs through clear inter-column
- * space rather than through neighbour artefact rows.
- */
-.package-box__inner-artefact-cols--artefact-focus {
-  flex: 1 1 0;
-  min-height: 0;
-  align-items: stretch;
-  gap: clamp(32px, 7cqw, 64px);
-}
-.package-box__inner-artefact-cols--with-packages {
-  flex: 1 1 0;
-  min-height: 0;
-  align-items: stretch;
-  justify-content: flex-start;
-}
-.package-box__inner-package-stack {
-  flex: 0 0 clamp(156px, 22cqw, 232px);
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  align-self: stretch;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: stretch;
-  gap: 10px;
-  overflow: visible;
-}
-.package-box__inner-package-row {
-  position: relative;
-  flex: 1 1 0;
-  min-height: clamp(132px, 24cqh, 240px);
-  display: flex;
-  flex-direction: row;
-  align-items: stretch;
-  gap: 0;
-  overflow: visible;
-}
-.package-box__inner-package-port-anchor {
-  position: absolute;
-  top: 50%;
-  width: 0;
-  height: 0;
-  overflow: visible;
-  pointer-events: none;
-  z-index: 2;
-}
-.package-box__inner-package-port-anchor--left {
-  left: 0;
-}
-.package-box__inner-package-port-anchor--right {
-  right: 0;
-}
-.package-box__inner-slot--inner-package {
-  flex: 1 1 0;
-  min-height: 0;
-  height: 100%;
-  overflow: visible;
-}
-.package-box__inner-slot--inner-package > .package-box.package-box--embedded {
-  min-height: 100%;
-}
-.package-box__root-ports {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 0;
-  overflow: visible;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  gap: 10px;
-  pointer-events: none;
-  z-index: 2;
-}
-.package-box__root-ports--left {
-  left: 0;
-}
-.package-box__root-ports--right {
-  right: 0;
-}
-.package-box__port {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 auto;
-  border-radius: 2px;
-  box-sizing: border-box;
-  background: color-mix(in srgb, var(--box-accent, #64748b) 22%, #ffffff);
-  border: 1.5px solid color-mix(in srgb, var(--box-accent, #64748b) 76%, #0f172a);
-  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.92);
-  opacity: 0.94;
-  z-index: 2;
-}
-.package-box__port--external {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
-.package-box__port--left {
-  align-self: center;
-}
-.package-box__port--right {
-  align-self: center;
-}
-.package-box__inner-package-port-anchor > .package-box__port--left {
-  transform: translate(125%, -50%);
-}
-.package-box__inner-package-port-anchor > .package-box__port--right {
-  transform: translate(-125%, -50%);
-}
-.package-box__root-ports > .package-box__port--left {
-  transform: translate(125%, 0);
-}
-.package-box__root-ports > .package-box__port--right {
-  transform: translate(-125%, 0);
-}
-.package-box__external-endpoints {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 0;
-  overflow: visible;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 10px;
-  min-width: 0;
-  z-index: 2;
-  pointer-events: none;
-}
-.package-box__external-endpoints--left {
-  left: 0;
-  align-items: flex-end;
-}
-.package-box__external-endpoints--right {
-  right: 0;
-  align-items: flex-start;
-}
-.package-box__external-endpoint {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 3px;
-  min-width: 0;
-  pointer-events: none;
-}
-.package-box__external-endpoint--right {
-  justify-content: flex-start;
-}
-.package-box__external-endpoint-chip {
-  max-width: 88px;
-  padding: 3px 7px;
-  border: 1px dashed color-mix(in srgb, var(--box-accent) 24%, rgb(148 163 184));
-  border-radius: 999px;
-  background: rgb(255 255 255 / 0.92);
-  color: #475569;
-  font-size: 10px;
-  line-height: 1.2;
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  position: relative;
-  z-index: 2;
-  transform: translateY(-1px);
-}
-.package-box__external-endpoints--left .package-box__external-endpoint-chip {
-  transform: translate(14px, -1px);
-}
-.package-box__external-endpoints--right .package-box__external-endpoint-chip {
-  transform: translate(-14px, -1px);
-}
-.package-box__external-endpoints--left .package-box__port--external {
-  transform: translate(125%, 0);
-}
-.package-box__external-endpoints--right .package-box__port--external {
-  transform: translate(-125%, 0);
-}
-.package-box__inner-artefact-col {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-start;
-  gap: 8px;
-  flex: 1 1 0;
-  min-width: 0;
-  min-height: min-content;
-  max-width: min(100%, 220px);
-  overflow: visible;
-  transition:
-    flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    max-width 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    min-width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.package-box__inner-artefact-cols--artefact-focus > .package-box__inner-artefact-col {
-  min-height: 0;
-}
-/** Column containing the focused artefact: grows to take more horizontal space. */
-.package-box__inner-artefact-col--focus {
-  flex: 2.6 1 0;
-  max-width: none;
-  min-width: 0;
-}
-/**
- * Other inheritance layers stay visible at a slim width so the focused column dominates the
- * sub-diagram while parent traits / classes (left) and subclasses (right) remain readable.
- * Width is tuned so the `@container pkg-artefact-row (max-width: 118px)` rule below always
- * fires for peers — vertical title + icon-on-top, like a tight package-leaf card. The slim
- * silhouette also frees horizontal space for the inheritance edge step paths to route between
- * columns without crossing artefact rows.
- */
-.package-box__inner-artefact-col--peer {
-  flex: 0 1 auto;
-  max-width: clamp(56px, 9cqw, 84px);
-  min-width: 48px;
-}
 .package-box__inner-slot {
   flex: 1 1 0;
   min-height: 0;
@@ -3862,403 +1561,6 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 .package-box__inner-slot--solo {
   flex: 3 1 0;
-}
-.package-box__inner-slot--artefact-panel {
-  flex: 1 1 0;
-  min-height: 0;
-  min-width: 0;
-  width: 100%;
-  align-self: stretch;
-  display: flex;
-  flex-direction: column;
-  cursor: default;
-}
-.package-box__inner-slot--artefact {
-  cursor: pointer;
-}
-/**
- * Stacked inner artefacts must not inherit `.package-box__inner-slot { flex: 1 1 0; min-height: 0 }`
- * (that rule wins over a single modifier earlier in the file — same specificity, later source).
- * Project-style “layers” here are LR columns of natural-height rows, not equal-height flex slices.
- */
-.package-box__inner-slot.package-box__inner-slot--artefact-layer {
-  flex: 0 0 auto;
-  min-height: auto;
-  align-self: stretch;
-}
-.package-box__inner-slot.package-box__inner-slot--artefact-layer .package-box__artefact-row {
-  flex: 0 0 auto;
-  min-height: auto;
-}
-/**
- * Focused-artefact cell — must override the `flex: 0 0 auto` collapse from
- * `.package-box__inner-slot--artefact-layer` directly above. Same specificity (two classes),
- * so we rely on source-order cascade — keep this block here, not earlier in the file.
- */
-.package-box__inner-slot--artefact-layer.package-box__inner-slot--artefact-focused-cell {
-  flex: 1 1 0;
-  min-height: 0;
-  align-self: stretch;
-  cursor: pointer;
-}
-/**
- * Inner member strip — visual rhythm matches a {@link PackageBox} leaf card so a Scala member
- * row reads as the same kind of object as a package on the canvas:
- *   - same 1px `rgb(30 41 59 / 0.88)` border, same 8px radius, same drop shadow;
- *   - same **left accent strip** via `inset 5px 0 0 0 var(--box-accent)` (the slot wrapper sets
- *     `--box-accent` per artefact id, falling back to `boxColorForId(id)`);
- *   - icon-on-top + centered title when there's width, vertical title via `@container` below
- *     once the row gets narrow (peer columns during artefact focus).
- */
-.package-box__artefact-row {
-  position: relative;
-  flex: 1 1 0;
-  min-height: 0;
-  min-width: 0;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px 8px 6px 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  border-radius: 8px;
-  border: 1px solid rgb(30 41 59 / 0.88);
-  /**
-   * Inner artefact rows reuse the accent-tinted 90% body fill from `.package-box` so a
-   * row inside a focused package looks like a slim sibling card (color identity + slight
-   * translucency over the inheritance edges routed underneath).
-   */
-  background: color-mix(
-    in srgb,
-    color-mix(in srgb, var(--box-accent, steelblue) 8%, #ffffff) 90%,
-    transparent
-  );
-  box-shadow:
-    inset 5px 0 0 0 var(--box-accent, steelblue),
-    0 1px 2px rgb(15 23 42 / 0.08);
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
-  container-type: inline-size;
-  container-name: pkg-artefact-row;
-}
-.package-box__artefact-row--has-metrics {
-  padding-top: 20px;
-}
-.package-box__artefact-metrics {
-  position: absolute;
-  top: 1px;
-  right: 1px;
-  z-index: 2;
-  max-width: calc(100% - 2px);
-  pointer-events: none;
-}
-/** Ridge handles (same idea as `.tg-handle-anchor` on Vue Flow modules). */
-.package-box__artefact-anchor {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  box-sizing: border-box;
-  background: var(--box-accent, #64748b);
-  border: 1.5px solid color-mix(in srgb, var(--box-accent, #64748b) 72%, #0f172a);
-  z-index: 2;
-  pointer-events: none;
-  opacity: 0.88;
-  transition:
-    transform 0.15s ease,
-    box-shadow 0.15s ease,
-    opacity 0.15s ease;
-}
-.package-box__artefact-anchor--in {
-  left: -5px;
-}
-.package-box__artefact-anchor--out {
-  right: -5px;
-}
-.package-box__artefact-anchor--emph {
-  opacity: 1;
-  box-shadow: 0 0 0 2px rgb(255 255 255 / 0.95);
-}
-.package-box__inner-slot--inner-hovered .package-box__artefact-row {
-  border-color: var(--box-accent, #64748b);
-  box-shadow:
-    inset 5px 0 0 0 var(--box-accent, steelblue),
-    0 0 0 1px rgb(255 255 255 / 0.85),
-    0 0 0 2px var(--box-accent, #64748b),
-    0 2px 8px rgb(15 23 42 / 0.08);
-}
-.lang-icon-slot--artefact {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  align-self: stretch;
-  width: 100%;
-  min-height: clamp(26px, min(20cqh, 36px), 36px);
-  max-height: 40px;
-  margin: 0;
-  flex-shrink: 0;
-  pointer-events: none;
-}
-.lang-icon-slot--artefact :deep(.lang-svg) {
-  max-height: 30px;
-  height: min(100%, 30px);
-  width: auto;
-}
-
-.package-box__artefact-text {
-  flex: 0 1 auto;
-  min-width: 0;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  align-items: stretch;
-  text-align: center;
-}
-.package-box__artefact-title {
-  font-weight: 600;
-  font-size: clamp(0.72rem, min(1.6vmin, 2.4cqh), 0.95rem);
-  color: #0f172a;
-  line-height: 1.25;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: center;
-  align-self: stretch;
-  width: 100%;
-}
-.package-box__artefact-subtitle {
-  font-size: clamp(0.62rem, min(1.35vmin, 2cqh), 0.8rem);
-  color: #64748b;
-  line-height: 1.3;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: center;
-  align-self: stretch;
-  width: 100%;
-}
-/** Very narrow inner columns: vertical title like `.package-box--tight` (default row is already stacked). */
-@container pkg-artefact-row (max-width: 118px) {
-  .package-box__artefact-row {
-    gap: 4px;
-    padding: 6px 4px 5px 10px;
-  }
-  .package-box__artefact-row--has-metrics {
-    padding-top: 38px;
-  }
-  .package-box__artefact-metrics {
-    top: 1px;
-    right: 1px;
-    max-width: 40px;
-  }
-  .package-box__artefact-row .package-box__artefact-text {
-    min-width: 0;
-  }
-  .package-box__artefact-row .package-box__artefact-title {
-    writing-mode: vertical-rl;
-    transform: rotate(180deg);
-    text-orientation: mixed;
-    white-space: nowrap;
-    overflow: visible;
-    text-overflow: clip;
-    max-width: none;
-    line-height: 1.15;
-    text-align: center;
-    font-size: clamp(0.62rem, min(1.45vmin, 2.2cqh), 0.88rem);
-  }
-  .package-box__artefact-row .package-box__artefact-subtitle {
-    display: none;
-  }
-  .package-box__artefact-row .lang-icon-slot--artefact {
-    min-height: 28px;
-    max-height: 32px;
-  }
-}
-/** Very narrow: suppress metric strip to avoid overlap with vertical title. */
-@container pkg-artefact-row (max-width: 80px) {
-  .package-box__artefact-metrics {
-    display: none;
-  }
-  .package-box__artefact-row--has-metrics {
-    padding-top: 6px;
-  }
-  .package-box__artefact-row .lang-icon-slot--artefact {
-    min-height: 22px;
-    max-height: 26px;
-  }
-}
-/** Extreme narrowing: suppress icon entirely, title only. */
-@container pkg-artefact-row (max-width: 60px) {
-  .package-box__artefact-row {
-    padding: 4px 2px 4px 8px;
-    gap: 2px;
-  }
-  .package-box__artefact-row .lang-icon-slot--artefact {
-    display: none;
-  }
-}
-
-/* ── inner diagram scroll rails ──────────────────────────────────────────── */
-.inner-v-rail {
-  position: absolute;
-  top: 4px;
-  right: 2px;
-  bottom: 20px; /* leave room for h-rail if both visible */
-  width: 20px;
-  z-index: 8;
-  display: flex;
-  align-items: stretch;
-  justify-content: center;
-  pointer-events: auto;
-}
-.inner-v-rail::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  width: 3px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.06);
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
-}
-.inner-v-rail:hover::before {
-  background: rgba(148, 163, 184, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
-}
-.inner-v-rail__slider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px;
-  min-height: 60px;
-  margin: 0;
-  cursor: grab;
-  background: transparent;
-  accent-color: transparent;
-  writing-mode: vertical-lr;
-  position: relative;
-  z-index: 2;
-  opacity: 0;
-}
-.inner-v-rail__slider::-webkit-slider-runnable-track { background: transparent; }
-.inner-v-rail__slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 12px;
-  height: 12px;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-.inner-v-rail__slider::-moz-range-track { background: transparent; }
-.inner-v-rail__slider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-.inner-v-rail__thumb {
-  position: absolute;
-  left: 50%;
-  width: 5px;
-  min-height: 16px;
-  margin-left: -2.5px;
-  border-radius: 999px;
-  background: rgba(59, 130, 246, 0.12);
-  border: 1px solid rgba(59, 130, 246, 0.22);
-  pointer-events: none;
-  z-index: 1;
-  box-sizing: border-box;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-.inner-v-rail:hover .inner-v-rail__thumb {
-  background: rgba(59, 130, 246, 0.22);
-  border-color: rgba(59, 130, 246, 0.40);
-}
-
-.inner-h-rail {
-  position: absolute;
-  left: 4px;
-  right: 20px; /* leave room for v-rail if both visible */
-  bottom: 2px;
-  height: 18px;
-  z-index: 8;
-  display: flex;
-  align-items: center;
-  justify-content: stretch;
-  pointer-events: auto;
-}
-.inner-h-rail::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  height: 3px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.06);
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
-}
-.inner-h-rail:hover::before {
-  background: rgba(148, 163, 184, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
-}
-.inner-h-rail__slider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 16px;
-  min-width: 60px;
-  margin: 0;
-  cursor: grab;
-  background: transparent;
-  accent-color: transparent;
-  position: relative;
-  z-index: 2;
-  opacity: 0;
-}
-.inner-h-rail__slider::-webkit-slider-runnable-track { background: transparent; }
-.inner-h-rail__slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 12px;
-  height: 12px;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-.inner-h-rail__slider::-moz-range-track { background: transparent; }
-.inner-h-rail__slider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-.inner-h-rail__thumb {
-  position: absolute;
-  top: 50%;
-  min-width: 16px;
-  height: 5px;
-  margin-top: -2.5px;
-  border-radius: 999px;
-  background: rgba(59, 130, 246, 0.12);
-  border: 1px solid rgba(59, 130, 246, 0.22);
-  pointer-events: none;
-  z-index: 1;
-  box-sizing: border-box;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-.inner-h-rail:hover .inner-h-rail__thumb {
-  background: rgba(59, 130, 246, 0.22);
-  border-color: rgba(59, 130, 246, 0.40);
 }
 
 .package-box__inner-drill-toolbar {
@@ -4480,9 +1782,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
-  transition:
-    font-size 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    transform 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: none;
 }
 .subtitle {
   margin-top: clamp(2px, 0.6vmin, 8px);
@@ -4492,11 +1792,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   opacity: 1;
   max-height: 80px;
   overflow: hidden;
-  transition:
-    opacity 0.4s ease,
-    margin-top 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    max-height 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    transform 0.4s ease;
+  transition: none;
 }
 .package-box--scala-leaf:not(.package-box--tight) .subtitle {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -4514,13 +1810,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 @container (max-width: 260px) {
   .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
-      .package-box--metrics-break-vertical-body
+      .package-box--slim-layout
     )
     .title {
     font-size: 1.08rem;
   }
   .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
-      .package-box--metrics-break-vertical-body
+      .package-box--slim-layout
     )
     .subtitle {
     font-size: 0.84rem;
@@ -4528,13 +1824,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 @container (max-width: 190px) {
   .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
-      .package-box--metrics-break-vertical-body
+      .package-box--slim-layout
     )
     .title {
     font-size: 0.96rem;
   }
   .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
-      .package-box--metrics-break-vertical-body
+      .package-box--slim-layout
     )
     .subtitle {
     font-size: 0.78rem;
@@ -4542,13 +1838,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 @container (max-height: 180px) {
   .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
-      .package-box--metrics-break-vertical-body
+      .package-box--slim-layout
     )
     .title {
     font-size: 1.04rem;
   }
   .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
-      .package-box--metrics-break-vertical-body
+      .package-box--slim-layout
     )
     .subtitle {
     font-size: 0.82rem;
@@ -4556,13 +1852,13 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 @container (max-height: 145px) {
   .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
-      .package-box--metrics-break-vertical-body
+      .package-box--slim-layout
     )
     .title {
     font-size: 0.94rem;
   }
   .package-box:not(.package-box--focused-layout):not(.package-box--tight):not(
-      .package-box--metrics-break-vertical-body
+      .package-box--slim-layout
     )
     .subtitle {
     font-size: 0.76rem;
@@ -4603,6 +1899,25 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   overflow: hidden;
   text-overflow: ellipsis;
   max-height: 2.6em;
+}
+
+.package-box--superslim-layout:not(.package-box--focused-layout) .package-box__body {
+  width: 100%;
+}
+
+.package-box--superslim-layout:not(.package-box--focused-layout) .title {
+  order: 0;
+}
+
+.package-box--superslim-layout:not(.package-box--focused-layout) .package-box__body > .subtitle {
+  order: 1;
+}
+
+.package-box--superslim-layout:not(.package-box--focused-layout)
+  .package-box__body
+  > .description-preview {
+  display: block;
+  font-style: italic;
 }
 .description-full {
   margin-top: 8px;

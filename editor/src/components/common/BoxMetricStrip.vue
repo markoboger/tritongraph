@@ -258,7 +258,7 @@ function hideTooltip() {
   box-shadow: 0 4px 14px rgb(15 23 42 / 0.22);
 }
 
-/* Breakpoint must stay aligned with `METRICS_STRIP_BREAK_ENTER_PX` / strip width in `diagram/boxMetricBreakLayout.ts`. */
+/* Breakpoint must stay aligned with `METRICS_STRIP_BREAK_ENTER_PX` / strip width in `diagram/boxChromeLayout.ts`. */
 @container (max-width: 150px) {
   .box-metric-strip {
     grid-auto-flow: row;

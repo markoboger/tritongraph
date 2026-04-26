@@ -947,6 +947,7 @@ function onPaneClickClearHover() {
 function paneBackgroundCanStartPan(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false
   if (target.closest('.flow-v-scroll-rail, .flow-h-scroll-rail')) return false
+  if (target.closest('.vue-flow__resize-control, .nopan')) return false
   return !!target.closest('.vue-flow__pane, .vue-flow__viewport, .vue-flow')
 }
 
@@ -1417,7 +1418,13 @@ defineExpose({
         :id="TRITON_WORKSPACE_FLOW_ID"
         v-model:nodes="nodes"
         v-model:edges="edges"
-        :class="['flow', { 'tg-depth-layout-animate': depthLayoutAnimate }]"
+        :class="[
+          'flow',
+          {
+            'tg-depth-layout-animate': depthLayoutAnimate,
+            'tg-resize-priority': !!abstractionDojoResize,
+          },
+        ]"
         :node-types="nodeTypes"
         :default-edge-options="defaultEdgeOptions"
         :connection-mode="ConnectionMode.Strict"
@@ -1762,6 +1769,16 @@ defineExpose({
 /* Core marks edges `.inactive` unless selectable or @edge-click; re-enable hits so @edge-mouse-* runs (pan is off). */
 .flow.vue-flow .vue-flow__edge.inactive {
   pointer-events: all;
+}
+
+/* In resize dojos, drag handles win over hover-expanded vertical title rails. */
+.flow.tg-resize-priority .vue-flow__resize-control {
+  z-index: 1000 !important;
+  pointer-events: all !important;
+}
+
+.flow.tg-resize-priority .vue-flow__resize-control.handle {
+  z-index: 1001 !important;
 }
 
 /* @vue-flow/core always renders a label rect with theme fill; hide it for caption-only labels. */

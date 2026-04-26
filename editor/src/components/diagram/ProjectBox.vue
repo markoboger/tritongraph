@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
 import cubeIconUrl from '../../assets/language-icons/cube.svg'
 import genericIconUrl from '../../assets/language-icons/generic.svg'
 import stackedCubesIconUrl from '../../assets/language-icons/stacked-cubes.svg'
 import type { BoxCompartment } from '../../diagram/boxCompartments'
 import BoxCompartments from '../common/BoxCompartments.vue'
+import BoxEditDialog from '../common/BoxEditDialog.vue'
 import GeneralFocusedBox from '../common/GeneralFocusedBox.vue'
 import BoxMetricStrip from '../common/BoxMetricStrip.vue'
-import { simulatedMetricsForBox } from '../common/boxMetricDemo'
-import { useScalaCoverageKeyed } from '../../store/useOverlay'
-import { nextMetricsBreakLayout } from './boxMetricBreakLayout'
-import { nextMetricsBreakSuperslim } from './metricsBreakChromeLayout'
+import BoxToolbar from '../common/BoxToolbar.vue'
+import MarkdownActionSubtitle from '../common/MarkdownActionSubtitle.vue'
+import { buildFocusedBoxCompartments } from '../common/focusedBoxCompartments'
+import { useEditableBox } from '../common/useEditableBox'
+import { useBoxMetrics } from '../common/useBoxMetrics'
+import { nextCompactLayout, nextFlatLayout, nextMetricsBreakLayout, nextSuperflatLayout, nextSuperslimLayout } from './boxChromeLayout'
 
 const props = defineProps<{
   boxId: string
@@ -42,50 +45,8 @@ const emit = defineEmits<{
   'link-action': [string]
 }>()
 
-/**
- * Subtitle markdown: only `[label](href)` is recognized — enough for our internal `triton:` action
- * links. Anything else renders verbatim. Anchors are rendered as buttons (no real navigation; we
- * emit `link-action` and let the host decide what to do).
- */
-interface SubtitleSegment {
-  kind: 'text' | 'link'
-  value: string
-  href?: string
-}
-
-const SUBTITLE_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
-
-const subtitleSegments = computed<SubtitleSegment[]>(() => {
-  const text = String(props.subtitle ?? '')
-  if (!text) return []
-  const out: SubtitleSegment[] = []
-  let last = 0
-  SUBTITLE_LINK_RE.lastIndex = 0
-  let m: RegExpExecArray | null
-  while ((m = SUBTITLE_LINK_RE.exec(text)) !== null) {
-    if (m.index > last) out.push({ kind: 'text', value: text.slice(last, m.index) })
-    out.push({ kind: 'link', value: m[1] ?? '', href: m[2] ?? '' })
-    last = m.index + m[0].length
-  }
-  if (last < text.length) out.push({ kind: 'text', value: text.slice(last) })
-  return out
-})
-
-function onSubtitleLinkClick(href: string | undefined) {
-  if (!href) return
-  emit('link-action', href)
-}
-
 const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
-const workspaceKeyRef = inject<Ref<string>>('tritonWorkspaceKey', ref(''))
-const scalaCoverageRef = useScalaCoverageKeyed(workspaceKeyRef, String(props.boxId ?? ''))
-const coveragePercent = computed((): number | null => {
-  const v = scalaCoverageRef.value?.stmtPct
-  return typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null
-})
-const hasCoverage = computed(() => coveragePercent.value !== null)
-const coveragePercentValue = computed(() => coveragePercent.value ?? 0)
-const simulatedMetrics = computed(() => simulatedMetricsForBox(props.boxId))
+const { hasCoverage, coveragePercentValue, simulatedMetrics } = useBoxMetrics(() => props.boxId)
 const projectKind = computed<'project' | 'module' | 'general'>(() =>
   props.kind === 'project' ? 'project' : props.kind === 'general' ? 'general' : 'module',
 )
@@ -100,55 +61,48 @@ const displayNoun = computed(() =>
   projectKind.value === 'project' ? 'project' : projectKind.value === 'general' ? 'box' : 'module',
 )
 
-const focusedCompartments = computed<readonly BoxCompartment[]>(() => {
-  const out: BoxCompartment[] = []
-  if ((props.description ?? '').trim()) {
-    out.push({
-      id: 'purpose',
-      title: 'Purpose',
-      rows: [{ value: String(props.description ?? '') }],
-    })
-  }
-  if ((props.notes ?? '').trim()) {
-    out.push({
-      id: 'notes',
-      title: 'Notes',
-      rows: [{ value: String(props.notes ?? '') }],
-    })
-  }
-  for (const compartment of props.compartments ?? []) out.push(compartment)
-  return out
-})
+const focusedCompartments = computed<readonly BoxCompartment[]>(() =>
+  buildFocusedBoxCompartments({
+    description: props.description,
+    notes: props.notes,
+    extraCompartments: props.compartments,
+  }),
+)
 
 const rootEl = ref<HTMLElement | null>(null)
 const bodyEl = ref<HTMLElement | null>(null)
 const titleEl = ref<HTMLElement | null>(null)
 /** Title too wide for one line or title+subtitle overflow → vertical title; subtitle only when horizontal. */
 const tightLayout = ref(false)
+const flatLayout = ref(false)
+const superflatLayout = ref(false)
+const compactLayout = ref(false)
 /** When the metric strip stacks (narrow width), pin the logo top-left and keep metrics top-right. */
 const metricsBreakLayout = ref(false)
-const metricsBreakSuperslim = ref(false)
+const superslimLayout = ref(false)
 /** Vertical title in slim strip mode (non-superslim); matches {@link PackageBox} / {@link GeneralFocusedBox}. */
-const metricsBreakVerticalBody = ref(false)
+const slimLayout = ref(false)
 
 function syncMetricsBreakChrome(root: HTMLElement | null) {
   if (!root || !metricsBreakLayout.value) {
-    metricsBreakSuperslim.value = false
-    metricsBreakVerticalBody.value = false
+    superslimLayout.value = false
+    slimLayout.value = false
     return
   }
   const w = root.clientWidth
-  metricsBreakSuperslim.value = nextMetricsBreakSuperslim(w, metricsBreakSuperslim.value)
-  if (metricsBreakSuperslim.value) {
-    metricsBreakVerticalBody.value = false
+  superslimLayout.value = nextSuperslimLayout(w, superslimLayout.value)
+  if (superslimLayout.value) {
+    slimLayout.value = false
     return
   }
-  metricsBreakVerticalBody.value = true
+  slimLayout.value = true
 }
 
 const showUnfocusedSubtitle = computed(() => {
-  if (metricsBreakSuperslim.value) return false
-  if (metricsBreakLayout.value && metricsBreakVerticalBody.value) return !!props.subtitle?.trim()
+  if (compactLayout.value) return false
+  if (superflatLayout.value) return false
+  if (superslimLayout.value) return false
+  if (metricsBreakLayout.value && slimLayout.value) return !!props.subtitle?.trim()
   return !!props.subtitle?.trim() && !tightLayout.value
 })
 
@@ -169,18 +123,41 @@ function measure() {
   const root = rootEl.value
   const title = titleEl.value
   if (!root) {
+    flatLayout.value = false
+    superflatLayout.value = false
+    compactLayout.value = false
     metricsBreakLayout.value = false
-    metricsBreakSuperslim.value = false
-    metricsBreakVerticalBody.value = false
+    superslimLayout.value = false
+    slimLayout.value = false
     return
   }
   const hasMetricsChrome = hasCoverage.value || simulatedMetrics.value.issueCount >= 0
+  const borderBoxWidth = Math.round(root.getBoundingClientRect().width)
+  superflatLayout.value = nextSuperflatLayout(borderBoxWidth, root.clientHeight, superflatLayout.value)
+  flatLayout.value = superflatLayout.value || nextFlatLayout(borderBoxWidth, root.clientHeight, flatLayout.value)
+  compactLayout.value = !flatLayout.value && nextCompactLayout(borderBoxWidth, root.clientHeight)
+  if (flatLayout.value) {
+    metricsBreakLayout.value = false
+    superslimLayout.value = false
+    slimLayout.value = false
+    tightLayout.value = false
+    return
+  }
+  if (compactLayout.value) {
+    metricsBreakLayout.value = false
+    superslimLayout.value = false
+    slimLayout.value = false
+    tightLayout.value = false
+    return
+  }
   metricsBreakLayout.value = hasMetricsChrome
     ? nextMetricsBreakLayout(root.clientWidth, root.clientHeight, metricsBreakLayout.value)
     : false
   syncMetricsBreakChrome(root)
   if (!title) return
   if (metricsBreakLayout.value) {
+    flatLayout.value = false
+    superflatLayout.value = false
     tightLayout.value = false
     return
   }
@@ -262,58 +239,12 @@ watch(
   () => void nextTick(measure),
 )
 
-const editing = ref(false)
-const draftLabel = ref('')
-const draftDescription = ref('')
-const labelInput = ref<HTMLInputElement | null>(null)
-
-function startEditing() {
-  if (editing.value) return
-  draftLabel.value = String(props.label ?? '')
-  draftDescription.value = String(props.description ?? '')
-  editing.value = true
-  void nextTick(() => {
-    const el = labelInput.value
-    if (el) {
-      el.focus()
-      el.select()
-    }
-  })
-}
-
-function commitEdit() {
-  if (!editing.value) return
-  const newLabel = draftLabel.value.trim()
-  if (newLabel && newLabel !== String(props.label ?? '')) {
-    emit('rename', newLabel)
-  }
-  const newDesc = draftDescription.value
-  if (newDesc !== String(props.description ?? '')) {
-    emit('description-change', newDesc)
-  }
-  editing.value = false
-}
-
-function cancelEdit() {
-  editing.value = false
-}
-
-function onLabelKeydown(ev: KeyboardEvent) {
-  if (ev.key === 'Enter') {
-    ev.preventDefault()
-    commitEdit()
-  } else if (ev.key === 'Escape') {
-    ev.preventDefault()
-    cancelEdit()
-  }
-}
-
-function onDescriptionKeydown(ev: KeyboardEvent) {
-  if (ev.key === 'Escape') {
-    ev.preventDefault()
-    cancelEdit()
-  }
-}
+const { editing, draftLabel, draftDescription, startEditing, commitEdit, cancelEdit } = useEditableBox({
+  label: () => props.label,
+  description: () => props.description,
+  onRename: (label) => emit('rename', label),
+  onDescriptionChange: (description) => emit('description-change', description),
+})
 </script>
 
 <template>
@@ -344,19 +275,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
         </div>
       </template>
       <template #subtitle>
-        <template v-for="(seg, i) in subtitleSegments" :key="i">
-          <button
-            v-if="seg.kind === 'link'"
-            type="button"
-            class="subtitle-link nodrag nopan"
-            :title="seg.href"
-            @click.stop="onSubtitleLinkClick(seg.href)"
-            @pointerdown.stop
-            @mousedown.stop
-            @dblclick.stop
-          >{{ seg.value }}</button>
-          <span v-else>{{ seg.value }}</span>
-        </template>
+        <MarkdownActionSubtitle :text="subtitle" @link-action="emit('link-action', $event)" />
       </template>
       <div class="project-box__focus-body">
         <BoxCompartments :compartments="focusedCompartments" variant="dense" />
@@ -368,6 +287,9 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       ref="rootEl"
       class="project-box"
       :class="{
+        'project-box--flat-layout': flatLayout,
+        'project-box--superflat-layout': superflatLayout,
+        'project-box--compact-layout': compactLayout,
         'project-box--tight': tightLayout,
         'project-box--pinned': pinned,
         'project-box--tools-wide': showColorTool,
@@ -375,9 +297,8 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
         'project-box--editing': editing,
         'project-box--has-metrics': hasCoverage || simulatedMetrics.issueCount >= 0,
         'project-box--metrics-break': metricsBreakLayout,
-        'project-box--metrics-superslim': metricsBreakSuperslim,
-        'project-box--metrics-break-vertical-body':
-          metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+      'project-box--superslim-layout': superslimLayout,
+      'project-box--slim-layout': metricsBreakLayout && !superslimLayout && slimLayout,
       }"
       :style="{ '--box-accent': accent }"
     >
@@ -389,38 +310,17 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
           :issue-level="simulatedMetrics.issueLevel"
         />
       </div>
-      <div v-if="showPinTool || showColorTool" class="project-box__tools" @pointerdown.stop>
-        <button
-          v-if="showPinTool"
-          type="button"
-          class="tool-btn tool-btn--pin"
-          :class="{ 'tool-btn--active': pinned }"
-          :title="`Pin — keep this ${displayNoun} highlighted when another box is zoomed`"
-          :aria-pressed="pinned ? 'true' : 'false'"
-          :aria-label="`Pin ${displayNoun} (stays focused when zooming elsewhere)`"
-          @click.stop="emit('toggle-pin', $event)"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true" class="tool-btn__icon tool-btn__icon--pin">
-            <path
-              fill="currentColor"
-              d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z"
-            />
-          </svg>
-        </button>
-        <button
-          v-if="showColorTool"
-          type="button"
-          class="tool-btn tool-btn--color"
-          :title="`Accent: ${accent}. Click for next color.`"
-          aria-label="Change box accent color"
-          @click.stop="emit('cycle-color')"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true" class="tool-btn__icon tool-btn__icon--color">
-            <circle cx="6" cy="8" r="4.25" />
-            <circle cx="11" cy="8" r="3" opacity="0.45" />
-          </svg>
-        </button>
-      </div>
+      <BoxToolbar
+        class="project-box__tools"
+        :accent="accent"
+        :pinned="pinned"
+        :show-pin-tool="showPinTool"
+        :show-color-tool="showColorTool"
+        :pin-title="`Pin — keep this ${displayNoun} highlighted when another box is zoomed`"
+        :pin-aria-label="`Pin ${displayNoun} (stays focused when zooming elsewhere)`"
+        @toggle-pin="emit('toggle-pin', $event)"
+        @cycle-color="emit('cycle-color')"
+      />
 
       <div class="lang-icon-slot">
         <img class="lang-svg cube-icon" :src="projectIconUrl" alt="" aria-hidden="true" decoding="async" />
@@ -431,38 +331,44 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
         class="project-box__body"
         @dblclick.stop="startEditing"
       >
-        <div class="project-box__header">
+        <div
+          class="project-box__header"
+          :class="{ 'triton-vertical-rail-container': superslimLayout || (metricsBreakLayout && slimLayout) }"
+        >
           <div
             ref="titleEl"
             class="title"
             :class="{
               'title--metrics-break-vertical':
-                metricsBreakLayout && !metricsBreakSuperslim && metricsBreakVerticalBody,
+                metricsBreakLayout && !superslimLayout && slimLayout,
+              'triton-vertical-rail-text triton-vertical-title-rail':
+                superslimLayout || (metricsBreakLayout && slimLayout),
             }"
-            :title="`Double-click to rename / edit ${displayNoun} description`"
+            :title="
+              superslimLayout || (metricsBreakLayout && slimLayout)
+                ? undefined
+                : `Double-click to rename / edit ${displayNoun} description`
+            "
           >{{ label }}</div>
-          <div v-if="showUnfocusedSubtitle" class="subtitle">
-            <template v-for="(seg, i) in subtitleSegments" :key="i">
-              <button
-                v-if="seg.kind === 'link'"
-                type="button"
-                class="subtitle-link nodrag nopan"
-                :title="seg.href"
-                @click.stop="onSubtitleLinkClick(seg.href)"
-                @pointerdown.stop
-                @mousedown.stop
-                @dblclick.stop
-              >{{ seg.value }}</button>
-              <span v-else>{{ seg.value }}</span>
-            </template>
+          <div
+            v-if="showUnfocusedSubtitle"
+            class="subtitle"
+            :class="{
+              'triton-vertical-rail-text triton-vertical-subtitle-rail':
+                superslimLayout || (metricsBreakLayout && slimLayout),
+            }"
+          >
+            <MarkdownActionSubtitle :text="subtitle" @link-action="emit('link-action', $event)" />
           </div>
         </div>
         <div
           v-if="
             description &&
             !tightLayout &&
-            !metricsBreakSuperslim &&
-            !(metricsBreakLayout && metricsBreakVerticalBody)
+            !flatLayout &&
+            !compactLayout &&
+            !superslimLayout &&
+            !(metricsBreakLayout && slimLayout)
           "
           class="description-preview"
           :title="description"
@@ -472,44 +378,16 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
       </div>
     </div>
 
-    <div
+    <BoxEditDialog
       v-if="editing"
       class="project-box__editor nodrag nopan"
-      role="dialog"
-      :aria-label="`Edit ${displayNoun}`"
-      @pointerdown.stop
-      @mousedown.stop
-      @click.stop
-      @dblclick.stop
-      @keydown.stop
-    >
-      <label class="editor-field">
-        <span class="editor-label">Name</span>
-        <input
-          ref="labelInput"
-          v-model="draftLabel"
-          class="title-input"
-          spellcheck="false"
-          @keydown="onLabelKeydown"
-        />
-      </label>
-      <label class="editor-field">
-        <span class="editor-label">Description / AI prompt purpose</span>
-        <textarea
-          v-model="draftDescription"
-          class="description-input"
-          rows="5"
-          spellcheck="false"
-          :placeholder="`Describe what this ${displayNoun} should do (included in the generated AI prompt)…`"
-          @keydown="onDescriptionKeydown"
-        />
-      </label>
-      <div class="editor-actions">
-        <span class="edit-hint">Enter in name to save · Esc to cancel</span>
-        <button type="button" class="editor-btn" @click="cancelEdit">Cancel</button>
-        <button type="button" class="editor-btn editor-btn--primary" @click="commitEdit">Save</button>
-      </div>
-    </div>
+      :dialog-label="`Edit ${displayNoun}`"
+      :description-placeholder="`Describe what this ${displayNoun} should do (included in the generated AI prompt)…`"
+      v-model:model-value-label="draftLabel"
+      v-model:model-value-description="draftDescription"
+      @save="commitEdit"
+      @cancel="cancelEdit"
+    />
   </div>
 </template>
 
@@ -653,6 +531,148 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   box-sizing: border-box;
 }
 
+.project-box--flat-layout {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.project-box--has-metrics.project-box--flat-layout {
+  padding-top: 12px;
+  padding-bottom: 2px;
+}
+
+.project-box--flat-layout .lang-icon-slot {
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-self: center;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  margin-bottom: 0;
+  margin-right: 8px;
+  justify-content: center;
+}
+
+.project-box--flat-layout .lang-icon-slot :deep(.lang-svg),
+.project-box--flat-layout .lang-icon-slot :deep(svg) {
+  height: 40px;
+  max-height: 40px;
+  max-width: 40px;
+  width: auto;
+}
+
+.project-box--flat-layout .project-box__body {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  align-items: flex-start;
+  justify-content: center;
+  text-align: left;
+}
+
+.project-box--flat-layout .project-box__header {
+  align-items: flex-start;
+  gap: 0;
+}
+
+.project-box--flat-layout .title,
+.project-box--flat-layout .subtitle {
+  text-align: left;
+  align-self: stretch;
+  line-height: 1.05;
+}
+
+.project-box--superflat-layout {
+  padding: 0;
+}
+
+.project-box--has-metrics.project-box--superflat-layout {
+  padding: 0;
+}
+
+.project-box--superflat-layout .lang-icon-slot {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  align-self: stretch;
+  align-items: stretch;
+  justify-content: flex-start;
+  margin: 0;
+}
+
+.project-box--superflat-layout .lang-icon-slot :deep(.lang-svg),
+.project-box--superflat-layout .lang-icon-slot :deep(svg) {
+  height: 40px;
+  width: 40px;
+  max-height: 40px;
+  max-width: 40px;
+}
+
+.project-box--superflat-layout .project-box__header {
+  gap: 0;
+}
+
+.project-box--superflat-layout .title,
+.project-box--superflat-layout .subtitle {
+  line-height: 1.05;
+}
+
+.project-box--compact-layout {
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  padding-top: 12px;
+  padding-bottom: 8px;
+}
+
+.project-box--has-metrics.project-box--compact-layout {
+  padding-top: 20px;
+}
+
+.project-box--compact-layout .lang-icon-slot {
+  width: auto;
+  min-width: 0;
+  align-self: center;
+  height: 44px;
+  min-height: 40px;
+  max-height: 48px;
+  margin-bottom: 2px;
+}
+
+.project-box--compact-layout .lang-icon-slot :deep(.lang-svg),
+.project-box--compact-layout .lang-icon-slot :deep(svg) {
+  height: 40px;
+  max-height: 40px;
+  width: auto;
+}
+
+.project-box--compact-layout .project-box__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  justify-content: flex-start;
+  text-align: center;
+}
+
+.project-box--compact-layout .project-box__header {
+  align-items: center;
+  gap: 0;
+  min-height: 0;
+}
+
+.project-box--compact-layout .title {
+  text-align: center;
+  align-self: center;
+  max-width: 100%;
+  line-height: 1.1;
+}
+
 /**
  * Narrow metrics-break only: pin logo top-left (same contract as {@link PackageBox} unfocused).
  * Wide boxes keep the centered column — do not apply to every `has-metrics` card.
@@ -687,6 +707,11 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   padding-left: clamp(40px, 12cqw, 52px);
 }
 
+.project-box--slim-layout .project-box__header,
+.project-box--superslim-layout .project-box__header {
+  padding-left: 0;
+}
+
 .project-box--has-metrics.project-box--metrics-break .project-box__header .title,
 .project-box--has-metrics.project-box--metrics-break .project-box__header .subtitle,
 .project-box--has-metrics.project-box--metrics-break .project-box__body > .description-preview {
@@ -694,36 +719,26 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
 }
 
 /** Superslim: keep metric strip + tools in the top-right corner; reserve the same top band as non-superslim break. */
-.project-box--has-metrics.project-box--metrics-break.project-box--metrics-superslim {
+.project-box--has-metrics.project-box--metrics-break.project-box--superslim-layout {
   padding-top: clamp(36px, 7.5vmin, 52px);
 }
 
-.project-box--metrics-break-vertical-body:not(.project-box--metrics-superslim) .project-box__header {
-  flex-direction: row;
-  justify-content: center;
-  align-items: stretch;
-  gap: 8px;
+.project-box--slim-layout:not(.project-box--superslim-layout) .project-box__header {
+  --triton-vertical-title-rail-shift-y: -4px;
+  width: 100%;
 }
 
-.project-box--metrics-break-vertical-body:not(.project-box--metrics-superslim)
-  .title.title--metrics-break-vertical,
-.project-box--metrics-break-vertical-body:not(.project-box--metrics-superslim) .project-box__header .subtitle {
-  white-space: nowrap;
-  overflow: visible;
-  text-overflow: clip;
-  max-width: none;
-  align-self: stretch;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  text-orientation: mixed;
-  line-height: 1.15;
-  text-align: left;
+.project-box--slim-layout .project-box__header,
+.project-box--superslim-layout .project-box__header {
+  height: auto;
+  max-height: 100%;
+  align-items: flex-start !important;
 }
 
-.project-box--metrics-break-vertical-body:not(.project-box--metrics-superslim) .project-box__header .subtitle {
-  margin-top: 0;
-  opacity: 1;
-  max-height: none;
+.project-box--slim-layout .project-box__header .triton-vertical-title-rail,
+.project-box--superslim-layout .project-box__header .triton-vertical-title-rail {
+  height: auto !important;
+  align-self: flex-start !important;
 }
 
 .project-box__focus-body {
@@ -831,9 +846,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
-  transition:
-    font-size 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    transform 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: none;
 }
 .subtitle {
   margin-top: clamp(2px, 0.6vmin, 8px);
@@ -843,11 +856,7 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   opacity: 1;
   max-height: 80px;
   overflow: hidden;
-  transition:
-    opacity 0.4s ease,
-    margin-top 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    max-height 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    transform 0.4s ease;
+  transition: none;
 }
 .project-box--tight .title {
   white-space: nowrap;
@@ -896,6 +905,27 @@ function onDescriptionKeydown(ev: KeyboardEvent) {
   overflow: hidden;
   text-overflow: ellipsis;
   max-height: 2.6em;
+}
+
+.project-box--superslim-layout .project-box__header {
+  width: 100%;
+  height: fit-content;
+  align-self: flex-start;
+  align-items: flex-start !important;
+}
+
+.project-box--superslim-layout .project-box__header .title {
+  order: 0;
+  align-self: flex-start !important;
+}
+
+.project-box--superslim-layout .project-box__header .subtitle {
+  order: 1;
+}
+
+.project-box--superslim-layout .project-box__body > .description-preview {
+  display: block;
+  font-style: italic;
 }
 .description-full {
   padding: 8px 9px 9px;

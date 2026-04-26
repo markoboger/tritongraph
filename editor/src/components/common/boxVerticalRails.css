@@ -1,0 +1,105 @@
+.triton-vertical-rail-container.triton-vertical-rail-container {
+  flex-direction: row !important;
+  justify-content: center !important;
+  align-items: stretch !important;
+  gap: 8px !important;
+  min-height: 0 !important;
+  padding-left: 0 !important;
+}
+
+.triton-vertical-rail-text.triton-vertical-rail-text {
+  flex: 0 0 auto !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: clip !important;
+  max-width: none !important;
+  max-height: 100% !important;
+  width: auto !important;
+  min-width: 0 !important;
+  align-self: stretch !important;
+  writing-mode: vertical-rl !important;
+  transform: rotate(180deg) translateY(var(--triton-vertical-rail-shift-y, 0px)) !important;
+  text-orientation: mixed !important;
+  line-height: 1.15 !important;
+  text-align: start !important;
+  transition: none !important;
+}
+
+.triton-vertical-title-rail.triton-vertical-title-rail,
+.triton-vertical-subtitle-rail.triton-vertical-subtitle-rail {
+  transition: none !important;
+}
+
+.triton-vertical-title-rail.triton-vertical-title-rail {
+  font-size: 1.2rem !important;
+  --triton-vertical-rail-shift-y: var(--triton-vertical-title-rail-shift-y, 0px);
+}
+
+.triton-vertical-title-rail.triton-vertical-title-rail:hover,
+.project-box:hover .triton-vertical-title-rail.triton-vertical-title-rail,
+.package-box:hover .triton-vertical-title-rail.triton-vertical-title-rail,
+.general-focused-box:hover .triton-vertical-title-rail.triton-vertical-title-rail {
+  overflow: visible !important;
+  max-height: 100% !important;
+  z-index: 30 !important;
+}
+
+.project-box:has(.triton-vertical-title-rail:hover),
+.project-box:hover:has(.triton-vertical-title-rail),
+.package-box:has(.triton-vertical-title-rail:hover),
+.package-box:hover:has(.triton-vertical-title-rail),
+.general-focused-box:has(.triton-vertical-title-rail:hover),
+.general-focused-box:hover:has(.triton-vertical-title-rail) {
+  overflow: visible !important;
+  z-index: 30 !important;
+}
+
+.project-box--flat-layout:hover,
+.project-box--superflat-layout:hover,
+.package-box--flat-layout:hover,
+.package-box--superflat-layout:hover,
+.general-focused-box--flat-layout:hover,
+.general-focused-box--superflat-layout:hover {
+  overflow: visible !important;
+  z-index: 30 !important;
+}
+
+.project-box--flat-layout:hover .title,
+.project-box--superflat-layout:hover .title,
+.package-box--flat-layout:hover .title,
+.package-box--superflat-layout:hover .title,
+.general-focused-box--flat-layout:hover .title--header,
+.general-focused-box--superflat-layout:hover .title--header {
+  position: relative !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  max-width: none !important;
+  width: max-content !important;
+  z-index: 30 !important;
+}
+
+.project-box--superslim-layout .lang-icon-slot,
+.package-box--superslim-layout .lang-icon-slot,
+.general-focused-box--superslim-layout .general-focused-box__header-icon {
+  width: auto !important;
+  height: 44px !important;
+  min-height: 40px !important;
+  max-height: 48px !important;
+}
+
+.project-box--superslim-layout .lang-icon-slot .lang-svg,
+.project-box--superslim-layout .lang-icon-slot svg,
+.package-box--superslim-layout .lang-icon-slot .lang-svg,
+.package-box--superslim-layout .lang-icon-slot svg,
+.general-focused-box--superslim-layout .general-focused-box__header-icon .lang-svg,
+.general-focused-box--superslim-layout .general-focused-box__header-icon svg {
+  height: 40px !important;
+  max-height: 40px !important;
+  width: auto !important;
+}
+
+.triton-vertical-subtitle-rail.triton-vertical-subtitle-rail {
+  font-size: 0.92rem !important;
+  margin-top: 0 !important;
+  opacity: 1 !important;
+}
