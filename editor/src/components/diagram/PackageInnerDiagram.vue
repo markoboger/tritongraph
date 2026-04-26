@@ -120,13 +120,15 @@ function scalaIconForKind(subtitle: string | undefined): string {
         :on-inner-card-click="handleInnerCardClick"
       />
 
-      <InnerDiagramPorts
-        :show-root-ports="mode === 'focused'"
-        :root-ports-left="rootPackagePortsLeft"
-        :root-ports-right="rootPackagePortsRight"
-        :external-endpoints="crossPackageExternalEndpoints"
-        :bind-slot-el="bindSlotEl"
-      />
+      <div class="package-box__inner-port-layer">
+        <InnerDiagramPorts
+          :show-root-ports="mode === 'focused'"
+          :root-ports-left="rootPackagePortsLeft"
+          :root-ports-right="rootPackagePortsRight"
+          :external-endpoints="crossPackageExternalEndpoints"
+          :bind-slot-el="bindSlotEl"
+        />
+      </div>
 
       <div
         v-for="(col, ci) in innerArtefactLayerColumns"
@@ -242,7 +244,7 @@ function scalaIconForKind(subtitle: string | undefined): string {
     min-height 0.45s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .package-box__inner-artefact-diagram--cross-preview {
-  margin-top: 8px;
+  margin-top: 0;
 }
 .package-box__inner-artefact-diagram--artefact-focus {
   flex: 1 1 0;
@@ -277,6 +279,19 @@ function scalaIconForKind(subtitle: string | undefined): string {
     flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     min-height 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     gap 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.package-box__inner-artefact-cols:has(:deep(.package-box__external-endpoint-chip:hover)) {
+  z-index: 6;
+}
+.package-box__inner-port-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: visible;
+}
+.package-box__inner-port-layer:has(:deep(.package-box__external-endpoint-chip:hover)) {
+  z-index: 10;
 }
 .package-box__inner-artefact-cols--artefact-focus {
   flex: 1 1 0;

@@ -4,6 +4,7 @@ import { nextCompactLayout, nextFlatLayout, nextMetricsBreakLayout, nextSuperfla
 type PackageBoxChromeLayoutOptions = {
   embedded: () => boolean
   focused: () => boolean
+  forceCompactHeader?: () => boolean
   label: () => string
   hasCoverage: () => boolean
   issueCount: () => number
@@ -88,6 +89,16 @@ export function usePackageBoxChromeLayout(options: PackageBoxChromeLayoutOptions
       flatLayout.value = false
       superflatLayout.value = false
       compactLayout.value = false
+      metricsBreakLayout.value = false
+      superslimLayout.value = false
+      slimLayout.value = false
+      return
+    }
+    if (options.forceCompactHeader?.()) {
+      tightLayout.value = false
+      flatLayout.value = false
+      superflatLayout.value = false
+      compactLayout.value = true
       metricsBreakLayout.value = false
       superslimLayout.value = false
       slimLayout.value = false

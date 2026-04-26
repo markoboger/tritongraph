@@ -138,6 +138,9 @@ defineProps<{
   min-width: 0;
   pointer-events: none;
 }
+.package-box__external-endpoint:has(.package-box__external-endpoint-chip:hover) {
+  z-index: 80;
+}
 .package-box__external-endpoints--left .package-box__external-endpoint {
   flex-direction: row-reverse;
 }
@@ -164,6 +167,20 @@ defineProps<{
   position: relative;
   z-index: 2;
   transform: none;
+  pointer-events: auto;
+  transition:
+    max-width 0.12s ease,
+    box-shadow 0.12s ease,
+    z-index 0s;
+}
+.package-box__external-endpoint-chip:hover {
+  max-width: min(360px, 70vw);
+  overflow: visible;
+  z-index: 81;
+  background: color-mix(in srgb, var(--box-accent, #64748b) 16%, #ffffff);
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 0.98),
+    0 8px 22px rgb(15 23 42 / 0.22);
 }
 .package-box__external-endpoints--left .package-box__external-endpoint-chip {
   transform: translateX(8px);

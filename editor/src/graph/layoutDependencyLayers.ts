@@ -71,6 +71,12 @@ function nodeIsRelationFocusPackage(node: { type?: string; data?: unknown }): bo
   return !!(d && typeof d === 'object' && (d as Record<string, unknown>).__relationFocusPackage === true)
 }
 
+function nodeIsCrossPackagePreview(node: { type?: string; data?: unknown }): boolean {
+  if (String(node.type ?? '') !== 'package') return false
+  const d = node.data
+  return !!(d && typeof d === 'object' && (d as Record<string, unknown>).__crossPackageFocus === true)
+}
+
 /**
  * Fit natural column heights into `avail` vertical pixels with per-row minimums, keeping taller
  * rows proportionally larger when possible.
@@ -243,7 +249,7 @@ function sizeOf(n: {
     return { w: n.width, h: n.height }
   }
   if (isLeafBoxNode(n)) {
-    return { w: MODULE_W, h: preferredLeafHeight(n) }
+    return { w: preferredLeafWidth(n), h: preferredLeafHeight(n) }
   }
   if (n.type === 'group') {
     const styleH = Number(n.style?.height)
@@ -262,6 +268,14 @@ function preferredLeafHeight(n: { data?: unknown }): number {
       ? (n.data as Record<string, unknown>).preferredLeafHeight
       : undefined
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : MODULE_H
+}
+
+function preferredLeafWidth(n: { data?: unknown }): number {
+  const raw =
+    n.data && typeof n.data === 'object'
+      ? (n.data as Record<string, unknown>).preferredLeafWidth
+      : undefined
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : MODULE_W
 }
 
 function preferredGroupHeight(n: { data?: unknown }): number | null {
@@ -288,7 +302,7 @@ function preferredGroupHeight(n: { data?: unknown }): number | null {
  * height the inner content needs and reserves it.
  */
 function requiredChildSize(child: any): { w: number; h: number } {
-  if (isLeafBoxNode(child)) return { w: MODULE_W, h: preferredLeafHeight(child) }
+  if (isLeafBoxNode(child)) return { w: preferredLeafWidth(child), h: preferredLeafHeight(child) }
   const w = Number(child.style?.width)
   const h = Number(child.style?.height)
   const preferredH = preferredGroupHeight(child)
@@ -550,18 +564,19 @@ function layoutOneParent(
     const numLeaves = visibleLayerNodes.reduce((s, c) => s + (isLeafBoxNode(c) ? 1 : 0), 0)
     const remainingH = Math.max(0, stackBand - sumGroupH - totalGaps)
     const leafH = numLeaves > 0 ? Math.max(LEAF_MIN_H, remainingH / numLeaves) : Math.max(LEAF_MIN_H, stackBand)
-    const maxGroupChildW = visibleLayerNodes.reduce(
-      (m, c, i) => (isLeafBoxNode(c) ? m : Math.max(m, childSizes[i]!.w)),
+    const maxChildW = visibleLayerNodes.reduce(
+      (m, _c, i) => Math.max(m, childSizes[i]!.w),
       0,
     )
     const baseColW = Math.max(LEAF_MIN_W, columnInner[d] ?? LEAF_MIN_W)
-    const boxW = Math.max(baseColW, maxGroupChildW)
+    const boxW = Math.max(baseColW, maxChildW)
     const colTrackW = boxW + 2 * COL_INSET
 
     /** Per-row pixel height for this column (groups may shrink to fit the stack band). */
     const slotHeights: number[] = visibleLayerNodes.map((node, i) => {
       if (!isLeafBoxNode(node)) return childSizes[i]!.h
       const preferredH = childSizes[i]!.h
+      if (nodeIsCrossPackagePreview(node)) return Math.max(leafH, preferredH)
       if (nodeIsRelationFocusPackage(node)) return leafH
       return preferredH > MODULE_H ? Math.max(leafH, preferredH) : leafH
     })

@@ -34,13 +34,22 @@ import { isLeafBoxNode } from '../graph/nodeKinds'
 import { languageIconForId } from '../graph/languages'
 import { strokeColorForFlowEdge } from '../graph/relationKinds'
 import { drillNoteForModuleId } from '../graph/sbtStyleDrillNotes'
+import { assignInnerArtefactLayers } from '../graph/innerArtefactLayerLayout'
 
 const MODULE_LAYOUT_W = 200
 const MODULE_LAYOUT_H = 72
 const LEAF_MIN_LAYOUT_H = 40
 const PACKAGE_SCOPE_GROUP_MIN_LAYOUT_H = 40
 const OTHER_GROUP_MIN_LAYOUT_H = 76
-const CROSS_PACKAGE_PREVIEW_LAYOUT_H = 400
+const CROSS_PACKAGE_PREVIEW_HEADER_H = 92
+const CROSS_PACKAGE_PREVIEW_COL_W = 200
+const CROSS_PACKAGE_PREVIEW_ROW_H = 132
+const CROSS_PACKAGE_PREVIEW_COL_GAP = 36
+const CROSS_PACKAGE_PREVIEW_ROW_GAP = 8
+const CROSS_PACKAGE_PREVIEW_PAD_X = 28
+const CROSS_PACKAGE_PREVIEW_PAD_Y = 18
+const CROSS_PACKAGE_PREVIEW_MIN_W = 260
+const CROSS_PACKAGE_PREVIEW_MIN_H = 220
 
 /** Subpixel / border slack so a graph that visually fits does not enable pan rails. */
 const PAN_RAIL_FIT_SLACK_PX = 8
@@ -227,6 +236,130 @@ function normalizedFocusRelationDepth(): number {
   return Number.isFinite(raw) ? Math.max(1, Math.min(3, Math.round(raw))) : 1
 }
 
+function relationStringEndpoint(rel: unknown, key: 'from' | 'to'): string {
+  return rel && typeof rel === 'object' && typeof (rel as Record<string, unknown>)[key] === 'string'
+    ? String((rel as Record<string, unknown>)[key])
+    : ''
+}
+
+function directedInnerArtefactNeighborhood(
+  seedIds: { outgoing: Iterable<string>; incoming: Iterable<string> },
+  relations: readonly unknown[],
+  maxDepth: number,
+): Set<string> {
+  const depth = Number.isFinite(maxDepth) ? Math.max(0, Math.min(3, Math.round(maxDepth))) : 0
+  const visible = new Set<string>()
+  const outgoing = new Map<string, Set<string>>()
+  const incoming = new Map<string, Set<string>>()
+  const ensure = (map: Map<string, Set<string>>, id: string) => {
+    let next = map.get(id)
+    if (!next) {
+      next = new Set<string>()
+      map.set(id, next)
+    }
+    return next
+  }
+
+  for (const rel of relations) {
+    const from = relationStringEndpoint(rel, 'from')
+    const to = relationStringEndpoint(rel, 'to')
+    if (!from || !to) continue
+    ensure(outgoing, from).add(to)
+    ensure(incoming, to).add(from)
+    ensure(outgoing, to)
+    ensure(incoming, from)
+  }
+
+  const visit = (seeds: Iterable<string>, map: Map<string, Set<string>>) => {
+    const frontier: string[] = []
+    const distances = new Map<string, number>()
+    for (const id of seeds) {
+      if (!id) continue
+      visible.add(id)
+      frontier.push(id)
+      distances.set(id, 0)
+    }
+
+    for (let i = 0; i < frontier.length; i++) {
+      const id = frontier[i]!
+      const currentDepth = distances.get(id) ?? 0
+      if (currentDepth >= depth) continue
+      for (const next of map.get(id) ?? []) {
+        if (distances.has(next)) continue
+        visible.add(next)
+        distances.set(next, currentDepth + 1)
+        frontier.push(next)
+      }
+    }
+  }
+
+  visit(seedIds.outgoing, outgoing)
+  visit(seedIds.incoming, incoming)
+  return visible
+}
+
+function crossPackagePreviewPreferredSize(
+  data: Record<string, unknown>,
+  focusState: ReturnType<typeof packageFocusState>,
+): { w: number; h: number } | null {
+  if (!focusState) return null
+  const innerArtefacts = Array.isArray(data.innerArtefacts) ? data.innerArtefacts : []
+  const localIds = innerArtefacts
+    .map((art) => (art && typeof art === 'object' ? (art as Record<string, unknown>).id : undefined))
+    .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  if (!localIds.length) return null
+
+  const localIdSet = new Set(localIds)
+  const focusSeedSet = new Set(focusState.seedIds)
+  const outgoingSeeds = new Set<string>()
+  const incomingSeeds = new Set<string>()
+  const crossRelations = Array.isArray(data.crossArtefactRelations) ? data.crossArtefactRelations : []
+  for (const rel of crossRelations) {
+    const from = relationStringEndpoint(rel, 'from')
+    const to = relationStringEndpoint(rel, 'to')
+    if (focusSeedSet.has(from) && localIdSet.has(to)) outgoingSeeds.add(to)
+    if (focusSeedSet.has(to) && localIdSet.has(from)) incomingSeeds.add(from)
+  }
+  if (!outgoingSeeds.size && !incomingSeeds.size) return null
+
+  const innerRelations = Array.isArray(data.innerArtefactRelations) ? data.innerArtefactRelations : []
+  const visibleIds = directedInnerArtefactNeighborhood(
+    { outgoing: outgoingSeeds, incoming: incomingSeeds },
+    innerRelations,
+    normalizedFocusRelationDepth() - 1,
+  )
+  const ids = localIds.filter((id) => visibleIds.has(id))
+  if (!ids.length) return null
+  const filteredRelations = innerRelations.filter((rel) => {
+    const from = relationStringEndpoint(rel, 'from')
+    const to = relationStringEndpoint(rel, 'to')
+    return visibleIds.has(from) && visibleIds.has(to)
+  })
+  const columns = filteredRelations.length
+    ? assignInnerArtefactLayers(ids, filteredRelations.map((rel) => ({
+        from: relationStringEndpoint(rel, 'from'),
+        to: relationStringEndpoint(rel, 'to'),
+      })))
+    : [ids]
+  const colCount = Math.max(1, columns.length)
+  const rowCount = Math.max(1, ...columns.map((col) => col.length))
+  return {
+    w: Math.max(
+      CROSS_PACKAGE_PREVIEW_MIN_W,
+      CROSS_PACKAGE_PREVIEW_PAD_X * 2 +
+        colCount * CROSS_PACKAGE_PREVIEW_COL_W +
+        Math.max(0, colCount - 1) * CROSS_PACKAGE_PREVIEW_COL_GAP,
+    ),
+    h: Math.max(
+      CROSS_PACKAGE_PREVIEW_MIN_H,
+      CROSS_PACKAGE_PREVIEW_HEADER_H +
+        CROSS_PACKAGE_PREVIEW_PAD_Y * 2 +
+        rowCount * CROSS_PACKAGE_PREVIEW_ROW_H +
+        Math.max(0, rowCount - 1) * CROSS_PACKAGE_PREVIEW_ROW_GAP,
+    ),
+  }
+}
+
 function packageFocusState() {
   for (const n of nodes.value) {
     const data = (n.data ?? {}) as Record<string, unknown>
@@ -362,6 +495,9 @@ function applyPackageRelationFocusVisibility(): boolean {
     const basePreferredLeafHeight = managed
       ? data.__packageRelationFocusBasePreferredLeafHeight
       : data.preferredLeafHeight
+    const basePreferredLeafWidth = managed
+      ? data.__packageRelationFocusBasePreferredLeafWidth
+      : data.preferredLeafWidth
     const basePreferredGroupHeight = managed
       ? data.__packageRelationFocusBasePreferredGroupHeight
       : data.preferredGroupHeight
@@ -371,6 +507,7 @@ function applyPackageRelationFocusVisibility(): boolean {
       delete data.__packageRelationFocusManaged
       delete data.__packageRelationFocusBaseHidden
       delete data.__packageRelationFocusBasePreferredLeafHeight
+      delete data.__packageRelationFocusBasePreferredLeafWidth
       delete data.__packageRelationFocusBasePreferredGroupHeight
       delete data.__crossPackageFocus
       delete data.__relationFocusPackage
@@ -378,6 +515,11 @@ function applyPackageRelationFocusVisibility(): boolean {
         data.preferredLeafHeight = basePreferredLeafHeight
       } else {
         delete data.preferredLeafHeight
+      }
+      if (typeof basePreferredLeafWidth === 'number') {
+        data.preferredLeafWidth = basePreferredLeafWidth
+      } else {
+        delete data.preferredLeafWidth
       }
       if (typeof basePreferredGroupHeight === 'number') {
         data.preferredGroupHeight = basePreferredGroupHeight
@@ -399,11 +541,29 @@ function applyPackageRelationFocusVisibility(): boolean {
       delete data.__relationFocusPackage
     }
     if (crossPackageFocus && hasInnerArtefactPreview) {
+      const previewSize = crossPackagePreviewPreferredSize(data, focusState)
       data.__crossPackageFocus = true
-      data.preferredLeafHeight = Math.max(
-        typeof basePreferredLeafHeight === 'number' ? basePreferredLeafHeight : 0,
-        CROSS_PACKAGE_PREVIEW_LAYOUT_H,
-      )
+      if (previewSize) {
+        data.preferredLeafWidth = Math.max(
+          typeof basePreferredLeafWidth === 'number' ? basePreferredLeafWidth : 0,
+          previewSize.w,
+        )
+        data.preferredLeafHeight = Math.max(
+          typeof basePreferredLeafHeight === 'number' ? basePreferredLeafHeight : 0,
+          previewSize.h,
+        )
+      } else {
+        if (typeof basePreferredLeafWidth === 'number') {
+          data.preferredLeafWidth = basePreferredLeafWidth
+        } else {
+          delete data.preferredLeafWidth
+        }
+        if (typeof basePreferredLeafHeight === 'number') {
+          data.preferredLeafHeight = basePreferredLeafHeight
+        } else {
+          delete data.preferredLeafHeight
+        }
+      }
       if (typeof basePreferredGroupHeight === 'number') {
         data.preferredGroupHeight = basePreferredGroupHeight
       } else {
@@ -416,6 +576,11 @@ function applyPackageRelationFocusVisibility(): boolean {
       } else {
         delete data.preferredLeafHeight
       }
+      if (typeof basePreferredLeafWidth === 'number') {
+        data.preferredLeafWidth = basePreferredLeafWidth
+      } else {
+        delete data.preferredLeafWidth
+      }
       if (typeof basePreferredGroupHeight === 'number') {
         data.preferredGroupHeight = basePreferredGroupHeight
       } else {
@@ -427,10 +592,12 @@ function applyPackageRelationFocusVisibility(): boolean {
       managed &&
       data.__packageRelationFocusBaseHidden === baseHidden &&
       data.__packageRelationFocusBasePreferredLeafHeight === basePreferredLeafHeight &&
+      data.__packageRelationFocusBasePreferredLeafWidth === basePreferredLeafWidth &&
       data.__packageRelationFocusBasePreferredGroupHeight === basePreferredGroupHeight &&
       ((n.data ?? {}) as Record<string, unknown>).__crossPackageFocus === data.__crossPackageFocus &&
       ((n.data ?? {}) as Record<string, unknown>).__relationFocusPackage === data.__relationFocusPackage &&
       ((n.data ?? {}) as Record<string, unknown>).preferredLeafHeight === data.preferredLeafHeight &&
+      ((n.data ?? {}) as Record<string, unknown>).preferredLeafWidth === data.preferredLeafWidth &&
       ((n.data ?? {}) as Record<string, unknown>).preferredGroupHeight === data.preferredGroupHeight
     ) return n
     changed = true
@@ -442,6 +609,7 @@ function applyPackageRelationFocusVisibility(): boolean {
         __packageRelationFocusManaged: true,
         __packageRelationFocusBaseHidden: baseHidden,
         __packageRelationFocusBasePreferredLeafHeight: basePreferredLeafHeight,
+        __packageRelationFocusBasePreferredLeafWidth: basePreferredLeafWidth,
         __packageRelationFocusBasePreferredGroupHeight: basePreferredGroupHeight,
       },
     }

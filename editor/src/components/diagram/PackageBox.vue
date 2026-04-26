@@ -232,48 +232,6 @@ const { hasCoverage, coveragePercentValue, simulatedMetrics } = useBoxMetrics(()
 
 
 const {
-  rootEl,
-  titleEl,
-  packageBodyEl,
-  tightLayout,
-  flatLayout,
-  superflatLayout,
-  compactLayout,
-  metricsBreakLayout,
-  superslimLayout,
-  slimLayout,
-  subtitleHiddenForVerticalTitle,
-} = usePackageBoxChromeLayout({
-  embedded: () => props.embedded,
-  focused: () => props.focused,
-  label: () => String(props.label ?? ''),
-  hasCoverage: () => hasCoverage.value,
-  issueCount: () => simulatedMetrics.value.issueCount,
-  watchSources: () => [
-    props.label,
-    props.subtitle,
-    props.focused,
-    props.notes,
-    props.pinned,
-    props.boxColor,
-    props.showPinTool,
-    props.showColorTool,
-    props.innerPackages,
-    props.innerArtefacts,
-    props.innerArtefactRelations,
-    props.innerDrillPath,
-    props.focusedInnerArtefactId,
-    props.embedded,
-    props.leafVisual,
-    props.boxId,
-    hasCoverage.value,
-    simulatedMetrics.value.issueCount,
-    innerCoverageVersion.value,
-  ],
-})
-
-
-const {
   innerDrillPathArr,
   activeInnerSpec,
   topLevelInnerPackages,
@@ -303,6 +261,49 @@ const {
   focusedInnerArtefactId: () => props.focusedInnerArtefactId ?? null,
   globalFocusedArtefactId: () => props.globalFocusedArtefactId ?? null,
   focusRelationDepth: () => focusRelationDepthRef.value,
+})
+
+const {
+  rootEl,
+  titleEl,
+  packageBodyEl,
+  tightLayout,
+  flatLayout,
+  superflatLayout,
+  compactLayout,
+  metricsBreakLayout,
+  superslimLayout,
+  slimLayout,
+  subtitleHiddenForVerticalTitle,
+} = usePackageBoxChromeLayout({
+  embedded: () => props.embedded,
+  focused: () => props.focused,
+  forceCompactHeader: () => crossPackagePreviewActive.value,
+  label: () => String(props.label ?? ''),
+  hasCoverage: () => hasCoverage.value,
+  issueCount: () => simulatedMetrics.value.issueCount,
+  watchSources: () => [
+    props.label,
+    props.subtitle,
+    props.focused,
+    props.notes,
+    props.pinned,
+    props.boxColor,
+    props.showPinTool,
+    props.showColorTool,
+    props.innerPackages,
+    props.innerArtefacts,
+    props.innerArtefactRelations,
+    props.innerDrillPath,
+    props.focusedInnerArtefactId,
+    props.embedded,
+    props.leafVisual,
+    props.boxId,
+    hasCoverage.value,
+    simulatedMetrics.value.issueCount,
+    innerCoverageVersion.value,
+    crossPackagePreviewActive.value,
+  ],
 })
 
 /** Relations currently visible in the UI after applying the relation-type checkboxes. */
@@ -922,6 +923,8 @@ function onHeaderDblClick() {
    * routed under a box stay faintly visible through it.
    */
   --box-fill: color-mix(in srgb, var(--box-accent) 8%, #ffffff);
+  --triton-package-box-pad-x: clamp(6px, 1.35vmin, 14px);
+  --triton-package-box-pad-y: clamp(6px, 1.2vmin, 14px);
   position: relative;
   width: 100%;
   height: 100%;
@@ -932,8 +935,8 @@ function onHeaderDblClick() {
   flex-direction: column;
   justify-content: flex-start;
   align-items: stretch;
-  padding: clamp(6px, 1.2vmin, 14px) clamp(6px, 1.35vmin, 14px);
-  padding-right: clamp(6px, 1.35vmin, 14px);
+  padding: var(--triton-package-box-pad-y) var(--triton-package-box-pad-x);
+  padding-right: var(--triton-package-box-pad-x);
   border-radius: 8px;
   border: 1px solid rgb(30 41 59 / 0.88);
   background: color-mix(in srgb, var(--box-fill) 90%, transparent);
@@ -952,17 +955,26 @@ function onHeaderDblClick() {
 }
 
 /**
- * Cross-package focus preview: the unfocused box grows to show connected artefacts.
- * `height: auto` overrides the normal `height: 100%` so the node expands with content;
- * `overflow: visible` lets the inner diagram spill out if the Vue Flow node allocation
- * hasn't caught up yet.
+ * Cross-package focus preview: layout computes a preferred package footprint first; the inner
+ * diagram then renders inside the node allocation instead of expanding the node after paint.
  */
 .package-box--cross-preview {
-  height: auto;
-  overflow: visible;
-  min-height: 400px;
+  height: 100%;
+  overflow: hidden;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+}
+.package-box--cross-preview.package-box--compact-layout .lang-icon-slot {
+  position: static;
+}
+.package-box--cross-preview.package-box--compact-layout .package-box__body {
+  flex: 0 0 auto;
+}
+.package-box--cross-preview > .package-box__inner-artefact-diagram {
+  width: calc(100% + 2 * var(--triton-package-box-pad-x, 0px));
+  margin-inline: calc(-1 * var(--triton-package-box-pad-x, 0px));
+  margin-bottom: calc(-1 * var(--triton-package-box-pad-y, 0px));
 }
 /**
  * Scala leaf chrome is intentionally identical to a package card here — same left accent
