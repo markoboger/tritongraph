@@ -59,6 +59,8 @@ import {
   SLIM_LAYOUT_MIN_WIDTH_PX,
   SUPERFLAT_LAYOUT_MAX_H_PX,
   SUPERSLIM_LAYOUT_ENTER_PX,
+  TIGHT_LAYOUT_MAX_WIDTH_PX,
+  TIGHT_LAYOUT_MIN_WIDTH_PX,
 } from './components/diagram/boxChromeLayout'
 import { buildScalaWorkspacePayload } from '../../packages/triton-core/src/tritonWorkspacePayload'
 import {
@@ -266,7 +268,7 @@ const BREAKPOINT_LAYOUT_SPECS: readonly BreakpointLayoutSpec[] = [
     state: 'tight',
     title: 'tight layout state',
     kinds: ['general', 'project', 'module', 'package', 'artefact'],
-    sizes: { min: { w: 176, h: 180 }, max: { w: 240, h: 220 } },
+    sizes: { min: { w: TIGHT_LAYOUT_MIN_WIDTH_PX, h: COMPACT_LAYOUT_MIN_HEIGHT_PX }, max: { w: TIGHT_LAYOUT_MAX_WIDTH_PX, h: 220 } },
   },
   {
     state: 'slim-layout',

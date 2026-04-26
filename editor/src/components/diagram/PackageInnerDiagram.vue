@@ -250,6 +250,8 @@ function scalaIconForKind(subtitle: string | undefined): string {
   align-self: stretch;
 }
 .package-box__inner-artefact-cols {
+  --triton-inner-artefact-min-h: 40px;
+  --triton-inner-artefact-preferred-h: 132px;
   position: relative;
   z-index: 0;
   display: flex;
@@ -333,13 +335,14 @@ function scalaIconForKind(subtitle: string | undefined): string {
   cursor: pointer;
 }
 .package-box__inner-slot.package-box__inner-slot--artefact-layer {
-  flex: 0 0 auto;
-  min-height: auto;
+  flex: 0 0 var(--triton-inner-artefact-preferred-h);
+  min-height: var(--triton-inner-artefact-min-h);
   align-self: stretch;
 }
 .package-box__inner-slot.package-box__inner-slot--artefact-layer .package-box__artefact-row {
-  flex: 0 0 auto;
-  min-height: auto;
+  flex: 1 1 0;
+  min-height: 0;
+  height: 100%;
 }
 .package-box__inner-slot--artefact-layer.package-box__inner-slot--artefact-focused-cell {
   flex: 1 1 0;

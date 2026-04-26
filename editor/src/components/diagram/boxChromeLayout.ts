@@ -49,9 +49,12 @@ export const FLAT_LAYOUT_MIN_WIDTH_EXIT_PX = FLAT_LAYOUT_MIN_WIDTH_PX - 8
 export const SUPERFLAT_LAYOUT_MAX_H_PX = 58
 export const SUPERFLAT_LAYOUT_EXIT_H_PX = 66
 
+export const TIGHT_LAYOUT_MIN_WIDTH_PX = 176
+export const TIGHT_LAYOUT_MAX_WIDTH_PX = 240
+
 export const DEFAULT_LAYOUT_MIN_WIDTH_PX = 268
 export const DEFAULT_LAYOUT_MIN_HEIGHT_PX = 170
-export const COMPACT_LAYOUT_MIN_WIDTH_PX = FLAT_LAYOUT_MIN_WIDTH_PX
+export const COMPACT_LAYOUT_MIN_WIDTH_PX = TIGHT_LAYOUT_MAX_WIDTH_PX + 1
 export const COMPACT_LAYOUT_MAX_WIDTH_PX = 520
 export const COMPACT_LAYOUT_MIN_HEIGHT_PX = FLAT_LAYOUT_MAX_H_PX + 1
 export const COMPACT_LAYOUT_MAX_HEIGHT_PX = DEFAULT_LAYOUT_MIN_HEIGHT_PX - 1
@@ -102,5 +105,13 @@ export function nextCompactLayout(boxWidthPx: number, boxHeightPx: number): bool
     boxWidthPx >= COMPACT_LAYOUT_MIN_WIDTH_PX &&
     boxHeightPx >= COMPACT_LAYOUT_MIN_HEIGHT_PX &&
     boxHeightPx <= COMPACT_LAYOUT_MAX_HEIGHT_PX
+  )
+}
+
+export function nextTightLayout(boxWidthPx: number, boxHeightPx: number): boolean {
+  return (
+    boxWidthPx >= TIGHT_LAYOUT_MIN_WIDTH_PX &&
+    boxWidthPx <= TIGHT_LAYOUT_MAX_WIDTH_PX &&
+    boxHeightPx > FLAT_LAYOUT_MAX_H_PX
   )
 }

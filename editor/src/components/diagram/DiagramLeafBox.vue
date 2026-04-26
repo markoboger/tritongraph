@@ -7,6 +7,7 @@ import {
   nextMetricsBreakLayout,
   nextSuperflatLayout,
   nextSuperslimLayout,
+  nextTightLayout,
 } from './boxChromeLayout'
 
 const props = defineProps<{
@@ -25,6 +26,7 @@ const rootEl = ref<HTMLElement | null>(null)
 const superflatLayout = ref(false)
 const flatLayout = ref(false)
 const compactLayout = ref(false)
+const tightLayout = ref(false)
 const metricsBreakLayout = ref(false)
 const superslimLayout = ref(false)
 const slimLayout = ref(false)
@@ -48,6 +50,7 @@ function measure() {
     superflatLayout.value = false
     flatLayout.value = false
     compactLayout.value = false
+    tightLayout.value = false
     metricsBreakLayout.value = false
     superslimLayout.value = false
     slimLayout.value = false
@@ -61,12 +64,14 @@ function measure() {
   flatLayout.value = superflatLayout.value || nextFlatLayout(w, h, flatLayout.value)
   compactLayout.value = !flatLayout.value && nextCompactLayout(w, h)
   if (flatLayout.value || compactLayout.value) {
+    tightLayout.value = false
     metricsBreakLayout.value = false
     superslimLayout.value = false
     slimLayout.value = false
     return
   }
 
+  tightLayout.value = nextTightLayout(w, h)
   metricsBreakLayout.value = hasMetricsChrome.value
     ? nextMetricsBreakLayout(w, h, metricsBreakLayout.value)
     : false
@@ -112,6 +117,7 @@ onUnmounted(() => {
     :class="{
       'diagram-leaf-box--has-metrics': hasMetricsChrome,
       'diagram-leaf-box--compact-layout': compactLayout,
+      'diagram-leaf-box--tight': tightLayout,
       'diagram-leaf-box--flat-layout': flatLayout,
       'diagram-leaf-box--superflat-layout': superflatLayout,
       'diagram-leaf-box--metrics-break': metricsBreakLayout,
