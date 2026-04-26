@@ -46,6 +46,7 @@ export type BoundaryStubRelation = {
   externalId: string
   externalLabel: string
   foreignArtefactId: string
+  foreignPackageId: string
   localId: string
   side: 'left' | 'right'
   label: string

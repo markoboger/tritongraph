@@ -29,6 +29,23 @@ type RoutingOptions = {
 }
 
 export function useInnerArtefactRouting(options: RoutingOptions) {
+  function crossPackageExternalEndpointId(input: {
+    side: 'left' | 'right'
+    localId: string
+    foreignId: string
+    label: string
+    wrapperName?: string
+  }): string {
+    return [
+      '__ext',
+      input.side,
+      input.localId,
+      input.foreignId,
+      input.label,
+      input.wrapperName ?? '',
+    ].join(':')
+  }
+
   const crossPackageBridgeRelations = computed((): readonly BridgeRelation[] => {
     if (options.innerDrillPath().length > 0) return []
     if (!options.focused() && !options.crossPackagePreviewActive()) return []
@@ -100,9 +117,13 @@ export function useInnerArtefactRouting(options: RoutingOptions) {
       const externalLabel = focusedLocalId
         ? artefactSimpleName(foreignId)
         : (foreignPkgId.split('.').pop() || foreignPkgId || 'external')
-      const externalId = focusedLocalId
-        ? `__ext-${side}:art:${foreignId}`
-        : `__ext-${side}:pkg:${foreignPkgId || foreignId}`
+      const externalId = crossPackageExternalEndpointId({
+        side,
+        localId,
+        foreignId,
+        label: rel.label,
+        wrapperName: rel.wrapperName,
+      })
       const key = `${externalId}\u0001${localId}\u0001${rel.label}\u0001${rel.wrapperName ?? ''}`
       if (seen.has(key)) continue
       seen.add(key)
@@ -110,6 +131,7 @@ export function useInnerArtefactRouting(options: RoutingOptions) {
         externalId,
         externalLabel,
         foreignArtefactId: foreignId,
+        foreignPackageId: foreignPkgId || foreignId,
         localId,
         side,
         label: rel.label,
@@ -120,10 +142,15 @@ export function useInnerArtefactRouting(options: RoutingOptions) {
   })
 
   const crossPackageExternalEndpoints = computed(() => {
-    const byId = new Map<string, { id: string; label: string; side: 'left' | 'right' }>()
+    const byId = new Map<string, { id: string; label: string; side: 'left' | 'right'; foreignPackageId: string }>()
     for (const rel of crossPackageBoundaryStubRelations.value) {
       if (!byId.has(rel.externalId)) {
-        byId.set(rel.externalId, { id: rel.externalId, label: rel.externalLabel, side: rel.side })
+        byId.set(rel.externalId, {
+          id: rel.externalId,
+          label: rel.externalLabel,
+          side: rel.side,
+          foreignPackageId: rel.foreignPackageId,
+        })
       }
     }
     const all = [...byId.values()].sort((a, b) => a.label.localeCompare(b.label))

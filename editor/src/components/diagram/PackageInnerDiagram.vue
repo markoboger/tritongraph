@@ -14,7 +14,7 @@ import InnerArtefactEdgesSvg from './InnerArtefactEdgesSvg.vue'
 import InnerPackageStack from './InnerPackageStack.vue'
 import InnerDiagramPorts from './InnerDiagramPorts.vue'
 
-type ExternalEndpoint = { id: string; label: string; side: 'left' | 'right' }
+type ExternalEndpoint = { id: string; label: string; side: 'left' | 'right'; foreignPackageId: string }
 
 const props = defineProps<{
   mode: 'focused' | 'cross-preview'

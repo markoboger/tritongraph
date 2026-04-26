@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { PortEndpoint } from './innerArtefactGraphHelpers'
 
-type ExternalEndpoint = { id: string; label: string; side: 'left' | 'right' }
+type ExternalEndpoint = { id: string; label: string; side: 'left' | 'right'; foreignPackageId: string }
 
 defineProps<{
   showRootPorts: boolean
@@ -24,7 +24,12 @@ defineProps<{
   </div>
 
   <div v-if="externalEndpoints.left.length" class="package-box__external-endpoints package-box__external-endpoints--left">
-    <div v-for="ep in externalEndpoints.left" :key="ep.id" class="package-box__external-endpoint">
+    <div
+      v-for="ep in externalEndpoints.left"
+      :key="ep.id"
+      class="package-box__external-endpoint"
+      :data-triton-foreign-package-id="ep.foreignPackageId"
+    >
       <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
       <span
         :ref="(el) => bindSlotEl(ep.id, el)"
@@ -49,6 +54,7 @@ defineProps<{
       v-for="ep in externalEndpoints.right"
       :key="ep.id"
       class="package-box__external-endpoint package-box__external-endpoint--right"
+      :data-triton-foreign-package-id="ep.foreignPackageId"
     >
       <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
       <span

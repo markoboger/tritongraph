@@ -27,6 +27,10 @@ function anchoredSlotCenter(
   selector: string,
   side: 'left' | 'right',
 ): { x: number; y: number } {
+  if (slotEl.matches('.package-box__port')) {
+    const r = slotEl.getBoundingClientRect()
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+  }
   const anchor = slotEl.querySelector(selector)
   if (anchor instanceof HTMLElement) {
     const r = anchor.getBoundingClientRect()
