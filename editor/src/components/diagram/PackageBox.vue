@@ -139,6 +139,11 @@ const props = withDefaults(
      * Used to hide the focused chrome (pin tools, color tools) to avoid confusion.
      */
     crossPackageFocused?: boolean
+    /**
+     * Focused box is rendered inside another package’s inner diagram (e.g. expanded Scala artefact).
+     * Forces the same horizontal compact header as {@link GeneralFocusedBox}`innerDiagramHost`.
+     */
+    innerDiagramDescendant?: boolean
   }>(),
   {
     innerPackages: () => [],
@@ -150,6 +155,7 @@ const props = withDefaults(
     embedded: false,
     leafVisual: 'package',
     crossPackageFocused: false,
+    innerDiagramDescendant: false,
   },
 )
 
@@ -247,6 +253,11 @@ const {
   updateInnerArtefactFocus: (id) => emit('update-inner-artefact-focus', id),
 })
 
+/** Keeps compact header while drilling inner packages (see `hasInnerDiagram` vs drill path). */
+const nodeHasInnerDiagramPayload = computed(
+  () => (props.innerPackages?.length ?? 0) > 0 || (props.innerArtefacts?.length ?? 0) > 0,
+)
+
 const {
   allInnerArtefactRelations,
   innerArtefactFocusActive,
@@ -278,7 +289,6 @@ const {
 } = usePackageBoxChromeLayout({
   embedded: () => props.embedded,
   focused: () => props.focused,
-  forceCompactHeader: () => crossPackagePreviewActive.value,
   label: () => String(props.label ?? ''),
   hasCoverage: () => hasCoverage.value,
   issueCount: () => simulatedMetrics.value.issueCount,
@@ -462,11 +472,15 @@ function onHeaderDblClick() {
 </script>
 
 <template>
-  <!-- Stacked inner card: same visual language as the default (unfocused) top-level box, scaled down. -->
+  <!--
+    Inner-diagram package tiles: same compact header as the layer-drill root
+    ({@link GeneralFocusedBox} — folder + title + subtitle row), not the unfocused
+    centered tall-folder card.
+  -->
   <div
     v-if="embedded"
     ref="rootEl"
-    class="package-box package-box--embedded"
+    class="package-box package-box--embedded package-box--embedded-compact-header"
     :class="{
       'package-box--pinned': pinned,
       'package-box--has-metrics': true,
@@ -484,35 +498,44 @@ function onHeaderDblClick() {
         :issue-level="simulatedMetrics.issueLevel"
       />
     </div>
-    <div class="lang-icon-slot lang-icon-slot--embedded">
-      <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
-    </div>
     <div
-      ref="packageBodyEl"
-      class="package-box__body package-box__body--embedded"
-      :class="{ 'triton-vertical-rail-container': superslimLayout || (metricsBreakLayout && slimLayout) }"
+      class="package-box__embedded-header-row"
+      :class="{
+        'package-box__embedded-header-row--metrics-break': metricsBreakLayout,
+        'package-box__embedded-header-row--superslim': superslimLayout,
+        'package-box__embedded-header-row--slim': metricsBreakLayout && !superslimLayout && slimLayout,
+      }"
     >
-      <div
-        ref="titleEl"
-        class="title"
-        :class="{
-          'title--metrics-break-vertical':
-            metricsBreakLayout && !superslimLayout && slimLayout,
-          'triton-vertical-rail-text triton-vertical-title-rail':
-            superslimLayout || (metricsBreakLayout && slimLayout),
-        }"
-      >
-        {{ label }}
+      <div class="package-box__embedded-folder">
+        <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
       </div>
       <div
-        v-if="subtitle && !subtitleHiddenForVerticalTitle"
-        class="subtitle"
-        :class="{
-          'triton-vertical-rail-text triton-vertical-subtitle-rail':
-            superslimLayout || (metricsBreakLayout && slimLayout),
-        }"
+        ref="packageBodyEl"
+        class="package-box__body package-box__body--embedded package-box__body--embedded-header"
+        :class="{ 'triton-vertical-rail-container': superslimLayout || (metricsBreakLayout && slimLayout) }"
       >
-        {{ subtitle }}
+        <div
+          ref="titleEl"
+          class="title title--header"
+          :class="{
+            'title--metrics-break-vertical':
+              metricsBreakLayout && !superslimLayout && slimLayout,
+            'triton-vertical-rail-text triton-vertical-title-rail':
+              superslimLayout || (metricsBreakLayout && slimLayout),
+          }"
+        >
+          {{ label }}
+        </div>
+        <div
+          v-if="subtitle && !subtitleHiddenForVerticalTitle"
+          class="subtitle subtitle--header"
+          :class="{
+            'triton-vertical-rail-text triton-vertical-subtitle-rail':
+              superslimLayout || (metricsBreakLayout && slimLayout),
+          }"
+        >
+          {{ subtitle }}
+        </div>
       </div>
     </div>
   </div>
@@ -528,6 +551,7 @@ function onHeaderDblClick() {
       :accent="accent"
       :title="label"
       :subtitle="declaration || subtitle"
+      :inner-diagram-host="innerDiagramDescendant || nodeHasInnerDiagramPayload"
       :allow-overflow="true"
       :title-tooltip="isScalaLeaf ? String(label ?? '') : 'Double-click to rename / edit description'"
       :pinned="pinned"
@@ -778,66 +802,71 @@ function onHeaderDblClick() {
       @cycle-color="emit('cycle-color')"
     />
 
-    <div class="lang-icon-slot" :class="{ 'lang-icon-slot--scala-leaf': isScalaLeaf }">
-      <img
-        class="lang-svg"
-        :class="isScalaLeaf ? 'scala-leaf-icon' : 'folder-icon'"
-        :src="isScalaLeaf ? scalaIconForKind(subtitle) : folderIconUrl"
-        :alt="isScalaLeaf ? (subtitle ?? '') : ''"
-        aria-hidden="true"
-        decoding="async"
-      />
-    </div>
-
     <div
-      ref="packageBodyEl"
-      class="package-box__body"
-      :class="{ 'triton-vertical-rail-container': superslimLayout || (metricsBreakLayout && slimLayout) }"
-      @dblclick.stop="startEditing"
+      class="package-box__chrome-row"
+      :class="{ 'package-box__chrome-row--cross-inline': crossPackagePreviewActive }"
     >
-      <div
-        ref="titleEl"
-        class="title"
-        :class="{
-          'title--metrics-break-vertical':
-            metricsBreakLayout && !superslimLayout && slimLayout,
-          'triton-vertical-rail-text triton-vertical-title-rail':
-            superslimLayout || (metricsBreakLayout && slimLayout),
-        }"
-        :title="
-          superslimLayout || (metricsBreakLayout && slimLayout)
-            ? undefined
-            : isScalaLeaf
-              ? String(label ?? '')
-              : 'Double-click to rename / edit description'
-        "
-      >
-        {{ label }}
+      <div class="lang-icon-slot" :class="{ 'lang-icon-slot--scala-leaf': isScalaLeaf }">
+        <img
+          class="lang-svg"
+          :class="isScalaLeaf ? 'scala-leaf-icon' : 'folder-icon'"
+          :src="isScalaLeaf ? scalaIconForKind(subtitle) : folderIconUrl"
+          :alt="isScalaLeaf ? (subtitle ?? '') : ''"
+          aria-hidden="true"
+          decoding="async"
+        />
       </div>
+
       <div
-        v-if="subtitle && !subtitleHiddenForVerticalTitle"
-        class="subtitle"
-        :class="{
-          'triton-vertical-rail-text triton-vertical-subtitle-rail':
-            superslimLayout || (metricsBreakLayout && slimLayout),
-        }"
+        ref="packageBodyEl"
+        class="package-box__body"
+        :class="{ 'triton-vertical-rail-container': superslimLayout || (metricsBreakLayout && slimLayout) }"
+        @dblclick.stop="startEditing"
       >
-        {{ subtitle }}
-      </div>
-      <div
-        v-if="
-          !isScalaLeaf &&
-          description &&
-          !tightLayout &&
-          !flatLayout &&
-          !compactLayout &&
-          !superslimLayout &&
-          !(metricsBreakLayout && slimLayout)
-        "
-        class="description-preview"
-        :title="description"
-      >
-        {{ description }}
+        <div
+          ref="titleEl"
+          class="title"
+          :class="{
+            'title--metrics-break-vertical':
+              metricsBreakLayout && !superslimLayout && slimLayout,
+            'triton-vertical-rail-text triton-vertical-title-rail':
+              superslimLayout || (metricsBreakLayout && slimLayout),
+          }"
+          :title="
+            superslimLayout || (metricsBreakLayout && slimLayout)
+              ? undefined
+              : isScalaLeaf
+                ? String(label ?? '')
+                : 'Double-click to rename / edit description'
+          "
+        >
+          {{ label }}
+        </div>
+        <div
+          v-if="subtitle && !subtitleHiddenForVerticalTitle"
+          class="subtitle"
+          :class="{
+            'triton-vertical-rail-text triton-vertical-subtitle-rail':
+              superslimLayout || (metricsBreakLayout && slimLayout),
+          }"
+        >
+          {{ subtitle }}
+        </div>
+        <div
+          v-if="
+            !isScalaLeaf &&
+            description &&
+            !tightLayout &&
+            !flatLayout &&
+            !compactLayout &&
+            !superslimLayout &&
+            !(metricsBreakLayout && slimLayout)
+          "
+          class="description-preview"
+          :title="description"
+        >
+          {{ description }}
+        </div>
       </div>
     </div>
 
@@ -964,14 +993,81 @@ function onHeaderDblClick() {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
 }
-.package-box--cross-preview.package-box--compact-layout .lang-icon-slot {
-  position: static;
+/** Tighter top chrome than default unfocused cards — parity with {@link GeneralFocusedBox} header band. */
+.package-box--cross-preview.package-box--has-metrics {
+  padding-top: clamp(10px, 2.2vmin, 16px);
 }
-.package-box--cross-preview.package-box--compact-layout .package-box__body {
+.package-box--cross-preview.package-box--has-metrics.package-box--metrics-break {
+  padding-top: clamp(24px, 5vmin, 36px);
+}
+/**
+ * Default: wrapper is layout-transparent so existing column chrome (metrics, tools, icon, body)
+ * behaves unchanged. Cross-preview: one horizontal strip (folder | titles) above the inner diagram.
+ */
+.package-box__chrome-row:not(.package-box__chrome-row--cross-inline) {
+  display: contents;
+}
+.package-box__chrome-row--cross-inline {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
   flex: 0 0 auto;
+  flex-shrink: 0;
+  min-width: 0;
+  gap: 10px;
+  padding-top: 0;
+  padding-bottom: 4px;
+  /** Clears absolute metric strip (same inset as {@link GeneralFocusedBox} `__header`). */
+  padding-right: clamp(44px, 10cqw, 104px);
+}
+.package-box__chrome-row--cross-inline .lang-icon-slot {
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  height: 34px;
+  min-height: 34px;
+  max-height: 34px;
+  margin-bottom: 0;
+  margin-right: 0;
+  justify-content: flex-start;
+}
+.package-box__chrome-row--cross-inline .lang-icon-slot :deep(.lang-svg),
+.package-box__chrome-row--cross-inline .lang-icon-slot :deep(svg) {
+  height: 34px;
+  max-height: 34px;
+  max-width: 34px;
+  width: auto;
+}
+.package-box__chrome-row--cross-inline .package-box__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  align-items: flex-start;
+  justify-content: flex-start;
+  text-align: left;
+}
+.package-box__chrome-row--cross-inline .title,
+.package-box__chrome-row--cross-inline .subtitle {
+  text-align: left;
+  align-self: stretch;
+}
+.package-box__chrome-row--cross-inline .title {
+  font-size: clamp(0.82rem, min(2.4vmin, 3.8cqh), 1.45rem);
+  line-height: 1.15;
+}
+.package-box__chrome-row--cross-inline .subtitle {
+  font-size: clamp(0.65rem, min(1.45vmin, 2.2cqh), 0.85rem);
+  line-height: 1.2;
+  color: #475569;
+  margin-top: 0;
 }
 .package-box--cross-preview > .package-box__inner-artefact-diagram {
+  flex: 1 1 0;
+  min-height: 0;
   width: calc(100% + 2 * var(--triton-package-box-pad-x, 0px));
   margin-inline: calc(-1 * var(--triton-package-box-pad-x, 0px));
   margin-bottom: calc(-1 * var(--triton-package-box-pad-y, 0px));
@@ -1117,33 +1213,39 @@ function onHeaderDblClick() {
   width: auto;
 }
 
-.package-box--embedded.package-box--has-metrics.package-box--metrics-break .lang-icon-slot.lang-icon-slot--embedded {
-  position: absolute;
-  top: 1px;
-  left: 1px;
-  z-index: 3;
-  align-self: flex-start;
-  justify-content: flex-start;
-  align-items: flex-start;
-  width: auto;
-  height: clamp(32px, min(20cqw, 14cqh), 48px);
-  min-height: 32px;
-  margin: 0;
-}
-
 .package-box--embedded.package-box--metrics-break .package-box__body--embedded {
   justify-content: flex-start;
 }
 
+/** Embedded compact header: metrics-break positions folder like {@link GeneralFocusedBox}. */
+.package-box--embedded.package-box--has-metrics.package-box--metrics-break .package-box__embedded-folder {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  z-index: 3;
+  align-items: flex-start;
+  justify-content: flex-start;
+  width: auto;
+  height: clamp(32px, min(20cqw, 14cqh), 48px);
+  min-height: 32px;
+}
+
 .package-box--embedded.package-box--has-metrics.package-box--metrics-break
-  .lang-icon-slot.lang-icon-slot--embedded
+  .package-box__embedded-folder
   :deep(.lang-svg),
-.package-box--embedded.package-box--has-metrics.package-box--metrics-break
-  .lang-icon-slot.lang-icon-slot--embedded
-  :deep(svg) {
+.package-box--embedded.package-box--has-metrics.package-box--metrics-break .package-box__embedded-folder :deep(svg) {
   height: clamp(28px, min(18cqw, 12cqh), 40px);
   max-height: 40px;
   width: auto;
+}
+
+.package-box--embedded.package-box--has-metrics.package-box--metrics-break .package-box__body--embedded-header {
+  padding-left: clamp(40px, 12cqw, 52px);
+}
+
+.package-box--embedded.package-box--metrics-break .package-box__embedded-header-row--metrics-break {
+  align-items: flex-start;
+  padding-top: clamp(2px, 0.5vmin, 6px);
 }
 
 .package-box--has-metrics.package-box--metrics-break:not(.package-box--flat-layout):not(
@@ -1417,13 +1519,19 @@ function onHeaderDblClick() {
  * Default / scala-leaf column: title + subtitle + description fill the body width and center
  * (same idea as {@link ProjectBox} — avoids shrink-wrapped lines sitting left of the icon).
  */
-.package-box:not(.package-box--tight):not(.package-box--flat-layout):not(.package-box--focused-layout)
+.package-box:not(.package-box--tight):not(.package-box--flat-layout):not(.package-box--focused-layout):not(
+    .package-box--cross-preview
+  )
   .package-box__body
   > .title,
-.package-box:not(.package-box--tight):not(.package-box--flat-layout):not(.package-box--focused-layout)
+.package-box:not(.package-box--tight):not(.package-box--flat-layout):not(.package-box--focused-layout):not(
+    .package-box--cross-preview
+  )
   .package-box__body
   > .subtitle,
-.package-box:not(.package-box--tight):not(.package-box--flat-layout):not(.package-box--focused-layout)
+.package-box:not(.package-box--tight):not(.package-box--flat-layout):not(.package-box--focused-layout):not(
+    .package-box--cross-preview
+  )
   .package-box__body
   > .description-preview {
   text-align: center;
@@ -1626,7 +1734,7 @@ function onHeaderDblClick() {
   overflow: hidden;
 }
 
-/** Inner stack row: same chrome as default top-level, slightly tighter. */
+/** Inner stack / drill row: fills slot; compact header variant matches layer-drill root chrome. */
 .package-box--embedded {
   flex: 1 1 0;
   min-height: 0;
@@ -1637,17 +1745,39 @@ function onHeaderDblClick() {
   padding: 8px 10px 3px;
   justify-content: flex-start;
 }
-/**
- * Default `.lang-icon-slot` uses `align-self: center`, which shrink-wraps the slot to the icon
- * width in a column flex — inner cards then stay narrow with empty space on the right. Stretch
- * the icon row to the full inner-diagram width so each embedded package reads as a full-width tile.
- */
-.package-box--embedded:not(.package-box--metrics-break) > .lang-icon-slot.lang-icon-slot--embedded {
-  align-self: stretch;
-  width: 100%;
-  max-width: none;
-  height: clamp(26px, min(22cqw, 16cqh), 56px);
-  margin-bottom: 6px;
+.package-box--embedded-compact-header {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  container-type: size;
+  container-name: pkg-embedded;
+}
+.package-box__embedded-header-row {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  /** Clears the metric strip cluster (same contract as {@link GeneralFocusedBox} header). */
+  padding-right: clamp(44px, 10cqw, 104px);
+}
+.package-box__embedded-folder {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+.package-box__embedded-folder :deep(.lang-svg),
+.package-box__embedded-folder :deep(svg) {
+  display: block;
+  width: 34px;
+  height: 34px;
+  max-width: 34px;
+  max-height: 34px;
+  object-fit: contain;
 }
 .package-box__body--embedded {
   flex: 1 1 0;
@@ -1657,12 +1787,41 @@ function onHeaderDblClick() {
   align-self: stretch;
   justify-content: center;
 }
-.package-box--embedded .title {
-  text-align: center;
+.package-box__body--embedded-header {
+  justify-content: center;
+  align-items: flex-start;
+  text-align: left;
+  gap: 2px;
 }
-.package-box--embedded .subtitle {
-  text-align: center;
-  margin-top: 4px;
+.package-box--embedded-compact-header .title.title--header {
+  text-align: left;
+  margin-top: 0;
+  font-size: clamp(0.82rem, min(2.4vmin, 3.8cqh), 1.45rem);
+}
+.package-box--embedded-compact-header .subtitle.subtitle--header {
+  text-align: left;
+  margin-top: 0;
+}
+@container pkg-embedded (max-width: 200px) {
+  .package-box__embedded-folder :deep(.lang-svg),
+  .package-box__embedded-folder :deep(svg) {
+    width: 28px;
+    height: 28px;
+    max-width: 28px;
+    max-height: 28px;
+  }
+}
+@container pkg-embedded (max-height: 120px) {
+  .package-box__embedded-header-row {
+    gap: 6px;
+  }
+  .package-box__embedded-folder :deep(.lang-svg),
+  .package-box__embedded-folder :deep(svg) {
+    width: 26px;
+    height: 26px;
+    max-width: 26px;
+    max-height: 26px;
+  }
 }
 
 .drill-note {

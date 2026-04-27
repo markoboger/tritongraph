@@ -19,6 +19,12 @@ const props = defineProps<{
   pinTitle: string
   pinAriaLabel: string
   allowOverflow?: boolean
+  /**
+   * When true, keep the **horizontal** compact header (icon | title | subtitle) at any width.
+   * Otherwise wide cards use a centered stacked header — fine for standalone project boxes, but
+   * wrong for package inner diagrams where the body is a second canvas (packages / artefacts).
+   */
+  innerDiagramHost?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -167,6 +173,7 @@ watch(
     props.technicalDebtPercent,
     props.showPinTool,
     props.showColorTool,
+    props.innerDiagramHost,
   ],
   () => void nextTick(measure),
 )
@@ -194,6 +201,7 @@ onUnmounted(() => {
       'general-focused-box--metrics-break': metricsBreakLayout,
       'general-focused-box--superslim-layout': superslimLayout,
       'general-focused-box--slim-layout': metricsBreakLayout && !superslimLayout && slimLayout,
+      'general-focused-box--inner-diagram-host': innerDiagramHost,
     }"
     :style="{ '--box-accent': accent }"
   >
@@ -664,20 +672,26 @@ onUnmounted(() => {
  * chrome uses its own corner / vertical-title rules (parity with {@link ProjectBox}).
  */
 @container (min-width: 168px) {
-  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout)
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout):not(
+      .general-focused-box--inner-diagram-host
+    )
     .general-focused-box__header {
     flex-direction: column;
     align-items: stretch;
     gap: 10px;
   }
 
-  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout)
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout):not(
+      .general-focused-box--inner-diagram-host
+    )
     .general-focused-box__header-icon {
     justify-content: center;
     width: 100%;
   }
 
-  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout)
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout):not(
+      .general-focused-box--inner-diagram-host
+    )
     .general-focused-box__head-text {
     flex: 0 1 auto;
     align-items: stretch;
@@ -685,9 +699,13 @@ onUnmounted(() => {
     text-align: center;
   }
 
-  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout)
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout):not(
+      .general-focused-box--inner-diagram-host
+    )
     .title--header,
-  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout)
+  .general-focused-box:not(.general-focused-box--metrics-break):not(.general-focused-box--superslim-layout):not(.general-focused-box--flat-layout):not(.general-focused-box--compact-layout):not(
+      .general-focused-box--inner-diagram-host
+    )
     .subtitle--header {
     text-align: center;
   }

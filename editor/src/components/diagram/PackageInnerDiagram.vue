@@ -102,6 +102,7 @@ function scalaIconForKind(subtitle: string | undefined): string {
       class="package-box__inner-artefact-cols"
       :class="{
         'package-box__inner-artefact-cols--artefact-focus': innerArtefactFocusActive,
+        'package-box__inner-artefact-cols--cross-preview': mode === 'cross-preview',
         'package-box__inner-artefact-cols--left-port-lane':
           mode === 'focused' && (rootPackagePortsLeft.length > 0 || crossPackageExternalEndpoints.left.length > 0),
         'package-box__inner-artefact-cols--right-port-lane':
@@ -159,6 +160,7 @@ function scalaIconForKind(subtitle: string | undefined): string {
               :notes="notes"
               :box-color="artefactAccent(artId)"
               :pinned="artefactPinned(artId)"
+              inner-diagram-descendant
               :show-pin-tool="true"
               :show-color-tool="true"
               :can-open-in-editor="canOpenArtefactInEditor(artId)"
@@ -245,6 +247,10 @@ function scalaIconForKind(subtitle: string | undefined): string {
 }
 .package-box__inner-artefact-diagram--cross-preview {
   margin-top: 0;
+}
+.package-box__inner-artefact-cols--cross-preview {
+  justify-content: flex-start;
+  padding: 2px 4px 6px;
 }
 .package-box__inner-artefact-diagram--artefact-focus {
   flex: 1 1 0;

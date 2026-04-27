@@ -1119,10 +1119,14 @@ export function annotateAggregateVerticalPaths(
     if (!needDetour) {
       const straightY = straightHorizontalRelationY(String(src.id), String(tgt.id), byId)
       if (straightY !== undefined) {
-        const baseOpts = edge.pathOptions && typeof edge.pathOptions === 'object' ? { ...edge.pathOptions } : {}
+        const plain = stripRoutingFromEdge({ ...edge })
         return {
-          ...stripRoutingFromEdge({ ...edge, pathOptions: { ...baseOpts, centerY: straightY } }),
+          ...plain,
           type: 'smoothstep',
+          pathOptions: {
+            ...(plain.pathOptions && typeof plain.pathOptions === 'object' ? plain.pathOptions : {}),
+            centerY: straightY,
+          },
         }
       }
       const plain = stripRoutingFromEdge({ ...edge })

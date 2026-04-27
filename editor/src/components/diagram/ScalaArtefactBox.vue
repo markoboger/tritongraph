@@ -65,6 +65,11 @@ const props = defineProps<{
    * See {@link FlowPackageNode.triggerOpenInEditor} for the resolution side.
    */
   canOpenInEditor?: boolean
+  /**
+   * When true, this focused artefact lives inside a package inner diagram — use the same
+   * horizontal compact header as the hosting package (not the wide centered stacked header).
+   */
+  innerDiagramDescendant?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -120,6 +125,7 @@ const kindBadge = computed(() => {
     :box-color="boxColor"
     :pinned="pinned"
     :focused="true"
+    :inner-diagram-descendant="innerDiagramDescendant"
     :show-pin-tool="showPinTool"
     :show-color-tool="showColorTool"
     @toggle-pin="(ev: MouseEvent) => emit('toggle-pin', ev)"
