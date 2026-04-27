@@ -36,6 +36,7 @@ const MARGIN_Y = DIAGRAM_MARGIN_Y
 const INNER_PAD_X = 32
 const INNER_PAD_Y = 52
 const COLUMN_GUTTER = 64
+const COLUMN_GUTTER_MAX = 192
 const STACK_GAP = 24
 const STACK_GAP_MIN_ROOT = 6
 const STACK_GAP_MIN_NESTED = 10
@@ -319,9 +320,11 @@ function requiredChildSize(child: any): { w: number; h: number } {
 /**
  * Per-depth inner box width (layout uses `inner + 2*COL_INSET` as column track).
  */
-function distributeColumnInners(maxD: number, usableW: number): number[] {
+function distributeColumnInners(maxD: number, usableW: number, gutters?: readonly number[]): number[] {
   const numCols = maxD + 1
-  const gutter = Math.max(0, numCols - 1) * COLUMN_GUTTER
+  const gutter = gutters?.length
+    ? gutters.reduce((sum, g) => sum + g, 0)
+    : Math.max(0, numCols - 1) * COLUMN_GUTTER
   const spaceForTracks = Math.max(numCols * LEAF_MIN_W, usableW - gutter)
   const equalColW = spaceForTracks / numCols
   const baseInner = Math.max(LEAF_MIN_W, equalColW - 2 * COL_INSET)
@@ -393,6 +396,37 @@ function computeLayerDepths(
   return memo
 }
 
+function relationLaneWidthForBoundary(count: number): number {
+  if (count <= 0) return COLUMN_GUTTER
+  return Math.min(COLUMN_GUTTER_MAX, 128 + Math.min(8, count - 1) * 8)
+}
+
+export function relationLaneGutters(
+  maxD: number,
+  depths: ReadonlyMap<string, number>,
+  edges: readonly { source: string; target: string; label?: unknown }[],
+): number[] {
+  const gutters = Array.from({ length: Math.max(0, maxD) }, () => COLUMN_GUTTER)
+  if (maxD <= 0 || gutters.length === 0) return gutters
+
+  const counts = Array.from({ length: maxD }, () => 0)
+  for (const e of edges) {
+    const sd = depths.get(e.source)
+    const td = depths.get(e.target)
+    if (sd === undefined || td === undefined || sd === td) continue
+    const from = Math.max(0, Math.min(sd, td))
+    const to = Math.min(maxD, Math.max(sd, td))
+    for (let boundary = from; boundary < to; boundary++) {
+      counts[boundary] = (counts[boundary] ?? 0) + 1
+    }
+  }
+
+  for (let boundary = 0; boundary < maxD; boundary++) {
+    gutters[boundary] = relationLaneWidthForBoundary(counts[boundary] ?? 0)
+  }
+  return gutters
+}
+
 function nestDepth(id: string, byId: Map<string, { parentNode?: string }>): number {
   let d = 0
   let cur = byId.get(id)
@@ -426,6 +460,7 @@ function estimateInnerViewport(
     }
   }
   const maxD = depths.size ? Math.max(0, ...depths.values()) : 0
+  const columnGutters = relationLaneGutters(maxD, depths, internal)
   const cols = maxD + 1
   const byDepth = new Map<number, typeof children>()
   for (let d = 0; d <= maxD; d++) byDepth.set(d, [])
@@ -459,7 +494,7 @@ function estimateInnerViewport(
     trackSum += colW + 2 * COL_INSET
     maxColH = Math.max(maxColH, colH)
   }
-  trackSum += Math.max(0, cols - 1) * COLUMN_GUTTER
+  trackSum += columnGutters.reduce((sum, gutter) => sum + gutter, 0) || Math.max(0, cols - 1) * COLUMN_GUTTER
   const innerW = 2 * INNER_PAD_X + trackSum + 48
   const innerH = 2 * INNER_PAD_Y + Math.max(MODULE_H, maxColH) + 2 * CROSS_LAYER_LANE_MAX + 48
   return { width: Math.max(340, innerW), height: Math.max(260, innerH) }
@@ -534,8 +569,9 @@ function layoutOneParent(
 
   const originX = parentId ? INNER_PAD_X : MARGIN_X
   const numCols = maxD + 1
+  const columnGutters = relationLaneGutters(maxD, depths, internal)
   const usableW = Math.max(numCols * (LEAF_MIN_W + 2 * COL_INSET), viewport.width - originX - MARGIN_X)
-  const columnInner = distributeColumnInners(maxD, usableW)
+  const columnInner = distributeColumnInners(maxD, usableW, columnGutters)
 
   let xCursor = originX
   for (let d = 0; d <= maxD; d++) {
@@ -651,7 +687,7 @@ function layoutOneParent(
         },
       }
     }
-    xCursor += colTrackW + COLUMN_GUTTER
+    xCursor += colTrackW + (columnGutters[d] ?? COLUMN_GUTTER)
   }
 
   for (const node of children) {
@@ -827,6 +863,7 @@ export function computeLayerDrillColumnLayout(input: {
    * let the drilled region grow horizontally instead of conserving the pre-drill column span.
    */
   allowFocusTrackExpansion?: boolean
+  depthGutters?: readonly number[]
 }): Map<string, LayerDrillLayoutRect> {
   const {
     regionModules,
@@ -835,6 +872,7 @@ export function computeLayerDrillColumnLayout(input: {
     siblingWidthScale,
     wideAtFocusDepthIds,
     allowFocusTrackExpansion,
+    depthGutters: inputDepthGutters,
   } = input
   const out = new Map<string, LayerDrillLayoutRect>()
   if (!regionModules.length) return out
@@ -854,6 +892,10 @@ export function computeLayerDrillColumnLayout(input: {
     const d = Math.min(maxD, Math.max(0, m.depth))
     byDepth.get(d)!.push(m)
   }
+  const depthGutters = Array.from({ length: Math.max(0, maxD) }, (_, i) =>
+    inputDepthGutters?.[i] ?? DRILL_COLUMN_GUTTER,
+  )
+  const totalDepthGutters = depthGutters.reduce((sum, gutter) => sum + gutter, 0)
 
   let minL = Infinity
   let maxR = -Infinity
@@ -863,7 +905,7 @@ export function computeLayerDrillColumnLayout(input: {
   }
 
   const originalTracks =
-    maxR - minL + 2 * DRILL_COL_INSET - Math.max(0, numCols - 1) * DRILL_COLUMN_GUTTER
+    maxR - minL + 2 * DRILL_COL_INSET - totalDepthGutters
 
   const minTrack = DRILL_MIN_BOX_W + 2 * DRILL_COL_INSET
 
@@ -989,7 +1031,7 @@ export function computeLayerDrillColumnLayout(input: {
         style: { ...prevStyle, width: `${nw}px`, height: `${nh}px` },
       })
     }
-    trackLeft += tw + DRILL_COLUMN_GUTTER
+    trackLeft += tw + (depthGutters[d] ?? DRILL_COLUMN_GUTTER)
   }
 
   return out

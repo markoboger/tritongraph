@@ -11,9 +11,11 @@ import {
   focusedModuleWidthForDrill,
   fullWidthFocusBoundsForLayerDrill,
   packageContentWeight,
+  relationLaneGutters,
   relayoutSubtreeIntoBounds,
   verticalBandForLayerDrill,
 } from '../graph/layoutDependencyLayers'
+import { edgeContributesToClasspathDepth } from '../graph/relationKinds'
 import {
   attachLayerFlipInvert,
   moduleLayoutRect,
@@ -845,6 +847,25 @@ async function applyLayerDrill(moduleId: string) {
     siblingWidthScale: 0.42,
     wideAtFocusDepthIds,
     allowFocusTrackExpansion: typeof preferredFocusWidth === 'number',
+    depthGutters: relationLaneGutters(
+      maxD,
+      depths,
+      edges
+        .filter((edge) => {
+          const source = String(edge.source)
+          const target = String(edge.target)
+          return regionParticipantIds.has(source) &&
+            regionParticipantIds.has(target) &&
+            !hiddenSiblingIds.has(source) &&
+            !hiddenSiblingIds.has(target) &&
+            edgeContributesToClasspathDepth(edge)
+        })
+        .map((edge) => ({
+          source: String(edge.source),
+          target: String(edge.target),
+          label: edge.label,
+        })),
+    ),
   })
   if (fullFocusBounds) {
     const geo = geoMap.get(moduleId)

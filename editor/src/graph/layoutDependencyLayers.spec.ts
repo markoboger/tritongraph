@@ -281,6 +281,24 @@ describe('computeLayerDrillColumnLayout', () => {
     expect(layout.get('focus')!.width).toBeGreaterThan(layout.get('heavy')!.width)
   })
 
+  it('uses supplied relation lane gutters between drill columns', () => {
+    const layout = computeLayerDrillColumnLayout({
+      regionModules: [
+        { id: 'left', depth: 0, position: { x: 40, y: 60 }, width: 180, height: 72 },
+        { id: 'right', depth: 1, position: { x: 320, y: 60 }, width: 180, height: 72 },
+      ],
+      focusId: 'right',
+      focusWidth: 180,
+      siblingWidthScale: 0.42,
+      depthGutters: [160],
+    })
+
+    const left = layout.get('left')!
+    const right = layout.get('right')!
+    const lane = right.position.x - (left.position.x + left.width)
+    expect(lane).toBeGreaterThanOrEqual(150)
+  })
+
   it('returns an empty map when the focus id is missing', () => {
     expect(
       computeLayerDrillColumnLayout({
@@ -333,6 +351,25 @@ describe('layoutDepthInViewport', () => {
     const out = layoutDepthInViewport(nodes, edges, { width: 1200, height: 1200 })
     const widths = out.map((n) => Number(n.width))
     expect(Math.max(...widths)).toBeLessThan(96)
+  })
+
+  it('reserves wider relation lanes between layers with many crossings', () => {
+    const nodes = [
+      { id: 'left', type: 'package', position: { x: 0, y: 0 }, data: {} },
+      { id: 'right', type: 'package', position: { x: 0, y: 0 }, data: {} },
+    ]
+    const edges = Array.from({ length: 8 }, (_, i) => ({
+      source: 'left',
+      target: 'right',
+      label: `imports-${i}`,
+    }))
+
+    const out = layoutDepthInViewport(nodes, edges, { width: 1200, height: 700 })
+    const left = out.find((n) => n.id === 'left')!
+    const right = out.find((n) => n.id === 'right')!
+    const lane = Number(right.position.x) - (Number(left.position.x) + Number(left.width))
+
+    expect(lane).toBeGreaterThan(100)
   })
 })
 
