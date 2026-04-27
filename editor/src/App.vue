@@ -8,7 +8,12 @@ import GraphWorkspace from './components/GraphWorkspace.vue'
 import DiagramTopBar from './components/common/DiagramTopBar.vue'
 import YamlDiffEditor from './components/YamlDiffEditor.vue'
 import { parseIlographYaml, stringifyIlographYaml } from './ilograph/parse'
-import type { IlographDocument } from './ilograph/types'
+import type {
+  IlographDocument,
+  TritonInnerArtefactRelationSpec,
+  TritonInnerArtefactSpec,
+  TritonInnerPackageSpec,
+} from './ilograph/types'
 import { dojoFixtures, getDojoFixture } from './dojo'
 import sbtLogoUrl from './assets/language-icons/sbt.svg'
 import cubeIconUrl from './assets/language-icons/cube.svg'
@@ -32,6 +37,7 @@ import {
   relationTypesFromSignature,
   shouldHideEdgeForRelationFilter,
 } from './graph/relationVisibility'
+import { packageContentWeight, preferredPackageFocusWidth } from './graph/layoutDependencyLayers'
 import { drillNoteForModuleId } from './graph/sbtStyleDrillNotes'
 import { listSbtExamples } from './sbt/sbtExampleBuilds'
 import { listTsExamples } from './ts/tsExampleDiagrams'
@@ -197,16 +203,10 @@ function visibleInnerArtefactsForPreferredSize(
 }
 
 function preferredFocusWidthForVisibleInnerContent(data: Record<string, unknown>): number | undefined {
-  const innerArtefactCount = visibleInnerArtefactsForPreferredSize(data).length
-  const innerPackageCount = Array.isArray(data.innerPackages) ? data.innerPackages.length : 0
-  if (!innerArtefactCount && !innerPackageCount) return undefined
-  return Math.min(
-    6400,
-    Math.max(
-      innerArtefactCount ? Math.max(720, innerArtefactCount * 170) : 0,
-      innerPackageCount ? Math.max(760, innerPackageCount * 220) : 0,
-    ),
-  )
+  return preferredPackageFocusWidth({
+    ...data,
+    innerArtefacts: visibleInnerArtefactsForPreferredSize(data),
+  })
 }
 
 function applyNodeTypeVisibilityToNodes(nodeList: readonly any[]): any[] {
@@ -218,6 +218,14 @@ function applyNodeTypeVisibilityToNodes(nodeList: readonly any[]): any[] {
     const hidden = nodeKindHidden || Boolean((node as { hidden?: boolean }).hidden && data.__nodeKindHidden !== true)
 
     if (String(node?.type ?? '') === 'package') {
+      const nextContentWeight = packageContentWeight({
+        ...data,
+        innerArtefacts: visibleInnerArtefactsForPreferredSize(data),
+      })
+      if (data.contentWeight !== nextContentWeight) {
+        data.contentWeight = nextContentWeight
+        changed = true
+      }
       const nextPreferredFocusWidth = preferredFocusWidthForVisibleInnerContent(data)
       if (typeof nextPreferredFocusWidth === 'number') {
         if (data.preferredFocusWidth !== nextPreferredFocusWidth) {
@@ -293,6 +301,151 @@ function setRelationTypeVisible(relationKey: string, visible: boolean) {
   relationTypeVisibility.value = { ...relationTypeVisibility.value, [relationKey]: visible }
   edges.value = mergeEdgesWithVisibility(edges.value)
   void nextTick(() => graphRef.value?.refreshEdgeEmphasis?.())
+}
+
+function packageIdForArtefactId(artefactId: string): string {
+  const sep = artefactId.indexOf('::')
+  return sep >= 0 ? artefactId.slice(0, sep) : ''
+}
+
+function packageOwnsArtefact(packageId: string, artefactId: string): boolean {
+  const artefactPackageId = packageIdForArtefactId(artefactId)
+  return (
+    artefactPackageId === packageId ||
+    artefactPackageId.startsWith(`${packageId}.`) ||
+    artefactPackageId.startsWith(`${packageId}/`)
+  )
+}
+
+function findInnerPackageSpec(
+  packages: readonly TritonInnerPackageSpec[] | undefined,
+  packageId: string,
+): TritonInnerPackageSpec | null {
+  for (const pkg of packages ?? []) {
+    if (pkg.id === packageId) return pkg
+    const child = findInnerPackageSpec(pkg.innerPackages, packageId)
+    if (child) return child
+  }
+  return null
+}
+
+function packageDiagramDataForNode(packageId: string): {
+  id: string
+  name: string
+  subtitle?: string
+  description?: string
+  boxColor?: string
+  innerPackages?: readonly TritonInnerPackageSpec[]
+  innerArtefacts?: readonly TritonInnerArtefactSpec[]
+  innerArtefactRelations?: readonly TritonInnerArtefactRelationSpec[]
+  crossArtefactRelations?: readonly TritonInnerArtefactRelationSpec[]
+} | null {
+  const direct = nodes.value.find((node) => String(node.id) === packageId)
+  if (direct) {
+    const data = (direct.data ?? {}) as Record<string, unknown>
+    return {
+      id: packageId,
+      name: String(data.label ?? packageId),
+      ...(typeof data.subtitle === 'string' ? { subtitle: data.subtitle } : {}),
+      ...(typeof data.description === 'string' ? { description: data.description } : {}),
+      ...(typeof data.boxColor === 'string' ? { boxColor: data.boxColor } : {}),
+      ...(Array.isArray(data.innerPackages) ? { innerPackages: data.innerPackages as TritonInnerPackageSpec[] } : {}),
+      ...(Array.isArray(data.innerArtefacts) ? { innerArtefacts: data.innerArtefacts as TritonInnerArtefactSpec[] } : {}),
+      ...(Array.isArray(data.innerArtefactRelations)
+        ? { innerArtefactRelations: data.innerArtefactRelations as TritonInnerArtefactRelationSpec[] }
+        : {}),
+      ...(Array.isArray(data.crossArtefactRelations)
+        ? { crossArtefactRelations: data.crossArtefactRelations as TritonInnerArtefactRelationSpec[] }
+        : {}),
+    }
+  }
+
+  for (const owner of nodes.value) {
+    const data = (owner.data ?? {}) as Record<string, unknown>
+    const found = findInnerPackageSpec(
+      Array.isArray(data.innerPackages) ? (data.innerPackages as TritonInnerPackageSpec[]) : undefined,
+      packageId,
+    )
+    if (!found) continue
+    const innerArtefacts = Array.isArray(data.innerArtefacts)
+      ? (data.innerArtefacts as TritonInnerArtefactSpec[]).filter((artefact) => packageOwnsArtefact(packageId, artefact.id))
+      : []
+    const ownedIds = new Set(innerArtefacts.map((artefact) => artefact.id))
+    const innerArtefactRelations = Array.isArray(data.innerArtefactRelations)
+      ? (data.innerArtefactRelations as TritonInnerArtefactRelationSpec[]).filter(
+          (rel) => ownedIds.has(rel.from) && ownedIds.has(rel.to),
+        )
+      : []
+    const crossArtefactRelations = Array.isArray(data.crossArtefactRelations)
+      ? (data.crossArtefactRelations as TritonInnerArtefactRelationSpec[]).filter(
+          (rel) => ownedIds.has(rel.from) || ownedIds.has(rel.to),
+        )
+      : []
+    return {
+      id: found.id,
+      name: found.name,
+      ...(found.subtitle ? { subtitle: found.subtitle } : {}),
+      ...(found.innerPackages?.length ? { innerPackages: found.innerPackages } : {}),
+      ...(innerArtefacts.length ? { innerArtefacts } : {}),
+      ...(innerArtefactRelations.length ? { innerArtefactRelations } : {}),
+      ...(crossArtefactRelations.length ? { crossArtefactRelations } : {}),
+    }
+  }
+
+  return null
+}
+
+function packageDiagramDocument(data: NonNullable<ReturnType<typeof packageDiagramDataForNode>>): IlographDocument {
+  return {
+    description: `Package diagram for ${data.name}.`,
+    resources: [
+      {
+        id: data.id,
+        name: data.name,
+        ...(data.subtitle ? { subtitle: data.subtitle } : {}),
+        ...(data.description ? { description: data.description } : {}),
+        ...(data.boxColor ? { color: data.boxColor } : {}),
+        'x-triton-node-type': 'package',
+        ...(data.innerPackages?.length ? { 'x-triton-inner-packages': data.innerPackages } : {}),
+        ...(data.innerArtefacts?.length ? { 'x-triton-inner-artefacts': data.innerArtefacts } : {}),
+        ...(data.innerArtefactRelations?.length
+          ? { 'x-triton-inner-artefact-relations': data.innerArtefactRelations }
+          : {}),
+        ...(data.crossArtefactRelations?.length ? { 'x-triton-cross-artefact-relations': data.crossArtefactRelations } : {}),
+      },
+    ],
+    perspectives: [
+      {
+        id: 'dependencies',
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        relations: [],
+      },
+    ],
+  }
+}
+
+async function openPackageInnerDiagramTab(packageId: string): Promise<void> {
+  const data = packageDiagramDataForNode(packageId)
+  if (!data) {
+    status.value = `Cannot open package diagram — package not found: ${packageId}`
+    return
+  }
+  const parentKey = activeTab.value?.key ?? 'diagram'
+  await openOrActivateTab(
+    {
+      key: `package-inner:${parentKey}#${encodeURIComponent(packageId)}`,
+      title: data.name,
+      iconUrl: folderIconUrl,
+    },
+    async () => {
+      sourcePath.value = `${sourcePath.value || parentKey}#${packageId}`
+      await applyDoc(stringifyIlographYaml(packageDiagramDocument(data)), `${data.name}.ilograph.yaml`, false, {
+        moduleNodeType: 'package',
+        initialLayerDrillId: data.id,
+      })
+    },
+  )
 }
 
 const showYamlEditor = ref(false)
@@ -2126,6 +2279,7 @@ function isRestorableTabKey(key: string): boolean {
     key.startsWith('sbt:') ||
     key.startsWith('ts:') ||
     key.startsWith('ts-packages:') ||
+    key.startsWith('package-inner:') ||
     key.startsWith('packages:') ||
     key.startsWith('runtime-sbt:') ||
     key.startsWith('runtime-packages:')
@@ -2740,6 +2894,11 @@ function onNodeLinkAction(payload: { nodeId: string; href: string }) {
   }
   const projectId = tritonUrl?.searchParams.get('project')?.trim() ?? ''
   const tsModuleId = tritonUrl?.searchParams.get('module')?.trim() ?? ''
+  const packageNodeId = tritonUrl?.searchParams.get('node')?.trim() ?? ''
+  if (tritonUrl?.pathname === '/package') {
+    void openPackageInnerDiagramTab(packageNodeId || payload.nodeId)
+    return
+  }
   if (tritonUrl?.pathname === '/ts-packages') {
     const activeKey = activeTab.value?.key ?? ''
     const parsed = activeKey.startsWith('ts:')

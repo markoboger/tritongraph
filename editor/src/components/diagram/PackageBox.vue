@@ -30,6 +30,7 @@ import scalaEnumIconUrl from '../../assets/language-icons/scala-enum.svg'
 import ShikiInlineCode from '../ShikiInlineCode.vue'
 import BoxEditDialog from '../common/BoxEditDialog.vue'
 import GeneralFocusedBox from '../common/GeneralFocusedBox.vue'
+import MarkdownActionSubtitle from '../common/MarkdownActionSubtitle.vue'
 import BoxMetricStrip from '../common/BoxMetricStrip.vue'
 import BoxToolbar from '../common/BoxToolbar.vue'
 import { buildFocusedBoxCompartments } from '../common/focusedBoxCompartments'
@@ -198,6 +199,8 @@ const emit = defineEmits<{
   'declaration-click': []
   /** Request a layout update from the parent (e.g., when cross-package preview expands). */
   'layout-update-request': []
+  /** Markdown-link click on a package subtitle. */
+  'link-action': [string]
 }>()
 
 const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
@@ -250,6 +253,11 @@ const {
 const drilledInnerPackageId = computed(() => activeInnerSpec.value?.id ?? null)
 const focusedPackageTitle = computed(() => props.label)
 const focusedPackageSubtitle = computed(() => props.declaration || props.subtitle)
+const packageSubtitleLinkText = computed(() => {
+  if (isScalaLeaf.value || !props.subtitle?.trim()) return ''
+  const escaped = props.subtitle.replace(/([\\\]\[])/g, '\\$1')
+  return `[${escaped}](triton://diagram/package?node=${encodeURIComponent(props.boxId)})`
+})
 const drilledInnerArtefacts = computed(() => {
   const all = props.innerArtefacts
   const drilledId = drilledInnerPackageId.value
@@ -629,7 +637,12 @@ function onHeaderDblClick() {
               superslimLayout || (metricsBreakLayout && slimLayout),
           }"
         >
-          {{ subtitle }}
+          <MarkdownActionSubtitle
+            v-if="packageSubtitleLinkText"
+            :text="packageSubtitleLinkText"
+            @link-action="emit('link-action', $event)"
+          />
+          <template v-else>{{ subtitle }}</template>
         </div>
       </div>
     </div>
@@ -703,6 +716,11 @@ function onHeaderDblClick() {
       >
         <ShikiInlineCode :code="declaration" lang="scala" />
       </button>
+      <MarkdownActionSubtitle
+        v-else-if="packageSubtitleLinkText"
+        :text="packageSubtitleLinkText"
+        @link-action="emit('link-action', $event)"
+      />
       <template v-else>{{ focusedPackageSubtitle }}</template>
     </template>
       <slot name="focused-body">
@@ -771,6 +789,7 @@ function onHeaderDblClick() {
           :handle-artefact-toggle-pin="onInnerArtefactTogglePin"
           :handle-artefact-cycle-color="onInnerArtefactCycleColor"
           :handle-open-artefact-in-editor="openInnerArtefactInEditor"
+          :handle-package-link-action="(href: string) => emit('link-action', href)"
           :handle-edge-enter="onInnerEdgeEnter"
           :handle-edge-leave="onInnerEdgeLeave"
           :handle-artefact-slot-enter="onInnerArtefactSlotEnter"
@@ -916,7 +935,12 @@ function onHeaderDblClick() {
               superslimLayout || (metricsBreakLayout && slimLayout),
           }"
         >
-          {{ subtitle }}
+          <MarkdownActionSubtitle
+            v-if="packageSubtitleLinkText"
+            :text="packageSubtitleLinkText"
+            @link-action="emit('link-action', $event)"
+          />
+          <template v-else>{{ subtitle }}</template>
         </div>
         <div
           v-if="
@@ -976,6 +1000,7 @@ function onHeaderDblClick() {
       :handle-artefact-toggle-pin="onInnerArtefactTogglePin"
       :handle-artefact-cycle-color="onInnerArtefactCycleColor"
       :handle-open-artefact-in-editor="openInnerArtefactInEditor"
+      :handle-package-link-action="(href: string) => emit('link-action', href)"
       :handle-edge-enter="onInnerEdgeEnter"
       :handle-edge-leave="onInnerEdgeLeave"
       :handle-artefact-slot-enter="onInnerArtefactSlotEnter"

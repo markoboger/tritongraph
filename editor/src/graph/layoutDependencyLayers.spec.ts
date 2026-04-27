@@ -263,6 +263,24 @@ describe('computeLayerDrillColumnLayout', () => {
     expect(layout.get('c')?.width).toBeLessThan(layout.get('b')!.width)
   })
 
+  it('reserves more sibling context width for content-heavy packages', () => {
+    const base = [
+      { id: 'focus', depth: 0, position: { x: 40, y: 60 }, width: 180, height: 72, contentWeight: 20 },
+      { id: 'light', depth: 1, position: { x: 320, y: 60 }, width: 180, height: 72, contentWeight: 1 },
+      { id: 'heavy', depth: 2, position: { x: 600, y: 60 }, width: 180, height: 72, contentWeight: 18 },
+    ]
+    const layout = computeLayerDrillColumnLayout({
+      regionModules: base,
+      focusId: 'focus',
+      focusWidth: 1100,
+      siblingWidthScale: 0.42,
+      allowFocusTrackExpansion: true,
+    })
+
+    expect(layout.get('heavy')!.width).toBeGreaterThan(layout.get('light')!.width)
+    expect(layout.get('focus')!.width).toBeGreaterThan(layout.get('heavy')!.width)
+  })
+
   it('returns an empty map when the focus id is missing', () => {
     expect(
       computeLayerDrillColumnLayout({

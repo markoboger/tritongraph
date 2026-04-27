@@ -11,6 +11,10 @@ defineProps<{
   bindSlotEl: (id: string, el: unknown) => void
   onInnerCardClick: (id: string) => void
 }>()
+
+const emit = defineEmits<{
+  'link-action': [string]
+}>()
 </script>
 
 <template>
@@ -47,6 +51,7 @@ defineProps<{
               :pinned="false"
               :show-pin-tool="false"
               :show-color-tool="false"
+              @link-action="emit('link-action', $event)"
             >
               <div v-if="expandedPackageId === child.id" class="package-box__expanded-inner-diagram" @click.stop>
                 <slot name="expanded-package" />
@@ -93,6 +98,7 @@ defineProps<{
           :pinned="false"
           :show-pin-tool="false"
           :show-color-tool="false"
+          @link-action="emit('link-action', $event)"
         >
           <div v-if="expandedPackageId === child.id" class="package-box__expanded-inner-diagram" @click.stop>
             <slot name="expanded-package" />

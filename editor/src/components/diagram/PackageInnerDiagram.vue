@@ -56,6 +56,7 @@ const props = defineProps<{
   handleArtefactTogglePin: (id: string, ev: MouseEvent) => void
   handleArtefactCycleColor: (id: string) => void
   handleOpenArtefactInEditor: (id: string, line?: number) => void
+  handlePackageLinkAction: (href: string) => void
   handleEdgeEnter: (draw: InnerEdgeDraw) => void
   handleEdgeLeave: (draw: InnerEdgeDraw) => void
   handleArtefactSlotEnter: (id: string) => void
@@ -68,6 +69,17 @@ const colsTransformStyle = computed(() =>
     ? { transform: `translate(${props.innerScrollX}px,${props.innerScrollY}px)` }
     : undefined,
 )
+const allRelationDraws = computed(() => [
+  ...props.normalInnerEdgeDraws,
+  ...props.emphasizedInnerEdgeDraws,
+  ...props.routedOverlayInnerEdgeDraws,
+])
+const relationLaneStyle = computed(() => {
+  const columns = props.innerArtefactLayerColumns.length
+  if (columns <= 1 || allRelationDraws.value.length === 0) return undefined
+  const lane = Math.min(180, 88 + Math.min(6, allRelationDraws.value.length) * 8)
+  return { '--triton-inner-relation-lane': `${lane}px` }
+})
 
 function scalaIconForKind(subtitle: string | undefined): string {
   const k = (subtitle ?? '').trim().toLowerCase()
@@ -142,7 +154,7 @@ function artefactSlotStyle(id: string): Record<string, string> {
           innerArtefactFocusActive && childPackagePortsById.size > 0,
         'package-box__inner-artefact-cols--with-packages': mode === 'focused' && topLevelInnerPackages.length > 0,
       }"
-      :style="mode === 'focused' ? colsTransformStyle : undefined"
+      :style="mode === 'focused' ? { ...relationLaneStyle, ...colsTransformStyle } : relationLaneStyle"
     >
       <InnerPackageStack
         v-if="mode === 'focused'"
@@ -152,6 +164,7 @@ function artefactSlotStyle(id: string): Record<string, string> {
         :child-package-ports-by-id="childPackagePortsById"
         :bind-slot-el="bindSlotEl"
         :on-inner-card-click="handleInnerCardClick"
+        @link-action="handlePackageLinkAction"
       >
         <template #expanded-package>
           <div
@@ -404,6 +417,7 @@ function artefactSlotStyle(id: string): Record<string, string> {
 .package-box__inner-artefact-cols {
   --triton-inner-artefact-min-h: 40px;
   --triton-inner-artefact-preferred-h: 132px;
+  --triton-inner-relation-lane: clamp(72px, 9cqw, 128px);
   --triton-inner-container-port-lane: clamp(64px, 8cqw, 96px);
   --triton-inner-child-package-edge-lane: clamp(96px, 13cqw, 160px);
   position: relative;
@@ -441,7 +455,7 @@ function artefactSlotStyle(id: string): Record<string, string> {
   flex: 1 1 0;
   min-height: 0;
   align-items: stretch;
-  gap: clamp(32px, 7cqw, 64px);
+  gap: var(--triton-inner-relation-lane);
 }
 .package-box__inner-artefact-cols--artefact-focus.package-box__inner-artefact-cols--child-package-lane {
   gap: var(--triton-inner-child-package-edge-lane);

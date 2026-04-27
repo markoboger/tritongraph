@@ -4,8 +4,7 @@
  * can grow features independently (richer package metadata: members, imports drilldown, coverage,
  * sonarqube etc.). Hosts {@link PackageBox} for packages and, for flow `type: 'artefact'`, the same
  * node shell with {@link PackageBox} (`leaf-visual="artefact"`) when unfocused and {@link ScalaArtefactBox}
- * when layer-drill focused. Does not relay subtitle link-action clicks (package boxes have no markdown
- * links yet — re-add the `tritonEmitLinkAction` injection here when that changes).
+ * when layer-drill focused.
  */
 import { useVueFlow } from '@vue-flow/core'
 import { computed, inject, nextTick, onUnmounted, ref, watch } from 'vue'
@@ -173,6 +172,14 @@ const activeExampleRef = inject<Ref<{ root: string; dir: string } | null> | unde
   'tritonActiveExample',
   undefined,
 )
+const emitLinkAction = inject<((nodeId: string, href: string) => void) | undefined>(
+  'tritonEmitLinkAction',
+  undefined,
+)
+
+function onLinkAction(href: string) {
+  emitLinkAction?.(props.id, href)
+}
 
 function canOpenInEditor(): boolean {
   if (!activeExampleRef?.value) return false
@@ -375,6 +382,7 @@ onUnmounted(() => {
       :show-color-tool="false"
       @toggle-pin="togglePin"
       @cycle-color="cycleColor"
+      @link-action="onLinkAction"
     />
     <PackageBox
       v-else
@@ -407,6 +415,7 @@ onUnmounted(() => {
       @update-inner-artefact-pinned="onInnerArtefactPinned"
       @update-inner-artefact-colors="onInnerArtefactColors"
       @layout-update-request="onLayoutUpdateRequest"
+      @link-action="onLinkAction"
     />
   </DiagramFlowNode>
 </template>

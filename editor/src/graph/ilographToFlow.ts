@@ -14,6 +14,7 @@ import { dependencyEdgeLabelStyle, dependencyEdgeStyle, markersForAggregateEdge,
 import { isAggregateEdge, strokeForIlographRelation } from './relationKinds'
 import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE } from './handles'
 import { drillNoteForModuleId } from './sbtStyleDrillNotes'
+import { packageContentWeight, preferredPackageFocusWidth } from './layoutDependencyLayers'
 
 const DEP_PERSPECTIVE_NAMES = new Set(['dependencies', 'module dependencies', 'depends on'])
 
@@ -264,20 +265,21 @@ export function ilographDocumentToFlow(
             .map(normalizeBoxCompartment)
             .filter((x): x is BoxCompartment => x !== null)
         : undefined
+    const packageContentData = {
+      label: res.name,
+      subtitle: res.subtitle ?? '',
+      innerPackages,
+      innerArtefacts,
+      innerArtefactRelations,
+      crossArtefactRelations,
+    }
     const preferredFocusWidth =
       projectCompartments?.length
         ? 460
         : leafType === 'artefact'
           ? 520
-          : innerArtefacts?.length || innerPackages?.length
-            ? Math.min(
-                6400,
-                Math.max(
-                  innerArtefacts?.length ? Math.max(560, innerArtefacts.length * 170) : 0,
-                  innerPackages?.length ? Math.max(760, innerPackages.length * 220) : 0,
-                ),
-              )
-              : undefined
+          : preferredPackageFocusWidth(packageContentData)
+    const contentWeight = leafType === 'package' ? packageContentWeight(packageContentData) : undefined
     const preferredLeafHeight =
       typeof res['x-triton-preferred-leaf-height'] === 'number' &&
       Number.isFinite(res['x-triton-preferred-leaf-height'])
@@ -331,6 +333,7 @@ export function ilographDocumentToFlow(
         ...(crossArtefactRelations?.length ? { crossArtefactRelations } : {}),
         ...(projectCompartments?.length ? { projectCompartments } : {}),
         ...(typeof preferredFocusWidth === 'number' ? { preferredFocusWidth } : {}),
+        ...(typeof contentWeight === 'number' ? { contentWeight } : {}),
         ...(typeof preferredLeafHeight === 'number' ? { preferredLeafHeight } : {}),
         ...(res['x-triton-project-kind'] === 'project' ||
         res['x-triton-project-kind'] === 'module' ||

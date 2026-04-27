@@ -731,6 +731,69 @@ export type LayerDrillLayoutRect = {
   style?: Record<string, string | number>
 }
 
+type PackageContentLike = {
+  label?: unknown
+  subtitle?: unknown
+  innerPackages?: unknown
+  innerArtefacts?: unknown
+  innerArtefactRelations?: unknown
+  crossArtefactRelations?: unknown
+}
+
+function arrayLength(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0
+}
+
+function maxArtefactNameLength(value: unknown): number {
+  if (!Array.isArray(value)) return 0
+  let max = 0
+  for (const item of value) {
+    const raw = item && typeof item === 'object'
+      ? ((item as Record<string, unknown>).name ?? (item as Record<string, unknown>).label)
+      : ''
+    max = Math.max(max, String(raw ?? '').trim().length)
+  }
+  return max
+}
+
+/**
+ * Relative information density for a package-like node. This is intentionally coarse:
+ * it should separate "two lines of chrome" from "dozens of visible artefacts" without
+ * making exact pixel promises.
+ */
+export function packageContentWeight(data: PackageContentLike | undefined): number {
+  if (!data) return 1
+  const titleLen = String(data.label ?? '').trim().length
+  const subtitleLen = String(data.subtitle ?? '').trim().length
+  const innerPackageCount = arrayLength(data.innerPackages)
+  const innerArtefactCount = arrayLength(data.innerArtefacts)
+  const relationCount = arrayLength(data.innerArtefactRelations) + arrayLength(data.crossArtefactRelations)
+  const longestArtefactName = maxArtefactNameLength(data.innerArtefacts)
+
+  const chromeWeight = Math.min(1.4, (titleLen + subtitleLen) / 42)
+  const packageWeight = innerPackageCount * 1.25
+  const artefactWeight = innerArtefactCount * 0.58
+  const relationWeight = Math.min(4, relationCount * 0.12)
+  const longNameWeight = Math.min(1.5, longestArtefactName / 28)
+  return Math.max(1, 1 + chromeWeight + packageWeight + artefactWeight + relationWeight + longNameWeight)
+}
+
+export function preferredPackageFocusWidth(data: PackageContentLike | undefined): number | undefined {
+  if (!data) return undefined
+  const innerPackageCount = arrayLength(data.innerPackages)
+  const innerArtefactCount = arrayLength(data.innerArtefacts)
+  if (!innerPackageCount && !innerArtefactCount) return undefined
+
+  const longestArtefactName = maxArtefactNameLength(data.innerArtefacts)
+  const relationCount = arrayLength(data.innerArtefactRelations) + arrayLength(data.crossArtefactRelations)
+  const relationLaneWidth = relationCount > 0 ? Math.min(720, Math.max(120, relationCount * 18)) : 0
+  const artefactWidth = innerArtefactCount
+    ? Math.max(720, innerArtefactCount * 170 + relationLaneWidth + Math.max(0, longestArtefactName - 14) * 10)
+    : 0
+  const packageWidth = innerPackageCount ? Math.max(760, innerPackageCount * 220 + relationLaneWidth) : 0
+  return Math.min(6400, Math.max(artefactWidth, packageWidth))
+}
+
 /**
  * Layer drill: widen the focused column while shrinking other columns so the overall
  * horizontal span (track + gutters) matches the pre-drill layout — no overlap into
@@ -744,6 +807,8 @@ export function computeLayerDrillColumnLayout(input: {
     width: number
     height: number
     style?: unknown
+    contentWeight?: number
+    preferredFocusWidth?: number
   }>
   focusId: string
   focusWidth: number
@@ -815,7 +880,13 @@ export function computeLayerDrillColumnLayout(input: {
   let reservedOtherTracksTotal = 0
   for (let d = 0; d <= maxD; d++) {
     if (d === fd) continue
-    reservedOtherTracksTotal += Math.max(minTrack, Math.round((track0.get(d) ?? minTrack) * reserveScale))
+    const ms = byDepth.get(d) ?? []
+    const maxWeight = ms.length ? Math.max(...ms.map((m) => m.contentWeight ?? 1)) : 1
+    const contentReserveBoost = Math.min(0.34, Math.max(0, (maxWeight - 1) * 0.018))
+    reservedOtherTracksTotal += Math.max(
+      minTrack,
+      Math.round((track0.get(d) ?? minTrack) * Math.min(0.86, reserveScale + contentReserveBoost)),
+    )
   }
   const requestedFocusTrack = Math.max(minTrack, Math.round(focusWReq + 2 * DRILL_COL_INSET))
   const S_tracks = allowFocusTrackExpansion
@@ -836,15 +907,19 @@ export function computeLayerDrillColumnLayout(input: {
   const trackNext = new Map<number, number>()
   trackNext.set(fd, trackFd)
 
-  let sumOtherTracks = 0
+  const weightedTrack = (d: number): number => {
+    const ms = byDepth.get(d) ?? []
+    const maxWeight = ms.length ? Math.max(...ms.map((m) => m.contentWeight ?? 1)) : 1
+    return track0.get(d)! * Math.min(1.55, 0.72 + maxWeight * 0.055)
+  }
+  let weightedSumOtherTracks = 0
   for (let d = 0; d <= maxD; d++) {
-    if (d !== fd) sumOtherTracks += track0.get(d)!
+    if (d !== fd) weightedSumOtherTracks += weightedTrack(d)
   }
 
   for (let d = 0; d <= maxD; d++) {
     if (d === fd) continue
-    const t0 = track0.get(d)!
-    const t1 = sumOtherTracks > 0 ? (budgetOther * t0) / sumOtherTracks : t0
+    const t1 = weightedSumOtherTracks > 0 ? (budgetOther * weightedTrack(d)) / weightedSumOtherTracks : track0.get(d)!
     trackNext.set(d, Math.max(minTrack, Math.round(t1)))
   }
 

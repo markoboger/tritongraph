@@ -10,6 +10,7 @@ import {
   dependencyDepthsInRegion,
   focusedModuleWidthForDrill,
   fullWidthFocusBoundsForLayerDrill,
+  packageContentWeight,
   relayoutSubtreeIntoBounds,
   verticalBandForLayerDrill,
 } from '../graph/layoutDependencyLayers'
@@ -644,11 +645,26 @@ function isPinLockActive(id: string): boolean {
  * containers — so that, for example, three sibling package groups can each claim a column
  * within their parent diagram and one of them can be drilled into without losing animation.
  */
+function numericDataValue(data: unknown, key: string): number | undefined {
+  if (!data || typeof data !== 'object') return undefined
+  const raw = (data as Record<string, unknown>)[key]
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : undefined
+}
+
 function collectRegionParticipants(
   nodes: readonly GraphNode[],
   regionParent: string | undefined,
   depths: Map<string, number>,
-): { id: string; depth: number; position: { x: number; y: number }; width: number; height: number; style?: unknown }[] {
+): {
+  id: string
+  depth: number
+  position: { x: number; y: number }
+  width: number
+  height: number
+  style?: unknown
+  contentWeight?: number
+  preferredFocusWidth?: number
+}[] {
   return nodes
     .filter((n) => {
       const nParent = n.parentNode ? String(n.parentNode) : undefined
@@ -664,6 +680,8 @@ function collectRegionParticipants(
       width: typeof n.width === 'number' ? n.width : 200,
       height: typeof n.height === 'number' ? n.height : 72,
       style: n.style,
+      contentWeight: numericDataValue(n.data, 'contentWeight') ?? packageContentWeight(n.data as Record<string, unknown> | undefined),
+      preferredFocusWidth: numericDataValue(n.data, 'preferredFocusWidth'),
     }))
 }
 
