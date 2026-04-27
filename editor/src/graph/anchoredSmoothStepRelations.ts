@@ -55,12 +55,12 @@ function smoothHorizontalStepPath(
 
   const dirX = dx >= 0 ? 1 : -1
   const dirY = dy >= 0 ? 1 : -1
-  const minLane = 28
+  const minLane = 14
   const midX = Math.abs(dx) >= minLane * 2
     ? sourceX + dx / 2
     : (dirX > 0
-        ? Math.max(sourceX, targetX) + minLane
-        : Math.min(sourceX, targetX) - minLane)
+      ? Math.max(sourceX, targetX) + minLane
+      : Math.min(sourceX, targetX) - minLane)
   const r = Math.max(
     0,
     Math.min(
