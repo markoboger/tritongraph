@@ -289,6 +289,9 @@ const { editing, draftLabel, draftDescription, startEditing, commitEdit, cancelE
       ref="rootEl"
       class="project-box"
       :class="{
+        'project-box--kind-project': projectKind === 'project',
+        'project-box--kind-module': projectKind === 'module',
+        'project-box--kind-general': projectKind === 'general',
         'project-box--flat-layout': flatLayout,
         'project-box--superflat-layout': superflatLayout,
         'project-box--compact-layout': compactLayout,

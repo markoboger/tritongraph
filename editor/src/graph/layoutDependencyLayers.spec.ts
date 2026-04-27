@@ -219,8 +219,12 @@ describe('layer drill geometry helpers', () => {
 
   it('focusedModuleWidthForDrill respects preferred width when provided', () => {
     const w = focusedModuleWidthForDrill({ width: 1200, height: 800 }, 4, 200, undefined, [], 900)
-    expect(w).toBeLessThanOrEqual(900)
-    expect(w).toBeGreaterThanOrEqual(200)
+    expect(w).toBe(900)
+  })
+
+  it('focusedModuleWidthForDrill can exceed the viewport for large inner diagrams', () => {
+    const w = focusedModuleWidthForDrill({ width: 1200, height: 800 }, 4, 200, undefined, [], 5100)
+    expect(w).toBe(5100)
   })
 })
 
@@ -239,6 +243,24 @@ describe('computeLayerDrillColumnLayout', () => {
     const focus = layout.get('m0')
     expect(focus?.width).toBeGreaterThanOrEqual(180)
     expect(layout.get('m1')?.position.x).toBeGreaterThan(focus!.position.x)
+  })
+
+  it('allows a preferred focus width to expand the drilled region while siblings stay compact', () => {
+    const layout = computeLayerDrillColumnLayout({
+      regionModules: [
+        { id: 'a', depth: 0, position: { x: 40, y: 60 }, width: 180, height: 72 },
+        { id: 'b', depth: 1, position: { x: 320, y: 60 }, width: 180, height: 72 },
+        { id: 'c', depth: 2, position: { x: 600, y: 60 }, width: 180, height: 72 },
+      ],
+      focusId: 'b',
+      focusWidth: 900,
+      siblingWidthScale: 0.42,
+      allowFocusTrackExpansion: true,
+    })
+
+    expect(layout.get('b')?.width).toBeGreaterThanOrEqual(900)
+    expect(layout.get('a')?.width).toBeLessThan(layout.get('b')!.width)
+    expect(layout.get('c')?.width).toBeLessThan(layout.get('b')!.width)
   })
 
   it('returns an empty map when the focus id is missing', () => {

@@ -1,0 +1,26 @@
+title: 'TypeScript: TritonGraph self'
+description: >-
+  A TypeScript example linked to this repository's own code. The Vite example loader mounts
+  editor/src, packages, and tools as logical TypeScript source roots so the diagram can explore
+  TritonGraph itself without copying source files into the example.
+x-triton-ts-source-roots:
+  - path: ../../editor/src
+    mount: src/editor
+  - path: ../../packages
+    mount: src/packages
+  - path: ../../tools
+    mount: src/tools
+x-triton-root-resource-kind: project
+x-triton-ts-source-root: src
+x-triton-ts-module-paths:
+  - editor
+  - packages
+  - tools
+  - tools/sbt-to-ilograph
+  - tools/ts-to-ilograph
+x-triton-ts-ignored-package-segments:
+  - src
+resources: []
+perspectives:
+  - name: dependencies
+    relations: []

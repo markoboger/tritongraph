@@ -60,6 +60,8 @@ const edges = defineModel<any[]>('edges', { required: true })
 const props = withDefaults(
   defineProps<{
     nodeTypes: NodeTypesObject
+    /** When a key is `false`, artefact nodes / inner artefacts with that kind are hidden. */
+    nodeTypeVisibility?: Record<string, boolean>
     /** When a key is `false`, edges with that relation label are hidden (merged into `hidden`). */
     relationTypeVisibility?: Record<string, boolean>
     /** Abstraction dojo: show resize handles and optional linked resize across listed node ids. */
@@ -1483,6 +1485,11 @@ async function resetView() {
   await drillRef.value?.showFullGraph()
 }
 
+async function applyLayerDrill(nodeId: string): Promise<boolean> {
+  await drillRef.value?.applyLayerDrill?.(nodeId)
+  return layerDrillActive()
+}
+
 /** Clear drill/focus snapshot after structural doc replace; parent should call `fitToViewport` next. */
 function resetNavigationAfterDocReplace() {
   resetVerticalScrollChrome()
@@ -1652,6 +1659,7 @@ defineExpose({
   resetView,
   resetNavigationAfterDocReplace,
   fitToViewport,
+  applyLayerDrill,
   relayoutViewport,
   refreshEdgeEmphasis: syncEdgeVisualState,
   layerDrillBusy,

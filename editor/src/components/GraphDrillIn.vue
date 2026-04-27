@@ -826,6 +826,7 @@ async function applyLayerDrill(moduleId: string) {
     focusWidth: focusW,
     siblingWidthScale: 0.42,
     wideAtFocusDepthIds,
+    allowFocusTrackExpansion: typeof preferredFocusWidth === 'number',
   })
   if (fullFocusBounds) {
     const geo = geoMap.get(moduleId)
@@ -1149,6 +1150,7 @@ defineExpose({
   resetNavigationAfterDocReplace,
   zoomIntoContainer,
   clearLayerDrill,
+  applyLayerDrill,
   reapplyLayerDrill,
   refreshDimming,
 })

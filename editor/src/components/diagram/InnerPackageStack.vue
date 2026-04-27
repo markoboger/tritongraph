@@ -116,40 +116,46 @@ defineProps<{
 
 <style scoped>
 .package-box__inner-package-stack {
-  flex: 0 0 clamp(156px, 22cqw, 232px);
+  flex: 1 1 0;
   min-width: 0;
   min-height: 0;
+  width: 100%;
   height: 100%;
   align-self: stretch;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   justify-content: stretch;
-  gap: 10px;
+  gap: clamp(8px, 1.4cqh, 14px);
   overflow: visible;
 }
 .package-box__inner-package-stack--columns {
   flex-direction: row;
   align-items: stretch;
-  justify-content: flex-start;
+  justify-content: stretch;
+  gap: clamp(72px, 10cqw, 144px);
 }
 .package-box__inner-package-col {
-  flex: 0 0 clamp(156px, 22cqw, 232px);
-  min-width: 0;
+  flex: 1 1 0;
+  min-width: min(156px, 100%);
   min-height: 0;
   height: 100%;
+  max-width: 280px;
   align-self: stretch;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   justify-content: stretch;
-  gap: 10px;
+  gap: clamp(8px, 1.4cqh, 14px);
   overflow: visible;
+}
+.package-box__inner-package-stack--columns .package-box__inner-package-col {
+  max-width: none;
 }
 .package-box__inner-package-row {
   position: relative;
   flex: 1 1 0;
-  min-height: clamp(132px, 24cqh, 240px);
+  min-height: clamp(72px, 12cqh, 132px);
   display: flex;
   flex-direction: row;
   align-items: stretch;

@@ -13,6 +13,7 @@ import type {
 export interface TypeScriptSourceFile {
   relPath: string
   source: string
+  sourceFile?: string
 }
 
 export interface TypeScriptCodeModelOptions {
@@ -25,6 +26,10 @@ export interface TypeScriptCodeModelOptions {
    * but its source location remains `src/animals/Dog.ts` for IDE links.
    */
   sourceRoot?: string
+  /** Container paths that should be modeled as module boundaries instead of plain folders. */
+  modulePaths?: readonly string[]
+  /** Path segments to remove from package/container ids, e.g. `src` in package source roots. */
+  ignoredPackageSegments?: readonly string[]
 }
 
 type ParsedFile = {
@@ -38,6 +43,7 @@ type ParsedFile = {
 type MutableContainer = {
   id: string
   name: string
+  kind: CodeContainer['kind']
   children: Map<string, MutableContainer>
   artefacts: CodeArtefact[]
 }
@@ -71,9 +77,12 @@ function posixExtname(relPath: string): string {
   return dot > 0 ? base.slice(dot) : ''
 }
 
-function packageIdForRelPath(relPath: string): string {
+function packageIdForRelPath(relPath: string, ignoredSegments: readonly string[] = []): string {
   const dir = posixDirname(normalizeRelPath(relPath))
-  return dir === '.' ? '<root>' : dir
+  if (dir === '.') return '<root>'
+  const ignored = new Set(ignoredSegments.map((segment) => segment.trim()).filter(Boolean))
+  const parts = dir.split('/').filter((part) => part && !ignored.has(part))
+  return parts.length ? parts.join('/') : '<root>'
 }
 
 function logicalRelPathForPackage(relPath: string, sourceRoot: string | undefined): string {
@@ -208,11 +217,16 @@ function membersForArtefact(artId: string, node: ts.Node, sf: ts.SourceFile, fil
   return members
 }
 
-function ensureContainer(root: MutableContainer, packageId: string): MutableContainer {
+function ensureContainer(
+  root: MutableContainer,
+  packageId: string,
+  options: TypeScriptCodeModelOptions,
+): MutableContainer {
   if (packageId === '<root>') return root
   let cur = root
   const segments = packageId.split('/').filter(Boolean)
   let id = ''
+  const modulePaths = new Set((options.modulePaths ?? []).map(normalizeRelPath))
   for (const segment of segments) {
     id = id ? `${id}/${segment}` : segment
     let next = cur.children.get(id)
@@ -220,6 +234,7 @@ function ensureContainer(root: MutableContainer, packageId: string): MutableCont
       next = {
         id,
         name: packageDisplayName(id),
+        kind: modulePaths.has(id) ? 'module' : 'folder',
         children: new Map(),
         artefacts: [],
       }
@@ -234,7 +249,7 @@ function freezeContainer(c: MutableContainer): CodeContainer {
   return {
     id: c.id,
     name: c.name,
-    kind: c.id === '<root>' ? 'workspace' : 'folder',
+    kind: c.kind,
     language: 'typescript',
     children: [...c.children.values()]
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -298,7 +313,10 @@ function addRelation(out: CodeRelation[], rel: Omit<CodeRelation, 'id'>) {
 function parseFile(file: TypeScriptSourceFile, options: TypeScriptCodeModelOptions): ParsedFile {
   const relPath = normalizeRelPath(file.relPath)
   const sf = ts.createSourceFile(relPath, file.source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
-  const packageId = packageIdForRelPath(logicalRelPathForPackage(relPath, options.sourceRoot))
+  const packageId = packageIdForRelPath(
+    logicalRelPathForPackage(relPath, options.sourceRoot),
+    options.ignoredPackageSegments,
+  )
   const artefacts: CodeArtefact[] = []
   const exportsByName = new Map<string, CodeArtefact>()
 
@@ -314,7 +332,7 @@ function parseFile(file: TypeScriptSourceFile, options: TypeScriptCodeModelOptio
       kind,
       language: 'typescript',
       declaration: declarationText(statement, sf),
-      source: sourceLocation(sf, relPath, statement.getStart(sf), statement.getEnd()),
+      source: sourceLocation(sf, file.sourceFile ?? relPath, statement.getStart(sf), statement.getEnd()),
       ...(docText(statement) ? { documentation: docText(statement) } : {}),
       members: membersForArtefact(id, statement, sf, relPath),
     }
@@ -341,12 +359,13 @@ export function buildTypeScriptCodeModelFromFiles(
   const root: MutableContainer = {
     id: '<root>',
     name: options.name ?? 'TypeScript',
+    kind: 'workspace',
     children: new Map(),
     artefacts: [],
   }
 
   for (const p of parsed) {
-    const container = ensureContainer(root, p.packageId)
+    const container = ensureContainer(root, p.packageId, options)
     container.artefacts.push(...p.artefacts)
   }
 

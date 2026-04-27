@@ -9,6 +9,14 @@ export interface TsExampleEntry {
   source: string
   /** Source files keyed by path relative to `<root>/<dir>` (e.g. `src/animals/Dog.ts`). */
   files: Record<string, string>
+  /** Optional real source path for each logical file, relative to `<root>/<dir>`. */
+  sourceFiles: Record<string, string>
+  scannerOptions?: {
+    sourceRoot?: string
+    modulePaths?: string[]
+    ignoredPackageSegments?: string[]
+    rootResourceKind?: 'package' | 'project'
+  }
 }
 
 function decodeUtf8Base64(b64: string): string {
@@ -26,9 +34,20 @@ export function listTsExamples(): TsExampleEntry[] {
     file: e.file,
     path: `${e.root}/${e.dir}/${e.file}`,
     source: decodeUtf8Base64(e.b64),
-    files: Object.fromEntries(
-      Object.entries((e.filesB64 ?? {}) as Record<string, string>).map(([k, v]) => [k, decodeUtf8Base64(v)]),
-    ),
+    ...(e.scannerOptions ? { scannerOptions: e.scannerOptions } : {}),
+    ...(() => {
+      const files: Record<string, string> = {}
+      const sourceFiles: Record<string, string> = {}
+      for (const [k, raw] of Object.entries(e.filesB64 ?? {})) {
+        if (typeof raw === 'string') {
+          files[k] = decodeUtf8Base64(raw)
+          continue
+        }
+        files[k] = decodeUtf8Base64(raw.b64)
+        if (raw.sourceFile) sourceFiles[k] = raw.sourceFile
+      }
+      return { files, sourceFiles }
+    })(),
   }))
 }
 

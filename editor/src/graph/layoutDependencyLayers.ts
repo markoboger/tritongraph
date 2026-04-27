@@ -750,8 +750,20 @@ export function computeLayerDrillColumnLayout(input: {
   siblingWidthScale: number
   /** Same-depth peers in this set keep full column inner width (e.g. pinned modules). */
   wideAtFocusDepthIds?: ReadonlySet<string>
+  /**
+   * When the focused box has a measured preferred width (large inner package/artefact diagram),
+   * let the drilled region grow horizontally instead of conserving the pre-drill column span.
+   */
+  allowFocusTrackExpansion?: boolean
 }): Map<string, LayerDrillLayoutRect> {
-  const { regionModules, focusId, focusWidth: focusWReq, siblingWidthScale, wideAtFocusDepthIds } = input
+  const {
+    regionModules,
+    focusId,
+    focusWidth: focusWReq,
+    siblingWidthScale,
+    wideAtFocusDepthIds,
+    allowFocusTrackExpansion,
+  } = input
   const out = new Map<string, LayerDrillLayoutRect>()
   if (!regionModules.length) return out
 
@@ -778,7 +790,7 @@ export function computeLayerDrillColumnLayout(input: {
     maxR = Math.max(maxR, m.position.x + m.width)
   }
 
-  const S_tracks =
+  const originalTracks =
     maxR - minL + 2 * DRILL_COL_INSET - Math.max(0, numCols - 1) * DRILL_COLUMN_GUTTER
 
   const minTrack = DRILL_MIN_BOX_W + 2 * DRILL_COL_INSET
@@ -805,6 +817,10 @@ export function computeLayerDrillColumnLayout(input: {
     if (d === fd) continue
     reservedOtherTracksTotal += Math.max(minTrack, Math.round((track0.get(d) ?? minTrack) * reserveScale))
   }
+  const requestedFocusTrack = Math.max(minTrack, Math.round(focusWReq + 2 * DRILL_COL_INSET))
+  const S_tracks = allowFocusTrackExpansion
+    ? Math.max(originalTracks, requestedFocusTrack + reservedOtherTracksTotal)
+    : originalTracks
   const maxFocusTrack = Math.max(minTrack, S_tracks - reservedOtherTracksTotal)
   const maxFocusInner = maxFocusTrack - 2 * DRILL_COL_INSET
 
@@ -1357,6 +1373,9 @@ export function focusedModuleWidthForDrill(
       : numCols === 3
         ? Math.round(Math.max(baseW * 1.8, 500))
         : span)
+  if (preferredWidth !== undefined) {
+    return Math.round(Math.max(baseW, Math.min(6400, preferredWidth)))
+  }
   return Math.round(Math.max(baseW, Math.min(span, preferred)))
 }
 

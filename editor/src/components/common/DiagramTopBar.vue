@@ -2,6 +2,8 @@
 defineProps<{
   sourcePath?: string
   sourcePathLogoUrl?: string
+  nodeTypes: readonly string[]
+  nodeTypeVisibility: Record<string, boolean>
   relationTypes: readonly string[]
   relationTypeVisibility: Record<string, boolean>
   metricTooltipsEnabled: boolean
@@ -10,17 +12,27 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
+  'update:node-type-visible': [nodeKey: string, visible: boolean]
   'update:relation-type-visible': [relationKey: string, visible: boolean]
   'update:metric-tooltips-enabled': [visible: boolean]
   'update:focus-relation-depth': [depth: number]
   'update:metric-visible': [metricKey: 'coverage' | 'debt' | 'issues', visible: boolean]
 }>()
 
+function displayNodeLabel(nodeKey: string): string {
+  return nodeKey.charAt(0).toUpperCase() + nodeKey.slice(1)
+}
+
 function displayRelationLabel(relationKey: string): string {
   return relationKey === 'with' ? 'has trait' : relationKey
 }
 
-function onToggle(relationKey: string, ev: Event) {
+function onNodeToggle(nodeKey: string, ev: Event) {
+  const target = ev.target as HTMLInputElement | null
+  emit('update:node-type-visible', nodeKey, !!target?.checked)
+}
+
+function onRelationToggle(relationKey: string, ev: Event) {
   const target = ev.target as HTMLInputElement | null
   emit('update:relation-type-visible', relationKey, !!target?.checked)
 }
@@ -45,9 +57,9 @@ function onFocusDepthInput(ev: Event) {
 
 <template>
   <div
-    v-if="sourcePath || relationTypes.length"
+    v-if="sourcePath || relationTypes.length || nodeTypes.length"
     class="diagram-top-bar"
-    :class="{ 'diagram-top-bar--with-relations': relationTypes.length > 0 }"
+    :class="{ 'diagram-top-bar--with-relations': relationTypes.length > 0 || nodeTypes.length > 0 }"
   >
     <div v-if="sourcePath" class="diagram-top-bar__path" :title="sourcePath">
       <img
@@ -60,7 +72,30 @@ function onFocusDepthInput(ev: Event) {
       <span class="diagram-top-bar__path-text">{{ sourcePath }}</span>
     </div>
 
-    <div v-if="relationTypes.length || sourcePath" class="diagram-top-bar__relations" aria-label="Diagram controls">
+    <div
+      v-if="relationTypes.length || nodeTypes.length || sourcePath"
+      class="diagram-top-bar__relations"
+      aria-label="Diagram controls"
+    >
+      <template v-if="nodeTypes.length">
+        <span class="diagram-top-bar__group-label">Nodes</span>
+        <label
+          v-for="nodeType in nodeTypes"
+          :key="'node-' + nodeType"
+          class="diagram-top-bar__check"
+          :title="`Show ${displayNodeLabel(nodeType)} nodes`"
+        >
+          <input
+            type="checkbox"
+            :aria-label="`Show ${displayNodeLabel(nodeType)} nodes`"
+            :checked="nodeTypeVisibility[nodeType] !== false"
+            @change="onNodeToggle(nodeType, $event)"
+          />
+          <span class="diagram-top-bar__check-text">{{ displayNodeLabel(nodeType) }}</span>
+        </label>
+        <span class="diagram-top-bar__sep" aria-hidden="true" />
+      </template>
+      <span v-if="relationTypes.length" class="diagram-top-bar__group-label">Relations</span>
       <label
         v-for="rel in relationTypes"
         :key="rel"
@@ -71,7 +106,7 @@ function onFocusDepthInput(ev: Event) {
           type="checkbox"
           :aria-label="`Show ${displayRelationLabel(rel)} relations`"
           :checked="relationTypeVisibility[rel] !== false"
-          @change="onToggle(rel, $event)"
+          @change="onRelationToggle(rel, $event)"
         />
         <span class="diagram-top-bar__check-text">{{ displayRelationLabel(rel) }}</span>
       </label>
@@ -220,6 +255,15 @@ function onFocusDepthInput(ev: Event) {
 }
 
 .diagram-top-bar__check-text {
+  line-height: 1.2;
+}
+
+.diagram-top-bar__group-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   line-height: 1.2;
 }
 

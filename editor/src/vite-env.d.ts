@@ -12,6 +12,13 @@ declare module 'virtual:sbt-examples' {
 }
 
 declare module 'virtual:ts-examples' {
+  export interface TsExampleScannerOptions {
+    sourceRoot?: string
+    modulePaths?: string[]
+    ignoredPackageSegments?: string[]
+    rootResourceKind?: 'package' | 'project'
+  }
+
   export interface TsExampleEncoded {
     root: string
     /** Top-level example dir under `root` (e.g. `01-tritongraph-self`). */
@@ -19,8 +26,10 @@ declare module 'virtual:ts-examples' {
     /** YAML file name inside `<root>/<dir>` (e.g. `repo-typescript-deps.ilograph.yaml`). */
     file: string
     b64: string
-    /** Base64-encoded TS sources keyed by path relative to `<root>/<dir>`. */
-    filesB64?: Record<string, string>
+    /** Base64-encoded TS sources keyed by logical source path for the diagram. */
+    filesB64?: Record<string, string | { b64: string; sourceFile?: string }>
+    /** Optional analyzer/projection options parsed from the example YAML. */
+    scannerOptions?: TsExampleScannerOptions
   }
   export const tsExampleEncodedEntries: TsExampleEncoded[]
 }

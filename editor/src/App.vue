@@ -135,6 +135,8 @@ const status = ref('')
 
 const graphRef = ref<InstanceType<typeof GraphWorkspace> | null>(null)
 const examplesMenu = ref<HTMLDetailsElement | null>(null)
+/** Checked node kinds are visible (`false` means hidden). Synced from current artefact kinds. */
+const nodeTypeVisibility = ref<Record<string, boolean>>({})
 /** Checked relation types are visible (`false` means hidden). Synced from current edges’ labels. */
 const relationTypeVisibility = ref<Record<string, boolean>>({})
 const metricTooltipsEnabled = ref(false)
@@ -163,6 +165,96 @@ function collectInnerRelationTypeKeys(nodeList: readonly any[]): string[] {
   return [...out]
 }
 
+function normalizeNodeTypeKey(kind: unknown): string {
+  const s = String(kind ?? '').trim().toLowerCase()
+  return s.length ? s : '(unknown)'
+}
+
+function collectNodeTypeKeys(nodeList: readonly any[]): string[] {
+  const out = new Set<string>()
+  for (const node of nodeList) {
+    const data = node?.data as Record<string, unknown> | undefined
+    if (String(node?.type ?? '') === 'artefact') out.add(normalizeNodeTypeKey(data?.subtitle))
+    const raw = data?.innerArtefacts
+    if (!Array.isArray(raw)) continue
+    for (const artefact of raw) {
+      out.add(normalizeNodeTypeKey((artefact as Record<string, unknown> | undefined)?.subtitle))
+    }
+  }
+  return [...out]
+}
+
+function visibleInnerArtefactsForPreferredSize(
+  data: Record<string, unknown>,
+): readonly Record<string, unknown>[] {
+  const raw = data.innerArtefacts
+  if (!Array.isArray(raw)) return []
+  const visibility = nodeTypeVisibility.value
+  return raw.filter((artefact) => {
+    const key = normalizeNodeTypeKey((artefact as Record<string, unknown> | undefined)?.subtitle)
+    return visibility[key] !== false
+  }) as readonly Record<string, unknown>[]
+}
+
+function preferredFocusWidthForVisibleInnerContent(data: Record<string, unknown>): number | undefined {
+  const innerArtefactCount = visibleInnerArtefactsForPreferredSize(data).length
+  const innerPackageCount = Array.isArray(data.innerPackages) ? data.innerPackages.length : 0
+  if (!innerArtefactCount && !innerPackageCount) return undefined
+  return Math.min(
+    6400,
+    Math.max(
+      innerArtefactCount ? Math.max(720, innerArtefactCount * 170) : 0,
+      innerPackageCount ? Math.max(760, innerPackageCount * 220) : 0,
+    ),
+  )
+}
+
+function applyNodeTypeVisibilityToNodes(nodeList: readonly any[]): any[] {
+  return nodeList.map((node) => {
+    const data = { ...((node?.data ?? {}) as Record<string, unknown>) }
+    let changed = false
+    const kindKey = normalizeNodeTypeKey(data.subtitle)
+    const nodeKindHidden = String(node?.type ?? '') === 'artefact' && nodeTypeVisibility.value[kindKey] === false
+    const hidden = nodeKindHidden || Boolean((node as { hidden?: boolean }).hidden && data.__nodeKindHidden !== true)
+
+    if (String(node?.type ?? '') === 'package') {
+      const nextPreferredFocusWidth = preferredFocusWidthForVisibleInnerContent(data)
+      if (typeof nextPreferredFocusWidth === 'number') {
+        if (data.preferredFocusWidth !== nextPreferredFocusWidth) {
+          data.preferredFocusWidth = nextPreferredFocusWidth
+          changed = true
+        }
+      } else if (data.preferredFocusWidth !== undefined) {
+        delete data.preferredFocusWidth
+        changed = true
+      }
+    }
+
+    if ((node as { hidden?: boolean }).hidden !== hidden || data.__nodeKindHidden !== nodeKindHidden) {
+      changed = true
+      if (nodeKindHidden) data.__nodeKindHidden = true
+      else delete data.__nodeKindHidden
+    }
+
+    return changed ? { ...node, hidden, data } : node
+  })
+}
+
+const nodeTypesMenuSig = computed(() => collectNodeTypeKeys(nodes.value).sort().join('\n'))
+
+watch(nodeTypesMenuSig, (sig) => {
+  const keys = sig.length ? sig.split('\n') : []
+  const prev = nodeTypeVisibility.value
+  const next: Record<string, boolean> = {}
+  for (const k of keys) {
+    next[k] = prev[k] !== false
+  }
+  nodeTypeVisibility.value = next
+  nodes.value = applyNodeTypeVisibilityToNodes(nodes.value)
+})
+
+const nodeTypesList = computed(() => (nodeTypesMenuSig.value.length ? nodeTypesMenuSig.value.split('\n') : []))
+
 const relationTypesMenuSig = computed(() => {
   const keys = new Set(relationTypesFromSignature(relationTypeKeysSignature(edges.value)))
   for (const key of collectInnerRelationTypeKeys(nodes.value)) keys.add(key)
@@ -184,6 +276,16 @@ const relationTypesList = computed(() => relationTypesFromSignature(relationType
 function mergeEdgesWithVisibility(es: any[]) {
   return mergeEdgeHiddenForInvisibleEndpoints(es, nodes.value, {
     hideEdgeForRelation: (e) => shouldHideEdgeForRelationFilter(e, relationTypeVisibility.value),
+  })
+}
+
+function setNodeTypeVisible(nodeKey: string, visible: boolean) {
+  nodeTypeVisibility.value = { ...nodeTypeVisibility.value, [nodeKey]: visible }
+  nodes.value = applyNodeTypeVisibilityToNodes(nodes.value)
+  edges.value = mergeEdgesWithVisibility(edges.value)
+  void nextTick(async () => {
+    graphRef.value?.refreshEdgeEmphasis?.()
+    await graphRef.value?.relayoutViewport?.()
   })
 }
 
@@ -363,6 +465,25 @@ function tsExampleSelectionId(root: string, dir: string, file: string): string {
   return `ts:${root}/${dir}/${file}`
 }
 
+function tsPackagesTabKey(root: string, dir: string, file: string, moduleId: string): string {
+  return `ts-packages:${root}/${dir}/${file}#${encodeURIComponent(moduleId)}`
+}
+
+function parseTsExampleTabBody(body: string): { root: string; dir: string; file: string; moduleId?: string } | null {
+  const hash = body.indexOf('#')
+  const main = hash >= 0 ? body.slice(0, hash) : body
+  const moduleId = hash >= 0 ? decodeURIComponent(body.slice(hash + 1)) : ''
+  const parts = main.split('/').filter(Boolean)
+  if (parts.length < 3) return null
+  const [root, dir, ...rest] = parts
+  return {
+    root: root!,
+    dir: dir!,
+    file: rest.join('/'),
+    ...(moduleId ? { moduleId } : {}),
+  }
+}
+
 const sbtExamplesTutorial = sbtExamplesAll.filter(
   (e) => e.root === 'sbt-examples' && isTutorialSbtFolder(e.dir),
 )
@@ -513,6 +634,10 @@ const activeExampleSelectionKey = computed<string>(() => {
   if (k.startsWith('sbt:')) return k
   if (k.startsWith('packages:')) return `sbt:${stripExampleProjectSuffix(k.slice('packages:'.length))}`
   if (k.startsWith('ts:')) return k
+  if (k.startsWith('ts-packages:')) {
+    const parsed = parseTsExampleTabBody(k.slice('ts-packages:'.length))
+    return parsed ? tsExampleSelectionId(parsed.root, parsed.dir, parsed.file) : ''
+  }
   return ''
 })
 
@@ -535,13 +660,11 @@ const activeExample = computed<{ root: string; dir: string } | null>(() => {
     if (slash < 0) return null
     return { root: body.slice(0, slash), dir: body.slice(slash + 1) }
   }
-  if (k.startsWith('ts:')) {
+  if (k.startsWith('ts:') || k.startsWith('ts-packages:')) {
     // TS tabs include the file name: `ts:<root>/<exampleDir>/<file>`. For open-in-editor we
     // need only `(root, exampleDir)`.
-    body = k.slice('ts:'.length)
-    const parts = body.split('/').filter(Boolean)
-    if (parts.length < 2) return null
-    return { root: parts[0]!, dir: parts[1]! }
+    const parsed = parseTsExampleTabBody(k.slice(k.startsWith('ts:') ? 'ts:'.length : 'ts-packages:'.length))
+    return parsed ? { root: parsed.root, dir: parsed.dir } : null
   }
   return null
 })
@@ -553,6 +676,7 @@ const activeExample = computed<{ root: string; dir: string } | null>(() => {
  * (packages tab → sbt tab → packages tab) are picked up without component re-creation.
  */
 provide('tritonActiveExample', activeExample)
+provide('tritonNodeTypeVisibility', nodeTypeVisibility)
 provide('tritonRelationTypeVisibility', relationTypeVisibility)
 provide('tritonMetricTooltipsEnabled', metricTooltipsEnabled)
 provide('tritonFocusRelationDepth', focusRelationDepth)
@@ -650,7 +774,7 @@ async function applyDoc(
   text: string,
   name: string,
   preferSaved: boolean,
-  options: { moduleNodeType?: 'module' | 'package' } = {},
+  options: { moduleNodeType?: 'module' | 'package'; initialLayerDrillId?: string } = {},
 ) {
   await whenOverlayStoreReady()
   const doc = parseIlographYaml(text)
@@ -689,9 +813,18 @@ async function applyDoc(
   await nextTick()
   graphRef.value?.refreshEdgeEmphasis?.()
   graphRef.value?.resetNavigationAfterDocReplace?.()
-  await graphRef.value?.fitToViewport?.({
-    duration: 0,
-  })
+  const initialLayerDrillId = options.initialLayerDrillId?.trim()
+  if (initialLayerDrillId) {
+    await nextTick()
+    const applied = await graphRef.value?.applyLayerDrill?.(initialLayerDrillId)
+    if (!applied) {
+      await graphRef.value?.fitToViewport?.({ duration: 0 })
+    }
+  } else {
+    await graphRef.value?.fitToViewport?.({
+      duration: 0,
+    })
+  }
   await nextTick()
   yamlBaseline.value = yamlPreview.value
 }
@@ -1992,6 +2125,7 @@ function isRestorableTabKey(key: string): boolean {
     key.startsWith('dojo:') ||
     key.startsWith('sbt:') ||
     key.startsWith('ts:') ||
+    key.startsWith('ts-packages:') ||
     key.startsWith('packages:') ||
     key.startsWith('runtime-sbt:') ||
     key.startsWith('runtime-packages:')
@@ -2049,12 +2183,15 @@ async function openTabFromUrlKey(key: string): Promise<boolean> {
     return true
   }
   if (trimmed.startsWith('ts:')) {
-    const body = trimmed.slice('ts:'.length)
-    const parts = body.split('/')
-    if (parts.length < 3) return false
-    const [root, dir, ...rest] = parts
-    const file = rest.join('/')
-    await openTsExampleTab(root, dir, file)
+    const parsed = parseTsExampleTabBody(trimmed.slice('ts:'.length))
+    if (!parsed) return false
+    await openTsExampleTab(parsed.root, parsed.dir, parsed.file)
+    return true
+  }
+  if (trimmed.startsWith('ts-packages:')) {
+    const parsed = parseTsExampleTabBody(trimmed.slice('ts-packages:'.length))
+    if (!parsed?.moduleId) return false
+    await openTsPackagesTab(parsed.root, parsed.dir, parsed.file, parsed.moduleId)
     return true
   }
   if (trimmed.startsWith('packages:')) {
@@ -2108,16 +2245,80 @@ async function openTsExampleTab(root: string, dir: string, file: string): Promis
         import('../../packages/triton-core/src/codeModelToIlograph'),
       ])
       const codeModel = buildTypeScriptCodeModelFromFiles(
-        Object.entries(hit.files ?? {}).map(([relPath, source]) => ({ relPath, source })),
-        { id: dir, name: dir, sourceRoot: 'src' },
+        Object.entries(hit.files ?? {}).map(([relPath, source]) => ({
+          relPath,
+          source,
+          ...(hit.sourceFiles?.[relPath] ? { sourceFile: hit.sourceFiles[relPath] } : {}),
+        })),
+        {
+          id: dir,
+          name: dir,
+          sourceRoot: hit.scannerOptions?.sourceRoot ?? 'src',
+          modulePaths: hit.scannerOptions?.modulePaths,
+          ignoredPackageSegments: hit.scannerOptions?.ignoredPackageSegments,
+        },
       )
       const projected = codeModelToIlographDocument(codeModel, {
         resourceId: dir,
         title: `TypeScript: ${dir}`,
         description: `TypeScript code model for ${root}/${dir}.`,
         projectionMode: 'nested-resources',
+        rootResourceKind: hit.scannerOptions?.rootResourceKind,
       })
-      await applyDoc(stringifyIlographYaml(projected), file, true, { moduleNodeType: 'package' })
+      await applyDoc(stringifyIlographYaml(projected), file, true, {
+        moduleNodeType: hit.scannerOptions?.rootResourceKind === 'project' ? 'module' : 'package',
+      })
+    },
+  )
+}
+
+async function openTsPackagesTab(root: string, dir: string, file: string, moduleId: string): Promise<void> {
+  const hit = tsExamplesAll.find((e) => e.root === root && e.dir === dir && e.file === file)
+  if (!hit) {
+    status.value = `Cannot open TS packages — not found: ${root}/${dir}/${file}`
+    return
+  }
+  await openOrActivateTab(
+    {
+      key: tsPackagesTabKey(root, dir, file, moduleId),
+      title: `${dir}:${moduleId.split('/').pop() ?? moduleId}`,
+      iconUrl: cubeIconUrl,
+    },
+    async () => {
+      sourcePath.value = `${hit.path}#${moduleId}`
+      const [{ buildTypeScriptCodeModelFromFiles }, { codeModelToIlographDocument }] = await Promise.all([
+        import('../../packages/triton-core/src/typeScriptCodeModel'),
+        import('../../packages/triton-core/src/codeModelToIlograph'),
+      ])
+      const codeModel = buildTypeScriptCodeModelFromFiles(
+        Object.entries(hit.files ?? {}).map(([relPath, source]) => ({
+          relPath,
+          source,
+          ...(hit.sourceFiles?.[relPath] ? { sourceFile: hit.sourceFiles[relPath] } : {}),
+        })),
+        {
+          id: dir,
+          name: dir,
+          sourceRoot: hit.scannerOptions?.sourceRoot ?? 'src',
+          modulePaths: hit.scannerOptions?.modulePaths,
+          ignoredPackageSegments: hit.scannerOptions?.ignoredPackageSegments,
+        },
+      )
+      const projected = codeModelToIlographDocument(codeModel, {
+        resourceId: moduleId,
+        title: `TypeScript packages: ${dir}:${moduleId}`,
+        description: `TypeScript package model for ${root}/${dir}/${moduleId}.`,
+        projectionMode: 'nested-resources',
+        scopeContainerId: moduleId,
+      })
+      const alreadyOpenPackageScope = projected.resources?.some((resource) => {
+        const extended = resource as { id?: string; 'x-triton-package-scope'?: boolean }
+        return extended.id === moduleId && extended['x-triton-package-scope'] === true
+      }) ?? false
+      await applyDoc(stringifyIlographYaml(projected), file, true, {
+        moduleNodeType: 'package',
+        ...(alreadyOpenPackageScope ? {} : { initialLayerDrillId: moduleId }),
+      })
     },
   )
 }
@@ -2522,7 +2723,8 @@ async function runRuntimeWorkspaceAction(
 
 /**
  * Internal `triton:` URL scheme used by markdown links inside project-box subtitles.
- * Examples: `triton:packages` or `triton://diagram/packages?project=App`
+ * Examples: `triton:packages`, `triton://diagram/packages?project=App`,
+ * or `triton://diagram/ts-packages?module=editor`
  * (open/activate the packages tab for the current example, optionally filtered to one sbt
  * project),
  * `triton:sbt` (open/activate the sbt build tab). Unknown links fall through to a normal
@@ -2537,6 +2739,25 @@ function onNodeLinkAction(payload: { nodeId: string; href: string }) {
     tritonUrl = null
   }
   const projectId = tritonUrl?.searchParams.get('project')?.trim() ?? ''
+  const tsModuleId = tritonUrl?.searchParams.get('module')?.trim() ?? ''
+  if (tritonUrl?.pathname === '/ts-packages') {
+    const activeKey = activeTab.value?.key ?? ''
+    const parsed = activeKey.startsWith('ts:')
+      ? parseTsExampleTabBody(activeKey.slice('ts:'.length))
+      : activeKey.startsWith('ts-packages:')
+        ? parseTsExampleTabBody(activeKey.slice('ts-packages:'.length))
+        : null
+    if (!parsed) {
+      status.value = 'Cannot open TypeScript packages view — no TypeScript example loaded.'
+      return
+    }
+    if (!tsModuleId) {
+      status.value = 'Cannot open TypeScript packages view — module id is missing.'
+      return
+    }
+    void openTsPackagesTab(parsed.root, parsed.dir, parsed.file, tsModuleId)
+    return
+  }
   if (href === 'triton:packages' || href === 'triton://diagram/packages' || tritonUrl?.pathname === '/packages') {
     const runtimeWs = activeRuntimeWorkspace.value
     if (runtimeWs) {
@@ -3300,11 +3521,14 @@ onUnmounted(() => {
         <DiagramTopBar
           :source-path="sourcePath"
           :source-path-logo-url="sourcePathLogoUrl"
+          :node-types="nodeTypesList"
+          :node-type-visibility="nodeTypeVisibility"
           :relation-types="relationTypesList"
           :relation-type-visibility="relationTypeVisibility"
           :metric-tooltips-enabled="metricTooltipsEnabled"
           :focus-relation-depth="focusRelationDepth"
           :metric-visibility="metricVisibility"
+          @update:node-type-visible="setNodeTypeVisible"
           @update:relation-type-visible="setRelationTypeVisible"
           @update:metric-tooltips-enabled="(v) => (metricTooltipsEnabled = v)"
           @update:focus-relation-depth="(v) => (focusRelationDepth = v)"
@@ -3334,6 +3558,7 @@ onUnmounted(() => {
           v-model:nodes="nodes"
           v-model:edges="edges"
           :node-types="nodeTypes"
+          :node-type-visibility="nodeTypeVisibility"
           :relation-type-visibility="relationTypeVisibility"
           :abstraction-dojo-resize="abstractionDojoResizeForGraph"
           :focus-relation-depth="focusRelationDepth"

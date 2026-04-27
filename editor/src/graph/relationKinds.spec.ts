@@ -9,9 +9,10 @@ import {
 } from './relationKinds'
 
 describe('isAggregateEdge', () => {
-  it('detects aggregate and aggregates labels case-insensitively', () => {
+  it('detects containment-style labels case-insensitively', () => {
     expect(isAggregateEdge({ label: 'aggregate' })).toBe(true)
     expect(isAggregateEdge({ label: 'Aggregates' })).toBe(true)
+    expect(isAggregateEdge({ label: 'Contains' })).toBe(true)
     expect(isAggregateEdge({ label: 'depends on' })).toBe(false)
   })
 
@@ -38,6 +39,7 @@ describe('strokeForIlographRelation', () => {
 
   it('falls back to aggregate vs dependency palette', () => {
     expect(strokeForIlographRelation({ label: 'aggregate' })).toBe(SBT_AGGREGATE_STROKE)
+    expect(strokeForIlographRelation({ label: 'contains' })).toBe(SBT_AGGREGATE_STROKE)
     expect(strokeForIlographRelation({ label: 'depends on' })).toBe(SBT_DEPENDS_ON_STROKE)
   })
 })

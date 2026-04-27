@@ -191,6 +191,12 @@ export interface IlographResource {
    */
   'x-triton-constructor-params'?: string
   /**
+   * Non-standard: one-line constructor signatures for an `artefact` resource, same shape as
+   * {@link TritonInnerArtefactSpec.constructorSignatures}. Used by TypeScript class leaves and
+   * surfaced on the focused Constructors panel.
+   */
+  'x-triton-constructor-signatures'?: ReadonlyArray<TritonMethodSignature>
+  /**
    * Non-standard: one-line signatures of `def` members for an `artefact` resource — same shape
    * as {@link TritonInnerArtefactSpec.methodSignatures}. Populated by
    * {@link buildScalaPackageGraph} from tree-sitter output; surfaced on the focused Methods panel

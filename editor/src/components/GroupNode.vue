@@ -10,6 +10,9 @@
  */
 import { computed, inject, ref, type Ref } from 'vue'
 import folderIconUrl from '../assets/language-icons/folder.svg'
+import cubeIconUrl from '../assets/language-icons/cube.svg'
+import genericIconUrl from '../assets/language-icons/generic.svg'
+import stackedCubesIconUrl from '../assets/language-icons/stacked-cubes.svg'
 import LanguageIcon from './LanguageIcon.vue'
 import { isLanguageIconId } from '../graph/languages'
 import { useScalaCoverageKeyed } from '../store/useOverlay'
@@ -44,6 +47,7 @@ const props = defineProps<{
      * field so the logo appears only on the outermost package, matching the user's request.
      */
     language?: string
+    projectKind?: 'project' | 'module' | 'general'
   }
 }>()
 
@@ -53,6 +57,19 @@ const props = defineProps<{
  * instead of rendering a broken icon.
  */
 const hasLanguageLogo = computed(() => !!(props.data.packageScope && props.data.language && isLanguageIconId(props.data.language)))
+const projectKind = computed<'project' | 'module' | 'general' | null>(() => {
+  if (props.data.packageScope) return null
+  if (props.data.projectKind === 'project') return 'project'
+  if (props.data.projectKind === 'general') return 'general'
+  if (props.data.projectKind === 'module') return 'module'
+  return null
+})
+const projectIconUrl = computed(() => {
+  if (projectKind.value === 'project') return stackedCubesIconUrl
+  if (projectKind.value === 'general') return genericIconUrl
+  if (projectKind.value === 'module') return cubeIconUrl
+  return null
+})
 
 /**
  * Outer FLIP transform: at the start of the animation the focused group sits at its `first`
@@ -107,6 +124,9 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
           class="group-node__frame"
           :class="{
             'group-node__frame--package-scope': data.packageScope,
+            'group-node__frame--project-scope': projectKind,
+            'group-node__frame--project': projectKind === 'project',
+            'group-node__frame--module': projectKind === 'module',
             'group-node__frame--has-language': hasLanguageLogo,
             'group-node__frame--has-metrics': true,
           }"
@@ -138,6 +158,22 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
                 decoding="async"
               />
               <div class="group-node__pkg-titles">
+                <div class="banner">{{ data.label }}</div>
+                <div v-if="data.subtitle" class="banner-sub">{{ data.subtitle }}</div>
+              </div>
+            </div>
+          </template>
+          <template v-else-if="projectKind">
+            <div class="group-node__project-header">
+              <img
+                v-if="projectIconUrl"
+                class="group-node__project-icon"
+                :src="projectIconUrl"
+                alt=""
+                aria-hidden="true"
+                decoding="async"
+              />
+              <div class="group-node__project-titles">
                 <div class="banner">{{ data.label }}</div>
                 <div v-if="data.subtitle" class="banner-sub">{{ data.subtitle }}</div>
               </div>
@@ -209,6 +245,26 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
   background: transparent;
   overflow: hidden;
 }
+.group-node__frame--project-scope {
+  border-style: solid;
+  background: rgb(248 250 252 / 0.82);
+  box-shadow:
+    inset 6px 0 0 0 #64748b,
+    0 1px 3px rgb(15 23 42 / 0.08);
+  overflow: hidden;
+}
+.group-node__frame--project {
+  border-color: rgb(59 130 246 / 0.55);
+  box-shadow:
+    inset 6px 0 0 0 #3b82f6,
+    0 1px 3px rgb(15 23 42 / 0.08);
+}
+.group-node__frame--module {
+  border-color: rgb(99 102 241 / 0.5);
+  box-shadow:
+    inset 6px 0 0 0 #6366f1,
+    0 1px 3px rgb(15 23 42 / 0.08);
+}
 .group-node__metrics {
   position: absolute;
   top: 3px;
@@ -263,6 +319,30 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
 /** Metrics strip + language logo. */
 .group-node__frame--has-language.group-node__frame--has-metrics .group-node__pkg-header {
   right: 100px;
+}
+.group-node__project-header {
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  right: min(142px, max(38px, 22cqw));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  z-index: 4;
+}
+.group-node__project-icon {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  flex: 0 0 auto;
+  filter: drop-shadow(0 1px 1px rgb(15 23 42 / 0.1));
+}
+.group-node__project-titles {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .group-node__folder-icon {
   width: 28px;

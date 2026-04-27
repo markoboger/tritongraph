@@ -31,7 +31,7 @@ export const SBT_AGGREGATE_STROKE = '#16a34a'
 
 export function isAggregateEdge(e: { label?: unknown }): boolean {
   const t = String(e.label ?? '').trim().toLowerCase()
-  return t === 'aggregate' || t === 'aggregates'
+  return t === 'aggregate' || t === 'aggregates' || t === 'contains'
 }
 
 /**

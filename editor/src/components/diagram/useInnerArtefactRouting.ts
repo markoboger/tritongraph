@@ -29,6 +29,12 @@ type RoutingOptions = {
 }
 
 export function useInnerArtefactRouting(options: RoutingOptions) {
+  function artefactBelongsToChildPackage(artefactPackageId: string, childPackageId: string): boolean {
+    return artefactPackageId === childPackageId
+      || artefactPackageId.startsWith(`${childPackageId}.`)
+      || artefactPackageId.startsWith(`${childPackageId}/`)
+  }
+
   function crossPackageExternalEndpointId(input: {
     side: 'left' | 'right'
     localId: string
@@ -59,7 +65,7 @@ export function useInnerArtefactRouting(options: RoutingOptions) {
       const pkgId = artefactPackageId(artefactId)
       if (!pkgId) return null
       for (const childId of childPackageIds) {
-        if (pkgId === childId || pkgId.startsWith(`${childId}.`)) return childId
+        if (artefactBelongsToChildPackage(pkgId, childId)) return childId
       }
       return null
     }
@@ -125,7 +131,7 @@ export function useInnerArtefactRouting(options: RoutingOptions) {
     const foreignIsVisibleChildPackage = (artefactId: string): boolean => {
       const pkgId = artefactPackageId(artefactId)
       if (!pkgId) return false
-      return childPackageIds.some((childId) => pkgId === childId || pkgId.startsWith(`${childId}.`))
+      return childPackageIds.some((childId) => artefactBelongsToChildPackage(pkgId, childId))
     }
 
     const out: BoundaryStubRelation[] = []

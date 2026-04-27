@@ -269,10 +269,14 @@ export function ilographDocumentToFlow(
         ? 460
         : leafType === 'artefact'
           ? 520
-          : innerArtefacts?.length
-            ? 560
-            : innerPackages?.length
-              ? 460
+          : innerArtefacts?.length || innerPackages?.length
+            ? Math.min(
+                6400,
+                Math.max(
+                  innerArtefacts?.length ? Math.max(560, innerArtefacts.length * 170) : 0,
+                  innerPackages?.length ? Math.max(760, innerPackages.length * 220) : 0,
+                ),
+              )
               : undefined
     const preferredLeafHeight =
       typeof res['x-triton-preferred-leaf-height'] === 'number' &&
@@ -304,6 +308,10 @@ export function ilographDocumentToFlow(
         res['x-triton-constructor-params'].trim()
           ? { constructorParams: String(res['x-triton-constructor-params']) }
           : {}),
+        ...(() => {
+          const sigs = normalizeMethodSignatureArray(res['x-triton-constructor-signatures'])
+          return sigs.length ? { constructorSignatures: sigs } : {}
+        })(),
         ...(() => {
           const sigs = normalizeMethodSignatureArray(res['x-triton-method-signatures'])
           return sigs.length ? { methodSignatures: sigs } : {}

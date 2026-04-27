@@ -91,6 +91,21 @@ function kindBadgeForInnerArtefact(cell: TritonInnerArtefactSpec | undefined): s
   if (k === 'enum') return 'E'
   return null
 }
+
+function verticalTitlePreferredHeight(label: string | undefined): number {
+  const titleLength = Math.max(1, (label ?? '').trim().length)
+  // In superslim mode the title is rotated into a vertical rail; reserve enough
+  // height for the full identifier plus icon and metrics chrome.
+  return Math.max(132, Math.min(280, 76 + titleLength * 9))
+}
+
+function artefactSlotStyle(id: string): Record<string, string> {
+  const cell = props.artefactCell(id)
+  return {
+    '--box-accent': props.artefactAccent(id),
+    '--triton-inner-artefact-preferred-h': `${verticalTitlePreferredHeight(cell?.name)}px`,
+  }
+}
 </script>
 
 <template>
@@ -153,7 +168,7 @@ function kindBadgeForInnerArtefact(cell: TritonInnerArtefactSpec | undefined): s
                 v-if="mode === 'focused' && innerArtefactFocusActive && focusedArtefactId === artId && artefactCell(artId)"
                 :ref="(el) => bindSlotEl(artId, el)"
                 class="package-box__inner-slot package-box__inner-slot--artefact-layer package-box__inner-slot--artefact-focused-cell"
-                :style="{ '--box-accent': artefactAccent(artId) }"
+                :style="artefactSlotStyle(artId)"
                 @click="handleFocusedArtefactBackgroundClick"
               >
                 <span class="package-box__artefact-anchor package-box__artefact-anchor--in" :class="{ 'package-box__artefact-anchor--emph': artefactEmphasized(artId) }" aria-hidden="true" />
@@ -196,7 +211,7 @@ function kindBadgeForInnerArtefact(cell: TritonInnerArtefactSpec | undefined): s
                   'package-box__inner-slot--clickable': mode === 'focused',
                   'package-box__inner-slot--inner-hovered': mode === 'focused' && artefactEmphasized(artId),
                 }"
-                :style="{ '--box-accent': artefactAccent(artId) }"
+                :style="artefactSlotStyle(artId)"
                 @mouseenter="mode === 'focused' ? handleArtefactSlotEnter(artId) : undefined"
                 @mouseleave="mode === 'focused' ? handleArtefactSlotLeave(artId) : undefined"
                 @click.stop="mode === 'focused' ? handleArtefactRowClick(artId) : undefined"
@@ -257,7 +272,7 @@ function kindBadgeForInnerArtefact(cell: TritonInnerArtefactSpec | undefined): s
             v-if="mode === 'focused' && innerArtefactFocusActive && focusedArtefactId === artId && artefactCell(artId)"
             :ref="(el) => bindSlotEl(artId, el)"
             class="package-box__inner-slot package-box__inner-slot--artefact-layer package-box__inner-slot--artefact-focused-cell"
-            :style="{ '--box-accent': artefactAccent(artId) }"
+            :style="artefactSlotStyle(artId)"
             @click="handleFocusedArtefactBackgroundClick"
           >
             <span class="package-box__artefact-anchor package-box__artefact-anchor--in" :class="{ 'package-box__artefact-anchor--emph': artefactEmphasized(artId) }" aria-hidden="true" />
@@ -300,7 +315,7 @@ function kindBadgeForInnerArtefact(cell: TritonInnerArtefactSpec | undefined): s
               'package-box__inner-slot--clickable': mode === 'focused',
               'package-box__inner-slot--inner-hovered': mode === 'focused' && artefactEmphasized(artId),
             }"
-            :style="{ '--box-accent': artefactAccent(artId) }"
+            :style="artefactSlotStyle(artId)"
             @mouseenter="mode === 'focused' ? handleArtefactSlotEnter(artId) : undefined"
             @mouseleave="mode === 'focused' ? handleArtefactSlotLeave(artId) : undefined"
             @click.stop="mode === 'focused' ? handleArtefactRowClick(artId) : undefined"

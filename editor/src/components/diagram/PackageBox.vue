@@ -216,6 +216,10 @@ const relationTypeVisibilityRef = inject<Ref<Record<string, boolean>>>(
   'tritonRelationTypeVisibility',
   ref({}),
 )
+const nodeTypeVisibilityRef = inject<Ref<Record<string, boolean>>>(
+  'tritonNodeTypeVisibility',
+  ref({}),
+)
 const focusRelationDepthRef = inject<Ref<number>>('tritonFocusRelationDepth', ref(1))
 
 /**
@@ -258,10 +262,14 @@ const drilledInnerArtefacts = computed(() => {
 
 const visibleInnerArtefacts = computed(() => {
   const drilledId = drilledInnerPackageId.value
-  if (drilledId) return drilledInnerArtefacts.value
+  const kindVisible = (artefact: TritonInnerArtefactSpec) => {
+    const key = (artefact.subtitle ?? '').trim().toLowerCase() || '(unknown)'
+    return nodeTypeVisibilityRef.value[key] !== false
+  }
+  if (drilledId) return drilledInnerArtefacts.value.filter(kindVisible)
   // Root view: if we have folder packages, show only those (no artefact rows).
   if ((props.innerPackages?.length ?? 0) > 0) return []
-  return props.innerArtefacts
+  return props.innerArtefacts.filter(kindVisible)
 })
 
 const routingInnerArtefacts = computed(() => {
@@ -269,6 +277,7 @@ const routingInnerArtefacts = computed(() => {
   // artefact→artefact relations (even when artefacts are hidden from the UI).
   const drilledId = drilledInnerPackageId.value
   if (drilledId) return drilledInnerArtefacts.value
+  if ((props.innerPackages?.length ?? 0) === 0) return visibleInnerArtefacts.value
   return props.innerArtefacts
 })
 
@@ -523,6 +532,17 @@ watch(innerDrillPathArr, (p, prev) => {
 watch(crossPackagePreviewActive, () => void nextTick(() => scheduleInnerEdgeRefreshSettled()))
 
 watch(focusRelationDepthRef, () => void nextTick(() => scheduleInnerEdgeRefreshSettled()))
+
+watch(
+  () => nodeTypeVisibilityRef.value,
+  () => {
+    void nextTick(() => {
+      scheduleInnerEdgeRefreshSettled()
+      emit('layout-update-request')
+    })
+  },
+  { deep: true },
+)
 
 watch(innerDiagramColsRef, () => void nextTick(() => updateInnerScrollMetrics()))
 
@@ -1860,7 +1880,6 @@ function onHeaderDblClick() {
 .package-box--embedded-compact-header .title.title--header {
   text-align: left;
   margin-top: 0;
-  font-size: clamp(0.82rem, min(2.4vmin, 3.8cqh), 1.45rem);
 }
 .package-box--embedded-compact-header .subtitle.subtitle--header {
   text-align: left;
