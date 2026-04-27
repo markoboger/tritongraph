@@ -271,11 +271,15 @@ function preferredLeafHeight(n: { data?: unknown }): number {
 }
 
 function preferredLeafWidth(n: { data?: unknown }): number {
+  return explicitPreferredLeafWidth(n) ?? MODULE_W
+}
+
+function explicitPreferredLeafWidth(n: { data?: unknown }): number | null {
   const raw =
     n.data && typeof n.data === 'object'
       ? (n.data as Record<string, unknown>).preferredLeafWidth
       : undefined
-  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : MODULE_W
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null
 }
 
 function preferredGroupHeight(n: { data?: unknown }): number | null {
@@ -565,7 +569,10 @@ function layoutOneParent(
     const remainingH = Math.max(0, stackBand - sumGroupH - totalGaps)
     const leafH = numLeaves > 0 ? Math.max(LEAF_MIN_H, remainingH / numLeaves) : Math.max(LEAF_MIN_H, stackBand)
     const maxChildW = visibleLayerNodes.reduce(
-      (m, _c, i) => Math.max(m, childSizes[i]!.w),
+      (m, c, i) => Math.max(
+        m,
+        isLeafBoxNode(c) ? (explicitPreferredLeafWidth(c) ?? 0) : childSizes[i]!.w,
+      ),
       0,
     )
     const baseColW = Math.max(LEAF_MIN_W, columnInner[d] ?? LEAF_MIN_W)

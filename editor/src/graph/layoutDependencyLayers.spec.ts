@@ -316,6 +316,24 @@ describe('layoutDepthInViewport', () => {
     expect(out[0]?.position.x).toBe(28)
     expect(out[0]?.width).toBeGreaterThan(400)
   })
+
+  it('lets long package import chains shrink below slim breakpoints under pressure', () => {
+    const nodes = Array.from({ length: 12 }, (_, i) => ({
+      id: `p${i}`,
+      type: 'package',
+      position: { x: 0, y: 0 },
+      data: {},
+    }))
+    const edges = Array.from({ length: 11 }, (_, i) => ({
+      source: `p${i}`,
+      target: `p${i + 1}`,
+      label: 'imports',
+    }))
+
+    const out = layoutDepthInViewport(nodes, edges, { width: 1200, height: 1200 })
+    const widths = out.map((n) => Number(n.width))
+    expect(Math.max(...widths)).toBeLessThan(96)
+  })
 })
 
 describe('annotateParallelAggregateEdgeOffsets', () => {
