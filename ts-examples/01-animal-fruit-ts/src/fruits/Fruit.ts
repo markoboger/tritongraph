@@ -1,5 +1,5 @@
 /** Discriminated union used by `Fruit.kind`. */
-export type FruitKind = 'apple' | 'banana'
+export type FruitKind = 'apple' | 'banana' | 'pear' | 'berry'
 
 /**
  * Minimal fruit model for the example.
@@ -9,5 +9,6 @@ export type FruitKind = 'apple' | 'banana'
 export interface Fruit {
   kind: FruitKind
   calories: number
+  sweetness: number
 }
 

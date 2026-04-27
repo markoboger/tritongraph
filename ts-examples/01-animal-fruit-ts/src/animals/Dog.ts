@@ -1,5 +1,6 @@
 import type { Pet } from './Pet'
 import type { Fruit } from '../fruits/Fruit'
+import type { Habitat } from '../habitats/Habitat'
 
 /**
  * Concrete `Pet` implementation.
@@ -25,6 +26,10 @@ export class Dog implements Pet {
 
   likes(_fruit: Fruit): boolean {
     return true
+  }
+
+  canLiveIn(habitat: Habitat): boolean {
+    return habitat.accepts(this)
   }
 }
 

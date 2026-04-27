@@ -1,7 +1,7 @@
-title: 'TypeScript: animal-fruit (mini)'
+title: 'TypeScript: animal-fruit ecosystem'
 description: >-
-  A small TypeScript example showing packages (folders) and artefacts (types/interfaces/classes/functions),
-  with typical relations mapped to Triton’s inner-artefact edge kinds.
+  A TypeScript example showing package folders, artefacts, typed members, and cross-folder imports.
+  The editor regenerates the diagram from the source files in src/.
 resources:
   - id: ts-animal-fruit
     name: ts-animal-fruit
