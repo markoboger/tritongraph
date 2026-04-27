@@ -19,12 +19,14 @@ import { computed } from 'vue'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
 import PackageBox from './PackageBox.vue'
 import ScalaArtefactPanels from './ScalaArtefactPanels.vue'
+import KindBadge from './KindBadge.vue'
 
 const props = defineProps<{
   boxId: string
   label: string
   /** The Scala kind keyword — `class`, `case class`, `object`, `trait`, `enum`, `def`, … */
   subtitle?: string
+  description?: string
   /**
    * Full one-line declaration (`"object Demo extends App"`, `"trait Animal extends Lifeform"`).
    * Forwarded to {@link PackageBox}, which renders it as the focused header subtitle in place of
@@ -44,6 +46,7 @@ const props = defineProps<{
    * still renders its header and keeps the panel count stable.
    */
   constructorParams?: string
+  constructorSignatures?: ReadonlyArray<{ signature: string; startRow: number }>
   /**
    * One-line signatures of `def` members for this artefact (source order, body stripped),
    * paired with the 0-indexed source row of each declaration. The Methods panel renders
@@ -101,6 +104,13 @@ const accent = computed(() => (props.boxColor as string) || boxColorForId(props.
 const kindBadge = computed(() => {
   const k = (props.subtitle ?? '').trim().toLowerCase()
   if (!k) return '?'
+  // TypeScript kinds (used by TS example inner artefacts).
+  if (k === 'interface') return 'I'
+  if (k === 'class') return 'C'
+  if (k === 'function') return 'ƒ'
+  if (k === 'type') return 'τ'
+  if (k === 'enum') return 'E'
+  // Scala kinds.
   if (k === 'case class' || k === 'class') return 'C'
   if (k === 'case object' || k === 'object') return 'O'
   if (k === 'trait') return 'T'
@@ -134,18 +144,16 @@ const kindBadge = computed(() => {
   >
     <template #focused-header-icon>
       <div class="kind-badge-slot kind-badge-slot--header">
-        <span
-          class="kind-badge kind-badge--header"
-          :title="subtitle ?? ''"
-          :style="{ '--box-accent': accent }"
-        >{{ kindBadge }}</span>
+        <KindBadge :text="kindBadge" :title="subtitle ?? ''" :accent="accent" />
       </div>
     </template>
 
     <template #focused-body>
       <ScalaArtefactPanels
         :box-id="boxId"
+        :description="description"
         :constructor-params="constructorParams"
+        :constructor-signatures="constructorSignatures"
         :method-signatures="methodSignatures"
         @open-in-editor="(line?: number) => emit('open-in-editor', line)"
       />
@@ -154,12 +162,6 @@ const kindBadge = computed(() => {
 </template>
 
 <style scoped>
-/*
- * Slot content only — chrome (accent strip, padding, focus outline, tools cluster, tight layout)
- * lives in PackageBox so packages and Scala leaves stay in lock-step. Vue scoped styles still apply
- * to slotted content because they carry the parent-component scope attribute.
- */
-
 .kind-badge-slot {
   display: flex;
   justify-content: center;
@@ -172,22 +174,5 @@ const kindBadge = computed(() => {
   height: 40px;
   margin: 0;
   align-self: flex-start;
-}
-.kind-badge {
-  display: inline-flex;
-  justify-content: center;
-  align-items: center;
-  border-radius: 50%;
-  background: var(--box-accent, steelblue);
-  color: #fff;
-  font-weight: 700;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  letter-spacing: 0.02em;
-  box-shadow: inset 0 0 0 2px rgb(255 255 255 / 0.18), 0 1px 2px rgb(15 23 42 / 0.18);
-}
-.kind-badge--header {
-  width: 36px;
-  height: 36px;
-  font-size: clamp(0.72rem, 11cqw, 1rem);
 }
 </style>

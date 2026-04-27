@@ -20,6 +20,8 @@ const props = defineProps<{
   mode: 'focused' | 'cross-preview'
   edgeMarkerId: string
   topLevelInnerPackages: readonly TritonInnerPackageSpec[]
+  topLevelInnerPackageColumns?: readonly (readonly TritonInnerPackageSpec[])[]
+  expandedInnerPackageId?: string | null
   innerArtefactLayerColumns: readonly string[][]
   focusedInnerArtefactId?: string | null
   innerArtefactFocusActive: boolean
@@ -75,6 +77,20 @@ function scalaIconForKind(subtitle: string | undefined): string {
   if (k === 'enum') return scalaEnumIconUrl
   return scalaIconUrl
 }
+
+function kindBadgeForInnerArtefact(cell: TritonInnerArtefactSpec | undefined): string | null {
+  if (!cell) return null
+  const src = (cell.sourceFile ?? '').toLowerCase()
+  const isTs = src.endsWith('.ts') || src.endsWith('.tsx')
+  const k = (cell.subtitle ?? '').trim().toLowerCase()
+  if (!isTs) return null
+  if (k === 'interface') return 'I'
+  if (k === 'class') return 'C'
+  if (k === 'type') return 'τ'
+  if (k === 'function') return 'ƒ'
+  if (k === 'enum') return 'E'
+  return null
+}
 </script>
 
 <template>
@@ -116,10 +132,106 @@ function scalaIconForKind(subtitle: string | undefined): string {
       <InnerPackageStack
         v-if="mode === 'focused'"
         :packages="topLevelInnerPackages"
+        :package-columns="topLevelInnerPackageColumns"
+        :expanded-package-id="expandedInnerPackageId ?? null"
         :child-package-ports-by-id="childPackagePortsById"
         :bind-slot-el="bindSlotEl"
         :on-inner-card-click="handleInnerCardClick"
-      />
+      >
+        <template #expanded-package>
+          <div
+            v-for="(col, ci) in innerArtefactLayerColumns"
+            :key="'expanded-art-col-' + ci"
+            class="package-box__inner-artefact-col package-box__inner-artefact-col--embedded"
+            :class="{
+              'package-box__inner-artefact-col--focus': innerArtefactFocusActive && col.includes(focusedArtefactId),
+              'package-box__inner-artefact-col--peer': innerArtefactFocusActive && !col.includes(focusedArtefactId),
+            }"
+          >
+            <template v-for="artId in col" :key="artId">
+              <div
+                v-if="mode === 'focused' && innerArtefactFocusActive && focusedArtefactId === artId && artefactCell(artId)"
+                :ref="(el) => bindSlotEl(artId, el)"
+                class="package-box__inner-slot package-box__inner-slot--artefact-layer package-box__inner-slot--artefact-focused-cell"
+                :style="{ '--box-accent': artefactAccent(artId) }"
+                @click="handleFocusedArtefactBackgroundClick"
+              >
+                <span class="package-box__artefact-anchor package-box__artefact-anchor--in" :class="{ 'package-box__artefact-anchor--emph': artefactEmphasized(artId) }" aria-hidden="true" />
+                <span class="package-box__artefact-anchor package-box__artefact-anchor--out" :class="{ 'package-box__artefact-anchor--emph': artefactEmphasized(artId) }" aria-hidden="true" />
+                <ScalaArtefactBox
+                  :box-id="artId"
+                  :label="artefactCell(artId)!.name"
+                  :subtitle="artefactCell(artId)!.subtitle ?? ''"
+                  :declaration="artefactCell(artId)!.declaration"
+                  :description="artefactCell(artId)!.description"
+                  :constructor-params="artefactCell(artId)!.constructorParams"
+                  :constructor-signatures="artefactCell(artId)!.constructorSignatures"
+                  :method-signatures="artefactCell(artId)!.methodSignatures"
+                  :notes="notes"
+                  :box-color="artefactAccent(artId)"
+                  :pinned="artefactPinned(artId)"
+                  inner-diagram-descendant
+                  :show-pin-tool="true"
+                  :show-color-tool="true"
+                  :can-open-in-editor="canOpenArtefactInEditor(artId)"
+                  class="package-box__inner-artefact-focus-card"
+                  @toggle-pin="(ev: MouseEvent) => handleArtefactTogglePin(artId, ev)"
+                  @cycle-color="handleArtefactCycleColor(artId)"
+                  @open-in-editor="(line?: number) => handleOpenArtefactInEditor(artId, line)"
+                />
+              </div>
+              <template
+                v-else-if="
+                  mode === 'focused'
+                    && innerArtefactFocusActive
+                    && col.includes(focusedArtefactId)
+                    && focusedArtefactId !== artId
+                "
+              />
+              <div
+                v-else-if="artefactCell(artId)"
+                :ref="(el) => bindSlotEl(artId, el)"
+                class="package-box__inner-slot package-box__inner-slot--artefact package-box__inner-slot--artefact-layer"
+                :class="{
+                  'package-box__inner-slot--clickable': mode === 'focused',
+                  'package-box__inner-slot--inner-hovered': mode === 'focused' && artefactEmphasized(artId),
+                }"
+                :style="{ '--box-accent': artefactAccent(artId) }"
+                @mouseenter="mode === 'focused' ? handleArtefactSlotEnter(artId) : undefined"
+                @mouseleave="mode === 'focused' ? handleArtefactSlotLeave(artId) : undefined"
+                @click.stop="mode === 'focused' ? handleArtefactRowClick(artId) : undefined"
+              >
+                <DiagramLeafBox
+                  class="package-box__artefact-row"
+                  :label="artefactCell(artId)!.name"
+                  :subtitle="artefactCell(artId)!.declaration || (artefactCell(artId)!.subtitle ?? '')"
+                  :icon-url="
+                    kindBadgeForInnerArtefact(artefactCell(artId)!)
+                      ? undefined
+                      : scalaIconForKind(artefactCell(artId)!.subtitle)
+                  "
+                  :kind-badge="kindBadgeForInnerArtefact(artefactCell(artId)!) ?? undefined"
+                  :icon-alt="
+                    kindBadgeForInnerArtefact(artefactCell(artId)!)
+                      ? ''
+                      : (artefactCell(artId)!.subtitle ?? '')
+                  "
+                  :accent="artefactAccent(artId)"
+                  :coverage-percent="mode === 'focused' && artefactHasCoverage(artId) ? artefactCoveragePercent(artId) : null"
+                  :technical-debt-percent="mode === 'focused' ? artefactMetrics(artId).technicalDebtPercent : null"
+                  :issue-count="mode === 'focused' ? artefactMetrics(artId).issueCount : null"
+                  :issue-level="mode === 'focused' ? artefactMetrics(artId).issueLevel : null"
+                >
+                  <template #overlay>
+                    <span class="package-box__artefact-anchor package-box__artefact-anchor--in" :class="{ 'package-box__artefact-anchor--emph': mode === 'focused' && artefactEmphasized(artId) }" aria-hidden="true" />
+                    <span class="package-box__artefact-anchor package-box__artefact-anchor--out" :class="{ 'package-box__artefact-anchor--emph': mode === 'focused' && artefactEmphasized(artId) }" aria-hidden="true" />
+                  </template>
+                </DiagramLeafBox>
+              </div>
+            </template>
+          </div>
+        </template>
+      </InnerPackageStack>
 
       <div class="package-box__inner-port-layer">
         <InnerDiagramPorts
@@ -132,7 +244,7 @@ function scalaIconForKind(subtitle: string | undefined): string {
       </div>
 
       <div
-        v-for="(col, ci) in innerArtefactLayerColumns"
+        v-for="(col, ci) in expandedInnerPackageId ? [] : innerArtefactLayerColumns"
         :key="'col-' + ci"
         class="package-box__inner-artefact-col"
         :class="{
@@ -155,7 +267,9 @@ function scalaIconForKind(subtitle: string | undefined): string {
               :label="artefactCell(artId)!.name"
               :subtitle="artefactCell(artId)!.subtitle ?? ''"
               :declaration="artefactCell(artId)!.declaration"
+              :description="artefactCell(artId)!.description"
               :constructor-params="artefactCell(artId)!.constructorParams"
+              :constructor-signatures="artefactCell(artId)!.constructorSignatures"
               :method-signatures="artefactCell(artId)!.methodSignatures"
               :notes="notes"
               :box-color="artefactAccent(artId)"
@@ -194,9 +308,18 @@ function scalaIconForKind(subtitle: string | undefined): string {
             <DiagramLeafBox
               class="package-box__artefact-row"
               :label="artefactCell(artId)!.name"
-              :subtitle="artefactCell(artId)!.subtitle ?? ''"
-              :icon-url="scalaIconForKind(artefactCell(artId)!.subtitle)"
-              :icon-alt="artefactCell(artId)!.subtitle ?? ''"
+              :subtitle="artefactCell(artId)!.declaration || (artefactCell(artId)!.subtitle ?? '')"
+              :icon-url="
+                kindBadgeForInnerArtefact(artefactCell(artId)!)
+                  ? undefined
+                  : scalaIconForKind(artefactCell(artId)!.subtitle)
+              "
+              :kind-badge="kindBadgeForInnerArtefact(artefactCell(artId)!) ?? undefined"
+              :icon-alt="
+                kindBadgeForInnerArtefact(artefactCell(artId)!)
+                  ? ''
+                  : (artefactCell(artId)!.subtitle ?? '')
+              "
               :accent="artefactAccent(artId)"
               :coverage-percent="mode === 'focused' && artefactHasCoverage(artId) ? artefactCoveragePercent(artId) : null"
               :technical-debt-percent="mode === 'focused' ? artefactMetrics(artId).technicalDebtPercent : null"
@@ -376,6 +499,9 @@ function scalaIconForKind(subtitle: string | undefined): string {
   flex: 0 0 var(--triton-inner-artefact-preferred-h);
   min-height: var(--triton-inner-artefact-min-h);
   align-self: stretch;
+}
+.package-box__inner-artefact-col--embedded .package-box__inner-slot.package-box__inner-slot--artefact-layer {
+  flex-basis: clamp(82px, 16cqh, 132px);
 }
 .package-box__inner-slot.package-box__inner-slot--artefact-layer .package-box__artefact-row {
   flex: 1 1 0;

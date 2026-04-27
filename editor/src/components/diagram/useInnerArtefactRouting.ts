@@ -47,7 +47,6 @@ export function useInnerArtefactRouting(options: RoutingOptions) {
   }
 
   const crossPackageBridgeRelations = computed((): readonly BridgeRelation[] => {
-    if (options.innerDrillPath().length > 0) return []
     if (!options.focused() && !options.crossPackagePreviewActive()) return []
 
     const innerPackages = options.innerPackages()
@@ -56,7 +55,7 @@ export function useInnerArtefactRouting(options: RoutingOptions) {
 
     const localArtefactIds = new Set(innerArtefacts.map((a) => a.id))
     const childPackageIds = innerPackages.map((p) => p.id)
-    const mapForeignArtefactToChildPackage = (artefactId: string): string | null => {
+    const mapArtefactToChildPackage = (artefactId: string): string | null => {
       const pkgId = artefactPackageId(artefactId)
       if (!pkgId) return null
       for (const childId of childPackageIds) {
@@ -68,19 +67,47 @@ export function useInnerArtefactRouting(options: RoutingOptions) {
     const out: BridgeRelation[] = []
     const seen = new Set<string>()
     for (const rel of options.visibleCrossArtefactRelations()) {
+      if (rel.label === 'imports' && childPackageIds.includes(rel.from) && childPackageIds.includes(rel.to)) {
+        if (rel.from === rel.to) continue
+        const key = `${rel.from}\u0001${rel.to}\u0001${rel.label}\u0001${rel.wrapperName ?? ''}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push({ from: rel.from, to: rel.to, label: rel.label, ...(rel.wrapperName ? { wrapperName: rel.wrapperName } : {}) })
+        continue
+      }
+
       const fromLocal = localArtefactIds.has(rel.from)
       const toLocal = localArtefactIds.has(rel.to)
+
+      // Case A: relation crosses packages *within* this root scope (both endpoints local).
+      // We collapse it to a package → package bridge so the root view can show folder imports
+      // even when individual artefacts are not rendered as rows.
+      if (fromLocal && toLocal) {
+        const fromPkg = mapArtefactToChildPackage(rel.from)
+        const toPkg = mapArtefactToChildPackage(rel.to)
+        if (!fromPkg || !toPkg) continue
+        if (fromPkg === toPkg) continue
+        const wrapperName = rel.wrapperName ?? ''
+        const key = `${fromPkg}\u0001${toPkg}\u0001${rel.label}\u0001${wrapperName}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push({ from: fromPkg, to: toPkg, label: rel.label, ...(wrapperName ? { wrapperName } : {}) })
+        continue
+      }
+
+      // Case B: relation truly crosses the boundary (one endpoint local, one foreign).
       if (fromLocal === toLocal) continue
       const localId = fromLocal ? rel.from : rel.to
       const foreignId = fromLocal ? rel.to : rel.from
-      const childPackageId = mapForeignArtefactToChildPackage(foreignId)
+      const childPackageId = mapArtefactToChildPackage(foreignId)
       if (!childPackageId) continue
       const from = fromLocal ? localId : childPackageId
       const to = fromLocal ? childPackageId : localId
       const key = `${from}\u0001${to}\u0001${rel.label}\u0001${rel.wrapperName ?? ''}`
       if (seen.has(key)) continue
       seen.add(key)
-      out.push({ from, to, label: rel.label, ...(rel.wrapperName ? { wrapperName: rel.wrapperName } : {}) })
+      const wrapperName = rel.wrapperName ?? ''
+      out.push({ from, to, label: rel.label, ...(wrapperName ? { wrapperName } : {}) })
     }
     return out
   })

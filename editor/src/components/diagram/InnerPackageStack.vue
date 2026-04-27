@@ -5,6 +5,8 @@ import { childPackagePortId, type PortEndpoint } from './innerArtefactGraphHelpe
 
 defineProps<{
   packages: readonly TritonInnerPackageSpec[]
+  packageColumns?: readonly (readonly TritonInnerPackageSpec[])[]
+  expandedPackageId?: string | null
   childPackagePortsById: Map<string, PortEndpoint>
   bindSlotEl: (id: string, el: unknown) => void
   onInnerCardClick: (id: string) => void
@@ -12,8 +14,60 @@ defineProps<{
 </script>
 
 <template>
-  <div v-if="packages.length" class="package-box__inner-package-stack">
-    <div v-for="child in packages" :key="child.id" class="package-box__inner-package-row">
+  <div
+    v-if="packages.length"
+    class="package-box__inner-package-stack"
+    :class="{ 'package-box__inner-package-stack--columns': (packageColumns?.length ?? 0) > 1 }"
+  >
+    <template v-if="(packageColumns?.length ?? 0) > 0">
+      <div v-for="(col, ci) in packageColumns" :key="'pkgcol-' + ci" class="package-box__inner-package-col">
+        <div v-for="child in col" :key="child.id" class="package-box__inner-package-row">
+          <div
+            v-if="childPackagePortsById.get(childPackagePortId(child.id, 'left'))"
+            class="package-box__inner-package-port-anchor package-box__inner-package-port-anchor--left"
+            aria-hidden="true"
+          >
+            <div
+              :ref="(el) => bindSlotEl(childPackagePortId(child.id, 'left'), el)"
+              class="package-box__port package-box__port--left"
+            />
+          </div>
+          <div
+            :ref="(el) => bindSlotEl(child.id, el)"
+            class="package-box__inner-slot package-box__inner-slot--clickable package-box__inner-slot--inner-package"
+            :class="{ 'package-box__inner-slot--inner-package-expanded': expandedPackageId === child.id }"
+            @click.stop="onInnerCardClick(child.id)"
+          >
+            <PackageBox
+              embedded
+              :box-id="child.id"
+              :label="child.name"
+              :subtitle="child.subtitle ?? ''"
+              :focused="false"
+              :pinned="false"
+              :show-pin-tool="false"
+              :show-color-tool="false"
+            >
+              <div v-if="expandedPackageId === child.id" class="package-box__expanded-inner-diagram" @click.stop>
+                <slot name="expanded-package" />
+              </div>
+            </PackageBox>
+          </div>
+          <div
+            v-if="childPackagePortsById.get(childPackagePortId(child.id, 'right'))"
+            class="package-box__inner-package-port-anchor package-box__inner-package-port-anchor--right"
+            aria-hidden="true"
+          >
+            <div
+              :ref="(el) => bindSlotEl(childPackagePortId(child.id, 'right'), el)"
+              class="package-box__port package-box__port--right"
+            />
+          </div>
+        </div>
+      </div>
+    </template>
+    <template v-else>
+      <div v-for="child in packages" :key="child.id" class="package-box__inner-package-row">
       <div
         v-if="childPackagePortsById.get(childPackagePortId(child.id, 'left'))"
         class="package-box__inner-package-port-anchor package-box__inner-package-port-anchor--left"
@@ -27,6 +81,7 @@ defineProps<{
       <div
         :ref="(el) => bindSlotEl(child.id, el)"
         class="package-box__inner-slot package-box__inner-slot--clickable package-box__inner-slot--inner-package"
+        :class="{ 'package-box__inner-slot--inner-package-expanded': expandedPackageId === child.id }"
         @click.stop="onInnerCardClick(child.id)"
       >
         <PackageBox
@@ -38,7 +93,11 @@ defineProps<{
           :pinned="false"
           :show-pin-tool="false"
           :show-color-tool="false"
-        />
+        >
+          <div v-if="expandedPackageId === child.id" class="package-box__expanded-inner-diagram" @click.stop>
+            <slot name="expanded-package" />
+          </div>
+        </PackageBox>
       </div>
       <div
         v-if="childPackagePortsById.get(childPackagePortId(child.id, 'right'))"
@@ -51,11 +110,30 @@ defineProps<{
         />
       </div>
     </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
 .package-box__inner-package-stack {
+  flex: 0 0 clamp(156px, 22cqw, 232px);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: stretch;
+  gap: 10px;
+  overflow: visible;
+}
+.package-box__inner-package-stack--columns {
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+.package-box__inner-package-col {
   flex: 0 0 clamp(156px, 22cqw, 232px);
   min-width: 0;
   min-height: 0;
@@ -113,6 +191,16 @@ defineProps<{
   width: 100%;
   max-width: 100%;
   align-self: stretch;
+}
+.package-box__expanded-inner-diagram {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 10px;
+  overflow: visible;
 }
 .package-box__inner-slot--clickable {
   cursor: pointer;

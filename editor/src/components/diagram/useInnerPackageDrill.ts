@@ -1,5 +1,6 @@
 import { computed } from 'vue'
 import type { TritonInnerArtefactSpec, TritonInnerPackageSpec } from '../../ilograph/types'
+import { artefactPackageId } from './innerArtefactGraphHelpers'
 
 type InnerPackageDrillOptions = {
   innerPackages: () => readonly TritonInnerPackageSpec[]
@@ -39,9 +40,27 @@ export function useInnerPackageDrill(options: InnerPackageDrillOptions) {
   })
 
   const hasInnerDiagram = computed(
-    () =>
-      options.innerPackages().length > 0
-      || (options.innerArtefacts().length > 0 && !innerDrillPathArr.value.length),
+    () => {
+      const innerPackages = options.innerPackages()
+      if (innerPackages.length > 0) return true
+
+      const innerArtefacts = options.innerArtefacts()
+      if (!innerArtefacts.length) return false
+
+      const drillPath = innerDrillPathArr.value
+      if (!drillPath.length) return true
+
+      const active = activeInnerSpec.value
+      if (!active) return false
+
+      const activeId = active.id
+      if ((active.innerPackages?.length ?? 0) > 0) return true
+
+      return innerArtefacts.some((a) => {
+        const pkgId = artefactPackageId(a.id)
+        return pkgId === activeId || pkgId.startsWith(`${activeId}.`)
+      })
+    },
   )
 
   function onInnerCardClick(id: string) {

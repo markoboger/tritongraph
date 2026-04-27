@@ -7,7 +7,9 @@ import TestChecklistBlock from '../TestChecklistBlock.vue'
 
 const props = defineProps<{
   boxId: string
+  description?: string
   constructorParams?: string
+  constructorSignatures?: ReadonlyArray<{ signature: string; startRow: number }>
   methodSignatures?: ReadonlyArray<{ signature: string; startRow: number }>
 }>()
 
@@ -18,8 +20,8 @@ const emit = defineEmits<{
 type PanelId = 'doc' | 'arguments' | 'methods' | 'coverage' | 'checklist' | 'issues'
 const PANEL_DEFS: ReadonlyArray<{ id: PanelId; label: string }> = [
   { id: 'doc', label: 'Documentation' },
-  { id: 'arguments', label: 'Arguments' },
-  { id: 'methods', label: 'Methods' },
+  { id: 'arguments', label: 'Constructors' },
+  { id: 'methods', label: 'Functions' },
   { id: 'coverage', label: 'Tests and Specs' },
   { id: 'checklist', label: 'Test run checklist' },
   { id: 'issues', label: 'Issues' },
@@ -45,6 +47,12 @@ function lineCount(s: string): number {
 
 const methodSignaturesText = computed(() => {
   const sigs = props.methodSignatures
+  if (!Array.isArray(sigs)) return ''
+  return sigs.map((s) => s.signature).join('\n')
+})
+
+const constructorSignaturesText = computed(() => {
+  const sigs = props.constructorSignatures
   if (!Array.isArray(sigs)) return ''
   return sigs.map((s) => s.signature).join('\n')
 })
@@ -175,6 +183,16 @@ function onMethodLineClick(ev: { index: number }): void {
   emit('open-in-editor')
 }
 
+function onConstructorLineClick(ev: { index: number }): void {
+  const sigs = props.constructorSignatures ?? []
+  const entry = sigs[ev.index]
+  if (entry && Number.isFinite(entry.startRow)) {
+    emit('open-in-editor', entry.startRow)
+    return
+  }
+  emit('open-in-editor')
+}
+
 function onArgumentsLineClick(): void {
   emit('open-in-editor')
 }
@@ -216,21 +234,29 @@ function onSpecLineClick(ev: { index: number }): void {
       </button>
       <div class="artefact-body__panel-body">
         <template v-if="panel.id === 'doc'">
-          <p v-if="scalaDocRef" class="artefact-body__doc">{{ scalaDocRef }}</p>
+          <p v-if="props.description" class="artefact-body__doc">{{ props.description }}</p>
+          <p v-else-if="scalaDocRef" class="artefact-body__doc">{{ scalaDocRef }}</p>
           <p v-else class="artefact-body__placeholder artefact-body__placeholder--small">
             No Scaladoc comment precedes this declaration.
           </p>
         </template>
         <template v-else-if="panel.id === 'arguments'">
           <ShikiCodeBlock
-            v-if="argumentsSnippet"
+            v-if="constructorSignaturesText"
+            :code="constructorSignaturesText"
+            lang="scala"
+            clickable
+            @line-click="onConstructorLineClick"
+          />
+          <ShikiCodeBlock
+            v-else-if="argumentsSnippet"
             :code="argumentsSnippet"
             lang="scala"
             clickable
             @line-click="onArgumentsLineClick"
           />
           <p v-else class="artefact-body__placeholder artefact-body__placeholder--small">
-            No constructor arguments.
+            No constructors.
           </p>
         </template>
         <template v-else-if="panel.id === 'methods'">

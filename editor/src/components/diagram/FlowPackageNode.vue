@@ -52,6 +52,8 @@ const props = defineProps<{
      * and classes without a parameter clause; the panel then shows a short placeholder.
      */
     constructorParams?: string
+    /** Constructor signatures (full lines) with source rows for click-to-open. */
+    constructorSignatures?: ReadonlyArray<{ signature: string; startRow: number }>
     /**
      * Scala `def` member signatures for a Scala artefact leaf. Each entry carries the
      * signature text plus the 0-indexed source row of its declaration — the box uses the row
@@ -343,7 +345,9 @@ onUnmounted(() => {
       :label="data.label"
       :subtitle="data.subtitle"
       :declaration="data.declaration"
+      :description="data.description"
       :constructor-params="data.constructorParams"
+      :constructor-signatures="data.constructorSignatures"
       :method-signatures="data.methodSignatures"
       :notes="data.drillNote"
       :box-color="data.boxColor"
@@ -361,6 +365,7 @@ onUnmounted(() => {
       :box-id="id"
       :label="data.label"
       :subtitle="data.subtitle ?? ''"
+      :declaration="data.declaration"
       description=""
       :notes="data.drillNote"
       :box-color="data.boxColor"

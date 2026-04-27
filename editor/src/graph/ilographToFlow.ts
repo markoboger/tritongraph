@@ -97,12 +97,15 @@ function normalizeInnerArtefactSpec(raw: unknown): TritonInnerArtefactSpec | nul
   const name = typeof o.name === 'string' && o.name ? o.name : o.id
   const subtitle =
     typeof o.subtitle === 'string' && o.subtitle.trim() ? String(o.subtitle) : undefined
+  const description =
+    typeof o.description === 'string' && o.description.trim() ? String(o.description) : undefined
   const declaration =
     typeof o.declaration === 'string' && o.declaration.trim() ? String(o.declaration) : undefined
   const constructorParams =
     typeof o.constructorParams === 'string' && o.constructorParams.trim()
       ? String(o.constructorParams)
       : undefined
+  const constructorSignatures = normalizeMethodSignatureArray(o.constructorSignatures)
   const methodSignatures = normalizeMethodSignatureArray(o.methodSignatures)
   const sourceFile =
     typeof o.sourceFile === 'string' && o.sourceFile.trim() ? String(o.sourceFile) : undefined
@@ -112,8 +115,10 @@ function normalizeInnerArtefactSpec(raw: unknown): TritonInnerArtefactSpec | nul
     id: o.id,
     name,
     ...(subtitle ? { subtitle } : {}),
+    ...(description ? { description } : {}),
     ...(declaration ? { declaration } : {}),
     ...(constructorParams ? { constructorParams } : {}),
+    ...(constructorSignatures.length ? { constructorSignatures } : {}),
     ...(methodSignatures.length ? { methodSignatures } : {}),
     ...(sourceFile ? { sourceFile } : {}),
     ...(sourceRow !== undefined ? { sourceRow } : {}),
@@ -155,7 +160,19 @@ function normalizeInnerArtefactRelationSpec(raw: unknown): TritonInnerArtefactRe
   if (typeof o.to !== 'string' || !o.to) return null
   /** Unknown labels fall back to `extends` so a hand-edited YAML with a typo still renders. */
   const label: TritonInnerArtefactRelationSpec['label'] =
-    o.label === 'with' ? 'with' : o.label === 'gets' ? 'gets' : o.label === 'creates' ? 'creates' : 'extends'
+    o.label === 'with'
+      ? 'with'
+      : o.label === 'implements'
+        ? 'implements'
+        : o.label === 'returns'
+          ? 'returns'
+        : o.label === 'imports'
+          ? 'imports'
+        : o.label === 'gets'
+          ? 'gets'
+          : o.label === 'creates'
+            ? 'creates'
+            : 'extends'
   const wrapperName = typeof o.wrapperName === 'string' ? o.wrapperName : undefined
   return { from: o.from, to: o.to, label, ...(wrapperName ? { wrapperName } : {}) }
 }

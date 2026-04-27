@@ -52,6 +52,8 @@ export type TritonInnerArtefactSpec = {
   name: string
   /** Scala kind keyword (`case class`, `object`, `trait`, …). */
   subtitle?: string
+  /** Human-written docs for the Documentation panel (optional; used by TS examples too). */
+  description?: string
   /**
    * Full one-line declaration (`"object Demo extends App"`, `"trait Animal extends Lifeform"`).
    * Rendered as the focused header subtitle instead of the kind keyword when available —
@@ -66,6 +68,14 @@ export type TritonInnerArtefactSpec = {
    * the box then shows a short placeholder so the panel still has chrome.
    */
   constructorParams?: string
+  /**
+   * One-line constructor signatures (source order), paired with 0-indexed source rows so the
+   * focused Constructors panel can open the declaration in an external editor.
+   *
+   * TypeScript classes may have at most one `constructor(...)`, but we accept multiple entries
+   * for parity with Scala (multiple parameter clauses) and for future languages.
+   */
+  constructorSignatures?: ReadonlyArray<TritonMethodSignature>
   /**
    * One-line signatures of `def` members for this artefact (source order, body stripped),
    * each paired with a 0-indexed source row so the focused Methods panel can open the
@@ -109,7 +119,7 @@ export type TritonInnerArtefactSpec = {
 export type TritonInnerArtefactRelationSpec = {
   from: string
   to: string
-  label: 'extends' | 'with' | 'gets' | 'creates'
+  label: 'extends' | 'with' | 'implements' | 'returns' | 'imports' | 'gets' | 'creates'
   wrapperName?: string
 }
 

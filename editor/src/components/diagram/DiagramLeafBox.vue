@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import BoxMetricStrip, { type BoxIssueLevel } from '../common/BoxMetricStrip.vue'
+import KindBadge from './KindBadge.vue'
 import {
   nextCompactLayout,
   nextFlatLayout,
@@ -13,8 +14,9 @@ import {
 const props = defineProps<{
   label: string
   subtitle?: string
-  iconUrl: string
+  iconUrl?: string
   iconAlt?: string
+  kindBadge?: string
   accent: string
   coveragePercent?: number | null
   technicalDebtPercent?: number | null
@@ -136,7 +138,15 @@ onUnmounted(() => {
     </div>
     <slot name="overlay" />
     <div class="diagram-leaf-box__icon">
-      <img class="diagram-leaf-box__icon-img" :src="iconUrl" :alt="iconAlt ?? ''" aria-hidden="true" decoding="async" />
+      <img
+        v-if="iconUrl"
+        class="diagram-leaf-box__icon-img"
+        :src="iconUrl"
+        :alt="iconAlt ?? ''"
+        aria-hidden="true"
+        decoding="async"
+      />
+      <KindBadge v-else-if="kindBadge" :text="kindBadge" :title="subtitle ?? ''" :accent="accent" />
     </div>
     <div
       class="diagram-leaf-box__text"

@@ -1,0 +1,114 @@
+title: 'TypeScript: animal-fruit (mini)'
+description: >-
+  A small TypeScript example showing packages (folders) and artefacts (types/interfaces/classes/functions),
+  with typical relations mapped to Triton’s inner-artefact edge kinds.
+resources:
+  - id: ts-animal-fruit
+    name: ts-animal-fruit
+    subtitle: TypeScript example
+    x-triton-node-type: package
+    x-triton-inner-packages:
+      - id: animals
+        name: animals
+      - id: fruits
+        name: fruits
+      - id: registry
+        name: registry
+    x-triton-inner-artefacts:
+      # animals
+      - id: animals::interface:Animal
+        name: Animal
+        subtitle: interface
+        declaration: 'interface Animal'
+        sourceFile: src/animals/Animal.ts
+        sourceRow: 6
+        methodSignatures:
+          - signature: 'speak(): string'
+            startRow: 9
+      - id: animals::interface:Pet
+        name: Pet
+        subtitle: interface
+        declaration: 'interface Pet extends Animal'
+        sourceFile: src/animals/Pet.ts
+        sourceRow: 7
+      - id: animals::class:Dog
+        name: Dog
+        subtitle: class
+        declaration: 'class Dog implements Pet'
+        sourceFile: src/animals/Dog.ts
+        sourceRow: 11
+        constructorSignatures:
+          - signature: 'constructor(name: string, owner: string)'
+            startRow: 16
+        methodSignatures:
+          - signature: 'speak(): string'
+            startRow: 21
+          - signature: 'likes(fruit: Fruit): boolean'
+            startRow: 25
+      # fruits
+      - id: fruits::type:FruitKind
+        name: FruitKind
+        subtitle: type
+        declaration: "type FruitKind = 'apple' | 'banana'"
+        sourceFile: src/fruits/Fruit.ts
+        sourceRow: 1
+      - id: fruits::interface:Fruit
+        name: Fruit
+        subtitle: interface
+        declaration: 'interface Fruit'
+        sourceFile: src/fruits/Fruit.ts
+        sourceRow: 8
+      - id: fruits::class:Apple
+        name: Apple
+        subtitle: class
+        declaration: 'class Apple implements Fruit'
+        sourceFile: src/fruits/Apple.ts
+        sourceRow: 7
+        constructorSignatures:
+          - signature: 'constructor(calories = 95)'
+            startRow: 11
+      # registry
+      - id: registry::interface:Registry
+        name: Registry
+        subtitle: interface
+        declaration: 'interface Registry'
+        sourceFile: src/registry/Registry.ts
+        sourceRow: 6
+      - id: registry::function:createEmptyRegistry
+        name: createEmptyRegistry
+        subtitle: function
+        declaration: 'function createEmptyRegistry(): Registry'
+        sourceFile: src/registry/Registry.ts
+        sourceRow: 14
+        methodSignatures:
+          - signature: 'createEmptyRegistry(): Registry'
+            startRow: 14
+    x-triton-inner-artefact-relations:
+      # extends / with (TS: extends / implements)
+      - from: animals::interface:Pet
+        to: animals::interface:Animal
+        label: extends
+      - from: animals::class:Dog
+        to: animals::interface:Pet
+        label: implements
+      - from: fruits::class:Apple
+        to: fruits::interface:Fruit
+        label: implements
+      # imports (TS: import statement across folders)
+      - from: animals::class:Dog
+        to: fruits::interface:Fruit
+        label: imports
+      - from: registry::interface:Registry
+        to: animals::interface:Animal
+        label: imports
+      - from: registry::interface:Registry
+        to: fruits::interface:Fruit
+        label: imports
+      # returns (TS: return type)
+      - from: registry::function:createEmptyRegistry
+        to: registry::interface:Registry
+        label: returns
+perspectives:
+  - name: dependencies
+    relations: []
+

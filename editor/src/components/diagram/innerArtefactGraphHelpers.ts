@@ -3,9 +3,12 @@ import {
   SCALA_EXTENDS_STROKE,
   SCALA_GETS_STROKE,
   SCALA_HAS_TRAIT_STROKE,
+  TS_IMPORTS_STROKE,
+  TS_IMPLEMENTS_STROKE,
+  TS_RETURNS_STROKE,
 } from '../../graph/relationKinds'
 
-export type InnerRelationKind = 'extends' | 'with' | 'gets' | 'creates'
+export type InnerRelationKind = 'extends' | 'with' | 'implements' | 'returns' | 'imports' | 'gets' | 'creates'
 
 export type BridgeRelation = {
   from: string
@@ -65,6 +68,9 @@ export function artefactSimpleName(artefactId: string): string {
 
 export function innerArtefactRelationStroke(label: string): { kind: InnerRelationKind; stroke: string } {
   if (label === 'with') return { kind: 'with', stroke: SCALA_HAS_TRAIT_STROKE }
+  if (label === 'implements') return { kind: 'implements', stroke: TS_IMPLEMENTS_STROKE }
+  if (label === 'returns') return { kind: 'returns', stroke: TS_RETURNS_STROKE }
+  if (label === 'imports') return { kind: 'imports', stroke: TS_IMPORTS_STROKE }
   if (label === 'gets') return { kind: 'gets', stroke: SCALA_GETS_STROKE }
   if (label === 'creates') return { kind: 'creates', stroke: SCALA_CREATES_STROKE }
   return { kind: 'extends', stroke: SCALA_EXTENDS_STROKE }
@@ -72,6 +78,9 @@ export function innerArtefactRelationStroke(label: string): { kind: InnerRelatio
 
 export function innerArtefactEdgeDisplayLabel(kind: InnerRelationKind, wrapperName?: string): string {
   if (kind === 'with') return 'has trait'
+  if (kind === 'implements') return 'implements'
+  if (kind === 'returns') return 'returns'
+  if (kind === 'imports') return 'imports'
   if (kind === 'gets') return wrapperName ? `gets as ${wrapperName}` : 'gets'
   if (kind === 'creates') return 'creates'
   return 'extends'
@@ -79,6 +88,9 @@ export function innerArtefactEdgeDisplayLabel(kind: InnerRelationKind, wrapperNa
 
 export function innerEdgeMarkerSuffix(kind: InnerRelationKind): string {
   if (kind === 'with') return 'hastrait'
+  if (kind === 'implements') return 'implements'
+  if (kind === 'returns') return 'returns'
+  if (kind === 'imports') return 'imports'
   if (kind === 'gets') return 'gets'
   if (kind === 'creates') return 'creates'
   return 'extends'

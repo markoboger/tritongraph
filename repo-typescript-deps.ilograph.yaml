@@ -1,0 +1,46 @@
+title: 'Triton repo: TypeScript import dependencies + sbt correspondence'
+description: >-
+  Package-level graph derived from repo-local relative imports (including <script> blocks in .vue files). Also includes
+  correspondence edges to sbt example roots used as inputs.
+resources:
+  - id: editor
+    name: editor
+    subtitle: 259 imports scanned
+  - id: packages/triton-core
+    name: packages/triton-core
+    subtitle: 15 imports scanned
+  - id: packages/triton-runtime
+    name: packages/triton-runtime
+    subtitle: 0 imports scanned
+  - id: packages/triton-vscode-extension
+    name: packages/triton-vscode-extension
+    subtitle: 0 imports scanned
+  - id: tools/sbt-to-ilograph
+    name: tools/sbt-to-ilograph
+    subtitle: 0 imports scanned
+  - id: tools/ts-to-ilograph
+    name: tools/ts-to-ilograph
+    subtitle: 0 imports scanned
+  - id: sbt-examples
+    name: sbt-examples
+    subtitle: example build.sbt inputs
+  - id: scala-examples
+    name: scala-examples
+    subtitle: example Scala workspaces (sbt)
+perspectives:
+  - name: typescript imports
+    relations:
+      - from: editor
+        to: packages/triton-core
+        label: imports
+  - name: sbt correspondence
+    relations:
+      - from: editor
+        to: sbt-examples
+        label: loads examples
+      - from: editor
+        to: scala-examples
+        label: loads examples
+      - from: tools/sbt-to-ilograph
+        to: sbt-examples
+        label: generates diagrams

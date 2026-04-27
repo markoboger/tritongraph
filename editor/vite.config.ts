@@ -8,6 +8,7 @@ import { sbtTestLogsVirtualModule } from './vite-plugin-sbt-test-logs'
 import { scalaSourcesVirtualModule } from './vite-plugin-scala-sources'
 import { scoverageReportsVirtualModule } from './vite-plugin-scoverage-reports'
 import { tritonConfigVirtualModule } from './vite-plugin-triton-config'
+import { tsExamplesVirtualModule } from './vite-plugin-ts-examples'
 
 const require = createRequire(import.meta.url)
 const monacoEditorMod = require('vite-plugin-monaco-editor') as
@@ -30,11 +31,13 @@ const exampleRoots = [
   { name: 'sbt-examples', dir: path.resolve(repoRoot, 'sbt-examples') },
   { name: 'scala-examples', dir: path.resolve(repoRoot, 'scala-examples') },
 ]
+const tsExampleRoots = [{ name: 'ts-examples', dir: path.resolve(repoRoot, 'ts-examples') }]
 
 export default defineConfig({
   plugins: [
     vue(),
     sbtExamplesVirtualModule(exampleRoots),
+    tsExamplesVirtualModule(tsExampleRoots),
     sbtTestLogsVirtualModule(exampleRoots),
     scalaSourcesVirtualModule(exampleRoots),
     scoverageReportsVirtualModule(exampleRoots),

@@ -46,8 +46,11 @@ import { usePackageBoxChromeLayout } from './usePackageBoxChromeLayout'
 import { useInnerArtefactState } from './useInnerArtefactState'
 import { useInnerPackageDrill } from './useInnerPackageDrill'
 import { useInnerArtefactLayering } from './useInnerArtefactLayering'
+import { artefactPackageId } from './innerArtefactGraphHelpers'
+import { assignInnerArtefactLayers } from '../../graph/innerArtefactLayerLayout'
 import ScalaArtefactBox from './ScalaArtefactBox.vue'
 import InnerDiagramScrollRails from './InnerDiagramScrollRails.vue'
+import KindBadge from './KindBadge.vue'
 
 /**
  * Pick the kind-specific Scala badge (class / trait / object / enum) for a Scala leaf
@@ -65,6 +68,17 @@ function scalaIconForKind(subtitle: string | undefined): string {
   if (k === 'trait') return scalaTraitIconUrl
   if (k === 'enum') return scalaEnumIconUrl
   return scalaIconUrl
+}
+
+function kindBadgeForLeafArtefact(subtitle: string | undefined): string | null {
+  const k = (subtitle ?? '').trim().toLowerCase()
+  // For TS examples we use these as the "kind" values; show the same badge when unfocused.
+  if (k === 'interface') return 'I'
+  if (k === 'class') return 'C'
+  if (k === 'type') return 'τ'
+  if (k === 'function') return 'ƒ'
+  if (k === 'enum') return 'E'
+  return null
 }
 
 export type InnerPackageSummary = TritonInnerPackageSpec
@@ -204,30 +218,6 @@ const relationTypeVisibilityRef = inject<Ref<Record<string, boolean>>>(
 )
 const focusRelationDepthRef = inject<Ref<number>>('tritonFocusRelationDepth', ref(1))
 
-const {
-  innerCoverageVersion,
-  innerArtefactCell,
-  openInnerArtefactInEditor,
-  canOpenInnerArtefactInEditor,
-  innerHasCoverage,
-  innerCoveragePercentValue,
-  innerSimulatedMetrics,
-  isInnerArtefactPinned,
-  innerArtefactAccent,
-  onInnerArtefactTogglePin,
-  onInnerArtefactCycleColor,
-  onArtefactRowClick,
-  onFocusedArtefactBackgroundClick,
-} = useInnerArtefactState({
-  innerArtefacts: () => props.innerArtefacts,
-  innerArtefactPinned: () => props.innerArtefactPinned,
-  innerArtefactColors: () => props.innerArtefactColors,
-  updateInnerArtefactPinned: (next) => emit('update-inner-artefact-pinned', next),
-  updateInnerArtefactColors: (next) => emit('update-inner-artefact-colors', next),
-  updateInnerArtefactFocus: (id) => emit('update-inner-artefact-focus', id),
-})
-
-
 /**
  * Real coverage percentage from Scoverage (when available).
  *
@@ -253,6 +243,65 @@ const {
   updateInnerArtefactFocus: (id) => emit('update-inner-artefact-focus', id),
 })
 
+const drilledInnerPackageId = computed(() => activeInnerSpec.value?.id ?? null)
+const focusedPackageTitle = computed(() => props.label)
+const focusedPackageSubtitle = computed(() => props.declaration || props.subtitle)
+const drilledInnerArtefacts = computed(() => {
+  const all = props.innerArtefacts
+  const drilledId = drilledInnerPackageId.value
+  if (!drilledId) return all
+  return all.filter((a) => {
+    const pkgId = artefactPackageId(a.id)
+    return pkgId === drilledId || pkgId.startsWith(`${drilledId}.`)
+  })
+})
+
+const visibleInnerArtefacts = computed(() => {
+  const drilledId = drilledInnerPackageId.value
+  if (drilledId) return drilledInnerArtefacts.value
+  // Root view: if we have folder packages, show only those (no artefact rows).
+  if ((props.innerPackages?.length ?? 0) > 0) return []
+  return props.innerArtefacts
+})
+
+const routingInnerArtefacts = computed(() => {
+  // Routing needs the full set at the root so we can derive folder→folder edges from
+  // artefact→artefact relations (even when artefacts are hidden from the UI).
+  const drilledId = drilledInnerPackageId.value
+  if (drilledId) return drilledInnerArtefacts.value
+  return props.innerArtefacts
+})
+
+const visibleInnerArtefactRelations = computed(() => {
+  const rels = props.innerArtefactRelations
+  if (!Array.isArray(rels) || !rels.length) return []
+  const ids = new Set(visibleInnerArtefacts.value.map((a) => a.id))
+  return rels.filter((r) => ids.has(r.from) && ids.has(r.to))
+})
+
+const {
+  innerCoverageVersion,
+  innerArtefactCell,
+  openInnerArtefactInEditor,
+  canOpenInnerArtefactInEditor,
+  innerHasCoverage,
+  innerCoveragePercentValue,
+  innerSimulatedMetrics,
+  isInnerArtefactPinned,
+  innerArtefactAccent,
+  onInnerArtefactTogglePin,
+  onInnerArtefactCycleColor,
+  onArtefactRowClick,
+  onFocusedArtefactBackgroundClick,
+} = useInnerArtefactState({
+  innerArtefacts: () => visibleInnerArtefacts.value,
+  innerArtefactPinned: () => props.innerArtefactPinned,
+  innerArtefactColors: () => props.innerArtefactColors,
+  updateInnerArtefactPinned: (next) => emit('update-inner-artefact-pinned', next),
+  updateInnerArtefactColors: (next) => emit('update-inner-artefact-colors', next),
+  updateInnerArtefactFocus: (id) => emit('update-inner-artefact-focus', id),
+})
+
 /** Keeps compact header while drilling inner packages (see `hasInnerDiagram` vs drill path). */
 const nodeHasInnerDiagramPayload = computed(
   () => (props.innerPackages?.length ?? 0) > 0 || (props.innerArtefacts?.length ?? 0) > 0,
@@ -266,9 +315,9 @@ const {
 } = useInnerArtefactLayering({
   focused: () => props.focused,
   innerDrillPath: () => innerDrillPathArr.value,
-  innerArtefacts: () => props.innerArtefacts,
-  innerArtefactRelations: () => props.innerArtefactRelations,
-  crossArtefactRelations: () => props.crossArtefactRelations,
+  innerArtefacts: () => visibleInnerArtefacts.value,
+  innerArtefactRelations: () => visibleInnerArtefactRelations.value,
+  crossArtefactRelations: () => (drilledInnerPackageId.value ? [] : props.crossArtefactRelations),
   focusedInnerArtefactId: () => props.focusedInnerArtefactId ?? null,
   globalFocusedArtefactId: () => props.globalFocusedArtefactId ?? null,
   focusRelationDepth: () => focusRelationDepthRef.value,
@@ -327,9 +376,17 @@ const innerArtefactRelationList = computed((): readonly TritonInnerArtefactRelat
 /** Cross-package relations currently visible in the UI after applying the relation-type checkboxes. */
 const visibleCrossArtefactRelations = computed((): readonly TritonInnerArtefactRelationSpec[] => {
   const visibility = relationTypeVisibilityRef.value
-  return (props.crossArtefactRelations ?? []).filter(
+  const base = (props.crossArtefactRelations ?? []).filter(
     (rel) => !shouldHideEdgeForRelationFilter({ label: rel.label }, visibility),
   )
+
+  // TypeScript folder→folder “imports” are authored as inner-artefact relations (artefact→artefact)
+  // and then collapsed to package→package bridges in `useInnerArtefactRouting`.
+  const imports = (props.innerArtefactRelations ?? [])
+    .filter((rel) => rel.label === 'imports')
+    .filter((rel) => !shouldHideEdgeForRelationFilter({ label: rel.label }, visibility))
+
+  return [...base, ...imports]
 })
 
 const innerEdgeMarkerId = computed(() =>
@@ -367,6 +424,7 @@ function bindInnerDiagramColsEl(el: unknown) {
 }
 
 const {
+  crossPackageBridgeRelations,
   crossPackageBoundaryStubRelations,
   crossPackageExternalEndpoints,
   childPackagePortsById,
@@ -378,10 +436,26 @@ const {
   focused: () => props.focused,
   innerDrillPath: () => innerDrillPathArr.value,
   innerPackages: () => props.innerPackages,
-  innerArtefacts: () => props.innerArtefacts,
+  innerArtefacts: () => routingInnerArtefacts.value,
   visibleCrossArtefactRelations: () => visibleCrossArtefactRelations.value,
   crossPackagePreviewActive: () => crossPackagePreviewActive.value,
   focusedInnerArtefactId: () => props.focusedInnerArtefactId ?? null,
+})
+
+const topLevelInnerPackageColumns = computed((): TritonInnerPackageSpec[][] => {
+  const pkgs = topLevelInnerPackages.value
+  if (!pkgs.length) return []
+  const edges = crossPackageBridgeRelations.value
+    .filter((e) => e.label === 'imports')
+    .filter((e) => pkgs.some((p) => p.id === e.from) && pkgs.some((p) => p.id === e.to))
+    .map((e) => ({ from: e.from, to: e.to }))
+  if (!edges.length) return [pkgs as TritonInnerPackageSpec[]]
+  const layers = assignInnerArtefactLayers(
+    pkgs.map((p) => p.id),
+    edges,
+  )
+  const byId = new Map(pkgs.map((p) => [p.id, p] as const))
+  return layers.map((col) => col.map((id) => byId.get(id)).filter(Boolean) as TritonInnerPackageSpec[])
 })
 
 const {
@@ -482,6 +556,7 @@ function onHeaderDblClick() {
     ref="rootEl"
     class="package-box package-box--embedded package-box--embedded-compact-header"
     :class="{
+      'package-box--embedded-expanded': !!$slots.default,
       'package-box--pinned': pinned,
       'package-box--has-metrics': true,
       'package-box--metrics-break': metricsBreakLayout,
@@ -538,6 +613,9 @@ function onHeaderDblClick() {
         </div>
       </div>
     </div>
+    <div v-if="$slots.default" class="package-box__embedded-inner-diagram" @click.stop>
+      <slot />
+    </div>
   </div>
 
   <!--
@@ -549,8 +627,8 @@ function onHeaderDblClick() {
   <div v-else-if="focused && !crossPackageFocused" class="package-box-host">
     <GeneralFocusedBox
       :accent="accent"
-      :title="label"
-      :subtitle="declaration || subtitle"
+      :title="focusedPackageTitle"
+      :subtitle="focusedPackageSubtitle"
       :inner-diagram-host="innerDiagramDescendant || nodeHasInnerDiagramPayload"
       :allow-overflow="true"
       :title-tooltip="isScalaLeaf ? String(label ?? '') : 'Double-click to rename / edit description'"
@@ -605,7 +683,7 @@ function onHeaderDblClick() {
       >
         <ShikiInlineCode :code="declaration" lang="scala" />
       </button>
-      <template v-else>{{ declaration || subtitle }}</template>
+      <template v-else>{{ focusedPackageSubtitle }}</template>
     </template>
       <slot name="focused-body">
         <div
@@ -632,105 +710,66 @@ function onHeaderDblClick() {
           </button>
         </div>
 
-        <template v-if="!innerDrillPathArr.length">
-          <PackageInnerDiagram
-            v-if="innerArtefactLayerColumns.length || topLevelInnerPackages.length"
-            mode="focused"
-            :edge-marker-id="innerEdgeMarkerId"
-            :top-level-inner-packages="topLevelInnerPackages"
-            :inner-artefact-layer-columns="innerArtefactLayerColumns"
-            :focused-inner-artefact-id="focusedInnerArtefactId"
-            :inner-artefact-focus-active="innerArtefactFocusActive"
-            :notes="notes"
-            :normal-inner-edge-draws="normalInnerEdgeDraws"
-            :emphasized-inner-edge-draws="emphasizedInnerEdgeDraws"
-            :routed-overlay-inner-edge-draws="routedOverlayInnerEdgeDraws"
-            :cross-package-external-endpoints="crossPackageExternalEndpoints"
-            :child-package-ports-by-id="childPackagePortsById"
-            :root-package-ports-left="rootPackagePortsLeft"
-            :root-package-ports-right="rootPackagePortsRight"
-            :inner-scroll-x="innerScrollX"
-            :inner-scroll-y="innerScrollY"
-            :root-el-ref="bindInnerArtefactDiagramEl"
-            :cols-el-ref="bindInnerDiagramColsEl"
-            :bind-slot-el="bindInnerArtefactSlotEl"
-            :edge-emphasized="innerEdgeEmphasized"
-            :edge-label-style-for="innerEdgeLabelSvgStyleFor"
-            :artefact-emphasized="innerArtefactEmphasized"
-            :artefact-cell="innerArtefactCell"
-            :artefact-accent="innerArtefactAccent"
-            :artefact-pinned="isInnerArtefactPinned"
-            :artefact-has-coverage="innerHasCoverage"
-            :artefact-coverage-percent="innerCoveragePercentValue"
-            :artefact-metrics="innerSimulatedMetrics"
-            :can-open-artefact-in-editor="canOpenInnerArtefactInEditor"
-            :handle-wheel="onInnerWheel"
-            :handle-pointer-down="onInnerPointerDown"
-            :handle-inner-card-click="onInnerCardClick"
-            :handle-artefact-row-click="onArtefactRowClick"
-            :handle-focused-artefact-background-click="onFocusedArtefactBackgroundClick"
-            :handle-artefact-toggle-pin="onInnerArtefactTogglePin"
-            :handle-artefact-cycle-color="onInnerArtefactCycleColor"
-            :handle-open-artefact-in-editor="openInnerArtefactInEditor"
-            :handle-edge-enter="onInnerEdgeEnter"
-            :handle-edge-leave="onInnerEdgeLeave"
-            :handle-artefact-slot-enter="onInnerArtefactSlotEnter"
-            :handle-artefact-slot-leave="onInnerArtefactSlotLeave"
-          >
-            <template #scroll-rails>
-              <InnerDiagramScrollRails
-                :horizontal-needed="innerHScrollNeeded"
-                :vertical-needed="innerVScrollNeeded"
-                :horizontal-ratio="innerHScrollRatio"
-                :vertical-ratio="innerVScrollRatio"
-                :horizontal-thumb-style="innerHThumbStyle"
-                :vertical-thumb-style="innerVThumbStyle"
-                :on-horizontal-input="onInnerHSliderInput"
-                :on-vertical-input="onInnerVSliderInput"
-              />
-            </template>
-          </PackageInnerDiagram>
-        </template>
-
-        <template v-else-if="activeInnerSpec">
-          <div
-            class="package-box__inner-slot package-box__inner-slot--solo package-box__inner-slot--clickable"
-            @click.stop="onInnerCardClick(activeInnerSpec.id)"
-          >
-            <PackageBox
-              embedded
-              :box-id="activeInnerSpec.id"
-              :label="activeInnerSpec.name"
-              :subtitle="activeInnerSpec.subtitle ?? ''"
-              :focused="false"
-              :pinned="false"
-              :show-pin-tool="false"
-              :show-color-tool="false"
+        <PackageInnerDiagram
+          v-if="innerArtefactLayerColumns.length || topLevelInnerPackages.length"
+          mode="focused"
+          :edge-marker-id="innerEdgeMarkerId"
+          :top-level-inner-packages="topLevelInnerPackages"
+          :top-level-inner-package-columns="topLevelInnerPackageColumns"
+          :expanded-inner-package-id="drilledInnerPackageId"
+          :inner-artefact-layer-columns="innerArtefactLayerColumns"
+          :focused-inner-artefact-id="focusedInnerArtefactId"
+          :inner-artefact-focus-active="innerArtefactFocusActive"
+          :notes="notes"
+          :normal-inner-edge-draws="normalInnerEdgeDraws"
+          :emphasized-inner-edge-draws="emphasizedInnerEdgeDraws"
+          :routed-overlay-inner-edge-draws="routedOverlayInnerEdgeDraws"
+          :cross-package-external-endpoints="crossPackageExternalEndpoints"
+          :child-package-ports-by-id="childPackagePortsById"
+          :root-package-ports-left="rootPackagePortsLeft"
+          :root-package-ports-right="rootPackagePortsRight"
+          :inner-scroll-x="innerScrollX"
+          :inner-scroll-y="innerScrollY"
+          :root-el-ref="bindInnerArtefactDiagramEl"
+          :cols-el-ref="bindInnerDiagramColsEl"
+          :bind-slot-el="bindInnerArtefactSlotEl"
+          :edge-emphasized="innerEdgeEmphasized"
+          :edge-label-style-for="innerEdgeLabelSvgStyleFor"
+          :artefact-emphasized="innerArtefactEmphasized"
+          :artefact-cell="innerArtefactCell"
+          :artefact-accent="innerArtefactAccent"
+          :artefact-pinned="isInnerArtefactPinned"
+          :artefact-has-coverage="innerHasCoverage"
+          :artefact-coverage-percent="innerCoveragePercentValue"
+          :artefact-metrics="innerSimulatedMetrics"
+          :can-open-artefact-in-editor="canOpenInnerArtefactInEditor"
+          :handle-wheel="onInnerWheel"
+          :handle-pointer-down="onInnerPointerDown"
+          :handle-inner-card-click="onInnerCardClick"
+          :handle-artefact-row-click="onArtefactRowClick"
+          :handle-focused-artefact-background-click="onFocusedArtefactBackgroundClick"
+          :handle-artefact-toggle-pin="onInnerArtefactTogglePin"
+          :handle-artefact-cycle-color="onInnerArtefactCycleColor"
+          :handle-open-artefact-in-editor="openInnerArtefactInEditor"
+          :handle-edge-enter="onInnerEdgeEnter"
+          :handle-edge-leave="onInnerEdgeLeave"
+          :handle-artefact-slot-enter="onInnerArtefactSlotEnter"
+          :handle-artefact-slot-leave="onInnerArtefactSlotLeave"
+        >
+          <template #scroll-rails>
+            <InnerDiagramScrollRails
+              :horizontal-needed="innerHScrollNeeded"
+              :vertical-needed="innerVScrollNeeded"
+              :horizontal-ratio="innerHScrollRatio"
+              :vertical-ratio="innerVScrollRatio"
+              :horizontal-thumb-style="innerHThumbStyle"
+              :vertical-thumb-style="innerVThumbStyle"
+              :on-horizontal-input="onInnerHSliderInput"
+              :on-vertical-input="onInnerVSliderInput"
             />
-          </div>
-          <div
-            v-for="child in activeInnerSpec.innerPackages ?? []"
-            :key="child.id"
-            class="package-box__inner-slot package-box__inner-slot--clickable"
-            @click.stop="onInnerCardClick(child.id)"
-          >
-            <PackageBox
-              embedded
-              :box-id="child.id"
-              :label="child.name"
-              :subtitle="child.subtitle ?? ''"
-              :focused="false"
-              :pinned="false"
-              :show-pin-tool="false"
-              :show-color-tool="false"
-            />
-          </div>
-        </template>
+          </template>
+        </PackageInnerDiagram>
 
-        <div v-else class="package-box__inner-drill-fallback">
-          <span class="inner-drill-fallback-text">Inner path no longer matches this tree.</span>
-          <button type="button" class="inner-drill-btn" @click.stop="clearInnerDrill">All packages</button>
-        </div>
       </div>
 
         <div v-else class="package-box__focused-legacy">
@@ -807,7 +846,14 @@ function onHeaderDblClick() {
       :class="{ 'package-box__chrome-row--cross-inline': crossPackagePreviewActive }"
     >
       <div class="lang-icon-slot" :class="{ 'lang-icon-slot--scala-leaf': isScalaLeaf }">
+        <KindBadge
+          v-if="isScalaLeaf && kindBadgeForLeafArtefact(subtitle)"
+          :text="kindBadgeForLeafArtefact(subtitle)!"
+          :title="subtitle ?? ''"
+          :accent="accent"
+        />
         <img
+          v-else
           class="lang-svg"
           :class="isScalaLeaf ? 'scala-leaf-icon' : 'folder-icon'"
           :src="isScalaLeaf ? scalaIconForKind(subtitle) : folderIconUrl"
@@ -1168,6 +1214,7 @@ function onHeaderDblClick() {
   transform: none;
   pointer-events: none;
 }
+
 .package-box--has-metrics .package-box__tools {
   top: 17px;
 }
@@ -1752,6 +1799,10 @@ function onHeaderDblClick() {
   container-type: size;
   container-name: pkg-embedded;
 }
+.package-box--embedded-expanded {
+  gap: 10px;
+  padding-bottom: 10px;
+}
 .package-box__embedded-header-row {
   flex: 1 1 0;
   min-height: 0;
@@ -1763,6 +1814,19 @@ function onHeaderDblClick() {
   position: relative;
   /** Clears the metric strip cluster (same contract as {@link GeneralFocusedBox} header). */
   padding-right: clamp(44px, 10cqw, 104px);
+}
+.package-box--embedded-expanded .package-box__embedded-header-row {
+  flex: 0 0 clamp(72px, 18cqh, 118px);
+}
+.package-box__embedded-inner-diagram {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 10px;
+  overflow: visible;
 }
 .package-box__embedded-folder {
   flex-shrink: 0;

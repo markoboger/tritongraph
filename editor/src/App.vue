@@ -34,6 +34,7 @@ import {
 } from './graph/relationVisibility'
 import { drillNoteForModuleId } from './graph/sbtStyleDrillNotes'
 import { listSbtExamples } from './sbt/sbtExampleBuilds'
+import { listTsExamples } from './ts/tsExampleDiagrams'
 import { parseBuildSbt } from './sbt/parseBuildSbt'
 import { sbtProjectsToIlographDocument } from './sbt/sbtProjectsToIlographDocument'
 import { getSbtTestLogFor } from './sbt/sbtTestLogLoader'
@@ -346,6 +347,7 @@ const dojoAbstractionLinkedResize = ref(false)
 
 /** All bundled examples (`build.sbt` files) across every registered examples-root. */
 const sbtExamplesAll = listSbtExamples()
+const tsExamplesAll = listTsExamples()
 
 /** Tutorial-style bundled examples: 01–12 numbered prefixes (the `sbt-examples` tutorial set). */
 function isTutorialSbtFolder(dir: string): boolean {
@@ -357,6 +359,10 @@ function exampleSelectionId(root: string, dir: string): string {
   return `sbt:${root}/${dir}`
 }
 
+function tsExampleSelectionId(root: string, dir: string, file: string): string {
+  return `ts:${root}/${dir}/${file}`
+}
+
 const sbtExamplesTutorial = sbtExamplesAll.filter(
   (e) => e.root === 'sbt-examples' && isTutorialSbtFolder(e.dir),
 )
@@ -364,6 +370,7 @@ const sbtExamplesLargeOss = sbtExamplesAll.filter(
   (e) => e.root === 'sbt-examples' && !isTutorialSbtFolder(e.dir),
 )
 const scalaExamples = sbtExamplesAll.filter((e) => e.root === 'scala-examples')
+const tsExamples = tsExamplesAll.filter((e) => e.root === 'ts-examples')
 const dojoExamples = computed(() => [
   { id: PACKAGE_NESTING_DOJO_ID, title: 'Package nesting' },
   { id: PACKAGE_STACKING_DOJO_ID, title: 'Package stacking' },
@@ -505,6 +512,7 @@ const activeExampleSelectionKey = computed<string>(() => {
   if (k === 'builtin') return '__builtin__'
   if (k.startsWith('sbt:')) return k
   if (k.startsWith('packages:')) return `sbt:${stripExampleProjectSuffix(k.slice('packages:'.length))}`
+  if (k.startsWith('ts:')) return k
   return ''
 })
 
@@ -515,12 +523,27 @@ const activeExample = computed<{ root: string; dir: string } | null>(() => {
     return { root: '', dir: '' }
   }
   let body = ''
-  if (k.startsWith('sbt:')) body = k.slice('sbt:'.length)
-  else if (k.startsWith('packages:')) body = stripExampleProjectSuffix(k.slice('packages:'.length))
-  else return null
-  const slash = body.indexOf('/')
-  if (slash < 0) return null
-  return { root: body.slice(0, slash), dir: body.slice(slash + 1) }
+  if (k.startsWith('sbt:')) {
+    body = k.slice('sbt:'.length)
+    const slash = body.indexOf('/')
+    if (slash < 0) return null
+    return { root: body.slice(0, slash), dir: body.slice(slash + 1) }
+  }
+  if (k.startsWith('packages:')) {
+    body = stripExampleProjectSuffix(k.slice('packages:'.length))
+    const slash = body.indexOf('/')
+    if (slash < 0) return null
+    return { root: body.slice(0, slash), dir: body.slice(slash + 1) }
+  }
+  if (k.startsWith('ts:')) {
+    // TS tabs include the file name: `ts:<root>/<exampleDir>/<file>`. For open-in-editor we
+    // need only `(root, exampleDir)`.
+    body = k.slice('ts:'.length)
+    const parts = body.split('/').filter(Boolean)
+    if (parts.length < 2) return null
+    return { root: parts[0]!, dir: parts[1]! }
+  }
+  return null
 })
 
 /**
@@ -775,6 +798,15 @@ async function selectExample(id: string) {
     const slash = body.indexOf('/')
     if (slash < 0) return
     await openSbtExampleTab(body.slice(0, slash), body.slice(slash + 1))
+    return
+  }
+  if (id.startsWith('ts:')) {
+    const body = id.slice('ts:'.length)
+    const parts = body.split('/')
+    if (parts.length < 3) return
+    const [root, dir, ...rest] = parts
+    const file = rest.join('/')
+    await openTsExampleTab(root, dir, file)
   }
 }
 
@@ -1959,6 +1991,7 @@ function isRestorableTabKey(key: string): boolean {
     key === 'builtin' ||
     key.startsWith('dojo:') ||
     key.startsWith('sbt:') ||
+    key.startsWith('ts:') ||
     key.startsWith('packages:') ||
     key.startsWith('runtime-sbt:') ||
     key.startsWith('runtime-packages:')
@@ -2015,6 +2048,15 @@ async function openTabFromUrlKey(key: string): Promise<boolean> {
     await openSbtExampleTab(body.slice(0, slash), body.slice(slash + 1))
     return true
   }
+  if (trimmed.startsWith('ts:')) {
+    const body = trimmed.slice('ts:'.length)
+    const parts = body.split('/')
+    if (parts.length < 3) return false
+    const [root, dir, ...rest] = parts
+    const file = rest.join('/')
+    await openTsExampleTab(root, dir, file)
+    return true
+  }
   if (trimmed.startsWith('packages:')) {
     const body = trimmed.slice('packages:'.length)
     const hash = body.indexOf('#')
@@ -2048,6 +2090,35 @@ async function openSbtExampleTab(root: string, dir: string): Promise<void> {
   await openOrActivateTab(
     { key: `sbt:${root}/${dir}`, title: dir, iconUrl: stackedCubesIconUrl },
     () => loadSbtBuildForExample(root, dir),
+  )
+}
+
+async function openTsExampleTab(root: string, dir: string, file: string): Promise<void> {
+  const hit = tsExamplesAll.find((e) => e.root === root && e.dir === dir && e.file === file)
+  if (!hit) {
+    status.value = `Cannot open TS example — not found: ${root}/${dir}/${file}`
+    return
+  }
+  await openOrActivateTab(
+    { key: tsExampleSelectionId(root, dir, file), title: `TS: ${dir}`, iconUrl: cubeIconUrl },
+    async () => {
+      sourcePath.value = hit.path
+      const [{ buildTypeScriptCodeModelFromFiles }, { codeModelToIlographDocument }] = await Promise.all([
+        import('../../packages/triton-core/src/typeScriptCodeModel'),
+        import('../../packages/triton-core/src/codeModelToIlograph'),
+      ])
+      const codeModel = buildTypeScriptCodeModelFromFiles(
+        Object.entries(hit.files ?? {}).map(([relPath, source]) => ({ relPath, source })),
+        { id: dir, name: dir, sourceRoot: 'src' },
+      )
+      const projected = codeModelToIlographDocument(codeModel, {
+        resourceId: dir,
+        title: `TypeScript: ${dir}`,
+        description: `TypeScript code model for ${root}/${dir}.`,
+        projectionMode: 'nested-resources',
+      })
+      await applyDoc(stringifyIlographYaml(projected), file, true, { moduleNodeType: 'package' })
+    },
   )
 }
 
@@ -3105,6 +3176,22 @@ onUnmounted(() => {
               @click="selectExample(exampleSelectionId(e.root, e.dir))"
             >
               {{ exampleOptionLabel(e.dir) }}
+            </button>
+            <div class="menu-sep" role="separator" />
+          </template>
+          <template v-if="tsExamples.length">
+            <div class="menu-heading" role="presentation">TS examples</div>
+            <button
+              v-for="t in tsExamples"
+              :key="t.root + '/' + t.dir + '/' + t.file"
+              type="button"
+              class="menu-item"
+              role="menuitem"
+              :class="{ 'menu-item--active': activeExampleSelectionKey === tsExampleSelectionId(t.root, t.dir, t.file) }"
+              :title="t.path"
+              @click="selectExample(tsExampleSelectionId(t.root, t.dir, t.file))"
+            >
+              {{ exampleOptionLabel(t.dir) }} — {{ (t.file ?? '').replace(/\.ilograph\.(ya?ml)$/i, '') }}
             </button>
             <div class="menu-sep" role="separator" />
           </template>

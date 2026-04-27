@@ -38,6 +38,15 @@ const hasEdges = computed(() => props.draws.length > 0 || props.bridgeDraws.leng
       <marker :id="`${markerPrefix}-hastrait`" class="package-box__inner-edge-marker" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
         <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--hastrait" />
       </marker>
+      <marker :id="`${markerPrefix}-implements`" class="package-box__inner-edge-marker" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+        <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--implements" />
+      </marker>
+      <marker :id="`${markerPrefix}-returns`" class="package-box__inner-edge-marker" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+        <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--returns" />
+      </marker>
+      <marker :id="`${markerPrefix}-imports`" class="package-box__inner-edge-marker" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+        <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--imports" />
+      </marker>
       <marker :id="`${markerPrefix}-gets`" class="package-box__inner-edge-marker" markerWidth="14" markerHeight="14" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
         <path d="M 0 0 L 12 6 L 0 12 z" class="package-box__inner-edge-marker-shape--gets" />
       </marker>
@@ -60,6 +69,9 @@ const hasEdges = computed(() => props.draws.length > 0 || props.bridgeDraws.leng
           'package-box__inner-edge-path',
           'package-box__inner-edge-path--bridge',
           { 'package-box__inner-edge-path--emph': edgeEmphasized(bridge) },
+          bridge.kind === 'implements' ? 'package-box__inner-edge-path--implements' : null,
+          bridge.kind === 'returns' ? 'package-box__inner-edge-path--returns' : null,
+          bridge.kind === 'imports' ? 'package-box__inner-edge-path--imports' : null,
           bridge.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
           bridge.kind === 'creates' ? 'package-box__inner-edge-path--creates' : null,
         ]"
@@ -94,6 +106,9 @@ const hasEdges = computed(() => props.draws.length > 0 || props.bridgeDraws.leng
         :class="[
           'package-box__inner-edge-path',
           { 'package-box__inner-edge-path--emph': edgeEmphasized(e) },
+          e.kind === 'implements' ? 'package-box__inner-edge-path--implements' : null,
+          e.kind === 'returns' ? 'package-box__inner-edge-path--returns' : null,
+          e.kind === 'imports' ? 'package-box__inner-edge-path--imports' : null,
           e.kind === 'gets' ? 'package-box__inner-edge-path--gets' : null,
           e.kind === 'creates' ? 'package-box__inner-edge-path--creates' : null,
         ]"
@@ -162,11 +177,26 @@ const hasEdges = computed(() => props.draws.length > 0 || props.bridgeDraws.leng
 .package-box__inner-edge-marker-shape--hastrait {
   fill: #9333ea;
 }
+.package-box__inner-edge-marker-shape--implements {
+  fill: #7c3aed;
+}
+.package-box__inner-edge-marker-shape--returns {
+  fill: #0ea5e9;
+}
+.package-box__inner-edge-marker-shape--imports {
+  fill: #f59e0b;
+}
 .package-box__inner-edge-marker-shape--gets {
   fill: #d97706;
 }
 .package-box__inner-edge-marker-shape--creates {
   fill: #059669;
+}
+.package-box__inner-edge-path--returns {
+  stroke-dasharray: 10 4;
+}
+.package-box__inner-edge-path--imports {
+  stroke-dasharray: 7 4;
 }
 .package-box__inner-edge-path--gets {
   stroke-dasharray: 5 3;

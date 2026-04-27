@@ -7,6 +7,9 @@ export const SCALA_EXTENDS_STROKE = '#1d4ed8'
 /** Inner-package mixin parent (`with` in Scala → shown as “has trait” in the UI). */
 export const SCALA_HAS_TRAIT_STROKE = '#9333ea'
 
+/** TypeScript `implements` relation: class implements interface. */
+export const TS_IMPLEMENTS_STROKE = '#7c3aed'
+
 /**
  * Inner-package "gets" relation: artefact A takes artefact B as a primary-constructor
  * parameter (directly or through a generic wrapper). Amber tone so it reads as a structural
@@ -16,6 +19,12 @@ export const SCALA_GETS_STROKE = '#d97706'
 
 /** Inner-package "creates" relation: artefact A constructs artefact B in its body. */
 export const SCALA_CREATES_STROKE = '#059669'
+
+/** TypeScript "returns" relation: function/method returns a type. */
+export const TS_RETURNS_STROKE = '#0ea5e9'
+
+/** TypeScript "imports" relation: file/module imports a type/value from another package. */
+export const TS_IMPORTS_STROKE = '#f59e0b'
 
 /** sbt `aggregate(...)` — task scope / project grouping; also contributes to depth columns. */
 export const SBT_AGGREGATE_STROKE = '#16a34a'

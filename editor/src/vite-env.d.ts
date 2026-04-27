@@ -11,6 +11,20 @@ declare module 'virtual:sbt-examples' {
   export const sbtExampleEncodedEntries: SbtExampleEncoded[]
 }
 
+declare module 'virtual:ts-examples' {
+  export interface TsExampleEncoded {
+    root: string
+    /** Top-level example dir under `root` (e.g. `01-tritongraph-self`). */
+    dir: string
+    /** YAML file name inside `<root>/<dir>` (e.g. `repo-typescript-deps.ilograph.yaml`). */
+    file: string
+    b64: string
+    /** Base64-encoded TS sources keyed by path relative to `<root>/<dir>`. */
+    filesB64?: Record<string, string>
+  }
+  export const tsExampleEncodedEntries: TsExampleEncoded[]
+}
+
 declare module 'virtual:scala-sources' {
   export interface ScalaSourceEncoded {
     /** Logical examples-root name (matches `virtual:sbt-examples` entries). */

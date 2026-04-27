@@ -25,6 +25,26 @@ export {
 } from './scalaPackageGraph'
 export { buildScalaWorkspacePayload } from './tritonWorkspacePayload'
 export type {
+  CodeArtefact,
+  CodeArtefactKind,
+  CodeContainer,
+  CodeContainerKind,
+  CodeMember,
+  CodeMemberKind,
+  CodeModel,
+  CodeRelation,
+  CodeRelationKind,
+  CodeRelationScope,
+  LanguageId,
+  SourceLocation,
+} from './languageModel'
+export { scalaPackageGraphToCodeModel } from './scalaCodeModel'
+export type { ScalaCodeModelOptions } from './scalaCodeModel'
+export { buildTypeScriptCodeModelFromFiles } from './typeScriptCodeModel'
+export type { TypeScriptCodeModelOptions, TypeScriptSourceFile } from './typeScriptCodeModel'
+export { codeModelToIlographDocument } from './codeModelToIlograph'
+export type { CodeModelToIlographOptions } from './codeModelToIlograph'
+export type {
   ParsedScalaDefinition,
   ParsedScalaImport,
   ParsedScalaMethodSignature,
