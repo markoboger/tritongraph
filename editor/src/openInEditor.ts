@@ -57,6 +57,13 @@ export interface OpenInEditorTarget {
   exampleDir: string
   /** POSIX-style path relative to `<root>/<exampleDir>` — matches `LoadedScalaFile.relPath`. */
   relPath: string
+  /**
+   * Absolute base directory override.
+   *
+   * Used for runtime workspaces where the sources live outside `repoRoot` (e.g. an arbitrary
+   * checkout on disk). When set, `root` / `exampleDir` are ignored for absolute-path building.
+   */
+  absBaseDir?: string
   /** 1-indexed line; defaults to 1 when omitted. Tree-sitter `startRow` is 0-indexed so add 1 upstream. */
   line?: number
   /** 1-indexed column; defaults to 1. */
@@ -64,6 +71,10 @@ export interface OpenInEditorTarget {
 }
 
 function buildAbsPath(t: OpenInEditorTarget): string {
+  if (t.absBaseDir && typeof t.absBaseDir === 'string' && t.absBaseDir.trim()) {
+    const parts = [t.absBaseDir, t.relPath].filter(Boolean)
+    return parts.join('/').replace(/\/+/g, '/')
+  }
   // Everything the editor bundles already uses POSIX separators (the vite plugins normalise
   // Windows paths on the way in); we keep that here so the template sees consistent slashes
   // even on Windows hosts, which Cursor / VS Code tolerate for `file://` and their custom schemes.

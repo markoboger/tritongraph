@@ -17,6 +17,85 @@ interface CoverageEntry {
   b64: string
 }
 
+const IGNORED_DIRS = new Set([
+  '.git',
+  '.idea',
+  '.bloop',
+  '.metals',
+  '.scala-build',
+  'node_modules',
+  'dist',
+  'out',
+])
+
+/**
+ * Multi-module sbt builds often generate per-subproject reports:
+ *   <example>/<subproject>/target/scala-<binary>/scoverage-report/scoverage.xml
+ * not just `<example>/target/...`. Scan a few levels deep and pick the newest report.
+ */
+function findScoverageXmls(exampleRoot: string): Array<{ absPath: string; relPath: string }> {
+  const candidates: string[] = []
+
+  // BFS walk (depth-limited) to find "target/scala-*/scoverage-report/scoverage.xml"
+  const q: Array<{ dir: string; depth: number }> = [{ dir: exampleRoot, depth: 0 }]
+  const maxDepth = 3
+  while (q.length) {
+    const { dir, depth } = q.shift()!
+    if (depth > maxDepth) continue
+    let entries: fs.Dirent[] = []
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue
+      if (IGNORED_DIRS.has(ent.name)) continue
+      const abs = path.join(dir, ent.name)
+      if (ent.name === 'target') {
+        let scalaDirs: string[] = []
+        try {
+          scalaDirs = fs
+            .readdirSync(abs, { withFileTypes: true })
+            .filter((d) => d.isDirectory() && d.name.startsWith('scala-'))
+            .map((d) => d.name)
+        } catch {
+          scalaDirs = []
+        }
+        for (const sd of scalaDirs) {
+          candidates.push(path.join(abs, sd, 'scoverage-report', 'scoverage.xml'))
+        }
+        continue
+      }
+      q.push({ dir: abs, depth: depth + 1 })
+    }
+  }
+
+  const out: Array<{ absPath: string; relPath: string }> = []
+  for (const absPath of candidates) {
+    try {
+      const st = fs.statSync(absPath)
+      if (!st.isFile()) continue
+    } catch {
+      continue
+    }
+    const relPath = path.relative(exampleRoot, absPath).split(path.sep).join('/')
+    out.push({ absPath, relPath })
+  }
+  // Stable order in module output to minimize churn; newest-first so callers can prefer the freshest.
+  out.sort((a, b) => {
+    try {
+      const am = fs.statSync(a.absPath).mtimeMs
+      const bm = fs.statSync(b.absPath).mtimeMs
+      if (am !== bm) return bm - am
+    } catch {
+      // ignore
+    }
+    return a.relPath.localeCompare(b.relPath)
+  })
+  return out
+}
+
 /**
  * Bundle `scoverage.xml` reports generated under example `target/` directories.
  *
@@ -38,32 +117,14 @@ export function scoverageReportsVirtualModule(roots: ExampleRoot[]): Plugin {
         for (const ent of fs.readdirSync(r.dir, { withFileTypes: true })) {
           if (!ent.isDirectory()) continue
           const exampleRoot = path.join(r.dir, ent.name)
-          // Default sbt layout for scoverage reports:
-          //   target/scala-<binary>/scoverage-report/scoverage.xml
-          // where `<binary>` is e.g. `2.13` or `3.8.3`.
-          const targetDir = path.join(exampleRoot, 'target')
-          if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) continue
-          const scalaDirs = fs
-            .readdirSync(targetDir, { withFileTypes: true })
-            .filter((d) => d.isDirectory() && d.name.startsWith('scala-'))
-            .map((d) => d.name)
-            .sort()
-            .reverse()
-          let xml: string | null = null
-          let relPath: string | null = null
-          for (const sd of scalaDirs) {
-            const candidate = path.join(targetDir, sd, 'scoverage-report', 'scoverage.xml')
-            if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-              xml = candidate
-              relPath = `target/${sd}/scoverage-report/scoverage.xml`
-              break
-            }
+          const hits = findScoverageXmls(exampleRoot)
+          if (!hits.length) continue
+          for (const hit of hits) {
+            this.addWatchFile(hit.absPath)
+            const source = fs.readFileSync(hit.absPath, 'utf8')
+            const b64 = Buffer.from(source, 'utf8').toString('base64')
+            entries.push({ root: r.name, exampleDir: ent.name, relPath: hit.relPath, b64 })
           }
-          if (!xml || !relPath) continue
-          this.addWatchFile(xml)
-          const source = fs.readFileSync(xml, 'utf8')
-          const b64 = Buffer.from(source, 'utf8').toString('base64')
-          entries.push({ root: r.name, exampleDir: ent.name, relPath, b64 })
         }
       }
       entries.sort((a, b) => {

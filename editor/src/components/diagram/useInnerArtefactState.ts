@@ -19,6 +19,10 @@ export function useInnerArtefactState(options: InnerArtefactStateOptions) {
     'tritonActiveExample',
     undefined,
   )
+  const activeRuntimeWorkspaceRef = inject<Ref<{ workspacePath: string; workspaceName: string } | null> | undefined>(
+    'tritonActiveRuntimeWorkspace',
+    undefined,
+  )
   const workspaceKeyRef = inject<Ref<string>>('tritonWorkspaceKey', ref(''))
 
   const innerCoverageVersion = ref(0)
@@ -38,20 +42,38 @@ export function useInnerArtefactState(options: InnerArtefactStateOptions) {
   }
 
   function openInnerArtefactInEditor(artId: string, line?: number): void {
-    const ex = activeExampleRef?.value
     const cell = innerArtefactCell(artId)
-    if (!ex || !cell || !cell.sourceFile) return
+    if (!cell || !cell.sourceFile) return
     const effectiveRow = line !== undefined ? line : (cell.sourceRow ?? 0)
-    openInEditor({
-      root: ex.root,
-      exampleDir: ex.dir,
-      relPath: cell.sourceFile,
-      line: effectiveRow + 1,
-    })
+    const ex = activeExampleRef?.value
+    const rt = activeRuntimeWorkspaceRef?.value
+    openInEditor(
+      ex
+        ? {
+            root: ex.root,
+            exampleDir: ex.dir,
+            relPath: cell.sourceFile,
+            line: effectiveRow + 1,
+          }
+        : rt
+          ? {
+              root: '',
+              exampleDir: '',
+              absBaseDir: rt.workspacePath,
+              relPath: cell.sourceFile,
+              line: effectiveRow + 1,
+            }
+          : {
+              root: '',
+              exampleDir: '',
+              relPath: cell.sourceFile,
+              line: effectiveRow + 1,
+            },
+    )
   }
 
   function canOpenInnerArtefactInEditor(artId: string): boolean {
-    if (!activeExampleRef?.value) return false
+    if (!activeExampleRef?.value && !activeRuntimeWorkspaceRef?.value) return false
     return !!innerArtefactCell(artId)?.sourceFile
   }
 

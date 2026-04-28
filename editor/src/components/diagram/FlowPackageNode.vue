@@ -172,6 +172,10 @@ const activeExampleRef = inject<Ref<{ root: string; dir: string } | null> | unde
   'tritonActiveExample',
   undefined,
 )
+const activeRuntimeWorkspaceRef = inject<Ref<{ workspacePath: string; workspaceName: string } | null> | undefined>(
+  'tritonActiveRuntimeWorkspace',
+  undefined,
+)
 const emitLinkAction = inject<((nodeId: string, href: string) => void) | undefined>(
   'tritonEmitLinkAction',
   undefined,
@@ -198,17 +202,35 @@ function canOpenInEditor(): boolean {
  * to 1 when composing the editor URL.
  */
 function triggerOpenInEditor(line?: number): void {
-  const ex = activeExampleRef?.value
   const relPath = props.data.sourceFile
-  if (!ex || !relPath) return
+  if (!relPath) return
   const effectiveRow = line !== undefined ? line : (props.data.sourceRow ?? 0)
-  openInEditor({
-    root: ex.root,
-    exampleDir: ex.dir,
-    relPath,
-    // Tree-sitter `startRow` is 0-indexed; editor URL schemes are 1-indexed.
-    line: effectiveRow + 1,
-  })
+  const ex = activeExampleRef?.value
+  const rt = activeRuntimeWorkspaceRef?.value
+  openInEditor(
+    ex
+      ? {
+          root: ex.root,
+          exampleDir: ex.dir,
+          relPath,
+          // Tree-sitter `startRow` is 0-indexed; editor URL schemes are 1-indexed.
+          line: effectiveRow + 1,
+        }
+      : rt
+        ? {
+            root: '',
+            exampleDir: '',
+            absBaseDir: rt.workspacePath,
+            relPath,
+            line: effectiveRow + 1,
+          }
+        : {
+            root: '',
+            exampleDir: '',
+            relPath,
+            line: effectiveRow + 1,
+          },
+  )
 }
 
 /** Same Vue node shell as packages so layout + chrome stay aligned (`type` from flow graph). */

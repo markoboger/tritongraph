@@ -150,17 +150,39 @@ function collectScalaFiles(workspacePath) {
 }
 
 function findScoverageReport(workspacePath) {
-  const targetDir = path.join(workspacePath, 'target')
-  let scalaDirs = []
-  try {
-    scalaDirs = fs
-      .readdirSync(targetDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && d.name.startsWith('scala-'))
-      .map((d) => path.join(targetDir, d.name, 'scoverage-report', 'scoverage.xml'))
-  } catch {
-    return null
+  const candidates = []
+
+  function walk(dirPath, depth) {
+    if (depth > 3) return
+    let entries = []
+    try {
+      entries = fs.readdirSync(dirPath, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      if (IGNORED_DIRS.has(entry.name)) continue
+      const abs = path.join(dirPath, entry.name)
+      if (entry.name === 'target') {
+        let scalaDirs = []
+        try {
+          scalaDirs = fs
+            .readdirSync(abs, { withFileTypes: true })
+            .filter((d) => d.isDirectory() && d.name.startsWith('scala-'))
+            .map((d) => path.join(abs, d.name, 'scoverage-report', 'scoverage.xml'))
+        } catch {
+          scalaDirs = []
+        }
+        for (const p of scalaDirs) candidates.push(p)
+        continue
+      }
+      walk(abs, depth + 1)
+    }
   }
-  const best = newestPath(scalaDirs)
+
+  walk(workspacePath, 0)
+  const best = newestPath(candidates)
   if (!best) return null
   const xml = readUtf8IfFile(best)
   if (xml == null) return null

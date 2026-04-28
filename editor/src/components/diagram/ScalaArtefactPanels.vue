@@ -113,6 +113,10 @@ const activeExampleRef = inject<Ref<{ root: string; dir: string } | null> | unde
   'tritonActiveExample',
   undefined,
 )
+const activeRuntimeWorkspaceRef = inject<Ref<{ workspacePath: string; workspaceName: string } | null> | undefined>(
+  'tritonActiveRuntimeWorkspace',
+  undefined,
+)
 
 type SpecLink = { name: string; declaration: string; file: string; startRow: number }
 
@@ -199,14 +203,32 @@ function onArgumentsLineClick(): void {
 
 function onSpecLineClick(ev: { index: number }): void {
   const ex = activeExampleRef?.value
+  const rt = activeRuntimeWorkspaceRef?.value
   const spec = specLinks.value[ev.index]
-  if (!ex || !spec) return
-  openInEditor({
-    root: ex.root,
-    exampleDir: ex.dir,
-    relPath: spec.file,
-    line: (spec.startRow ?? 0) + 1,
-  })
+  if (!spec) return
+  openInEditor(
+    ex
+      ? {
+          root: ex.root,
+          exampleDir: ex.dir,
+          relPath: spec.file,
+          line: (spec.startRow ?? 0) + 1,
+        }
+      : rt
+        ? {
+            root: '',
+            exampleDir: '',
+            absBaseDir: rt.workspacePath,
+            relPath: spec.file,
+            line: (spec.startRow ?? 0) + 1,
+          }
+        : {
+            root: '',
+            exampleDir: '',
+            relPath: spec.file,
+            line: (spec.startRow ?? 0) + 1,
+          },
+  )
 }
 </script>
 
