@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OCI / Docker image — stacked layers (immutable artifact).
+  Original icon for Triton; not the Docker whale trademark.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" aria-hidden="true">
+  <g stroke="#0f172a" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M 38 138 L 100 168 L 162 138 L 100 108 Z" fill="#94a3b8" />
+    <path d="M 38 108 L 100 138 L 162 108 L 100 78 Z" fill="#cbd5e1" />
+    <path d="M 38 78 L 100 108 L 162 78 L 100 48 Z" fill="#e0f2fe" />
+    <path d="M 38 78 L 100 108 L 162 78" fill="none" stroke="#2496ed" stroke-width="3.5" />
+  </g>
+</svg>

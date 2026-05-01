@@ -9,6 +9,7 @@ type StarterFoldSection = {
   cards: StarterCard[]
 }
 import stackedCubesIconUrl from '../assets/language-icons/stacked-cubes.svg'
+import { dockerConceptIconUrl } from '../triton/dockerConceptIcons'
 import cubeIconUrl from '../assets/language-icons/cube.svg'
 import sbtIconUrl from '../assets/language-icons/sbt.svg'
 import typescriptIconUrl from '../assets/language-icons/typescript.svg'
@@ -199,8 +200,8 @@ function onRuntimeWorkspaceAction(action: 'refresh' | 'sbt-test' | 'sbt-coverage
   emit('runtimeWorkspaceAction', { action, label })
 }
 
-function starterIconUrl(kind: StarterCardKind): string {
-  switch (kind) {
+function starterIconUrl(card: StarterCard): string {
+  switch (card.kind) {
     case 'dojo':
       return cubeIconUrl
     case 'yaml':
@@ -210,7 +211,7 @@ function starterIconUrl(kind: StarterCardKind): string {
     case 'ts':
       return typescriptIconUrl
     case 'docker':
-      return stackedCubesIconUrl
+      return dockerConceptIconUrl(card.dockerConceptIcon ?? 'image')
   }
 }
 
@@ -577,7 +578,7 @@ watch(
                 :class="`starter-card--${card.kind}`"
               >
                 <div class="starter-card__icon-wrap" aria-hidden="true">
-                  <img class="starter-card__icon" :src="starterIconUrl(card.kind)" width="28" height="28" alt="" />
+                  <img class="starter-card__icon" :src="starterIconUrl(card)" width="28" height="28" alt="" />
                 </div>
                 <div class="starter-card__body">
                   <div class="starter-card__title-row">

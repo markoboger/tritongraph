@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Database service  classic cylinder (Postgres / SQL data store abstraction).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" aria-hidden="true">
+  <g stroke="#0f172a" stroke-width="5" stroke-linejoin="round">
+    <ellipse cx="100" cy="52" rx="54" ry="18" fill="#e0f2fe" />
+    <path d="M46 52 V132 A54 18 0 0 0 154 132 V52" fill="#cbd5e1" stroke="#0f172a" />
+    <ellipse cx="100" cy="132" rx="54" ry="18" fill="#94a3b8" />
+    <ellipse cx="100" cy="52" rx="54" ry="18" fill="none" stroke="#0f172a" />
+    <!-- horizontal bands on body -->
+    <path d="M52 88 H148" stroke="#64748b" stroke-width="3" fill="none" opacity="0.6" />
+    <path d="M52 108 H148" stroke="#64748b" stroke-width="3" fill="none" opacity="0.6" />
+  </g>
+</svg>

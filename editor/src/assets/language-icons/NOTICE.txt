@@ -3,3 +3,7 @@ openjdk.svg, rust.svg, go.svg, kotlin.svg, ruby.svg, swift.svg) are from Simple 
 (https://github.com/simple-icons/simple-icons), dedicated to the public domain under CC0 1.0.
 
 generic.svg is a minimal local placeholder (gray circle), not from Simple Icons.
+
+docker-image.svg, docker-container.svg, docker-service.svg, docker-database.svg,
+docker-network.svg, docker-volume.svg, and docker-project.svg are original Triton icons
+(slate / blue palette, no third-party trademarks), for Docker / Compose diagram concepts.

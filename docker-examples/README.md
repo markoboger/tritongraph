@@ -10,3 +10,9 @@ Runnable `docker-compose.yml` snippets plus **Ilograph** diagrams (`diagram.ilog
 | `04-stack-db-volumes` | **Database** service, named **Volume**, **Port** mapping, bind-style host path |
 
 From repo root, e.g. `docker compose -f docker-examples/01-single-service/docker-compose.yml up` (adjust ports if busy).
+
+### Concept icons (editor)
+
+SVG marks live in `editor/src/assets/language-icons/docker-*.svg` and are re-exported from
+`editor/src/triton/dockerConceptIcons.ts` (`image`, `container`, `service`, `database`, `network`,
+`volume`, `project`). Starter cards use a subset; the rest are available for future diagram UI.

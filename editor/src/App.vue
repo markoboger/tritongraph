@@ -737,6 +737,7 @@ const tritonStarterCards = computed<StarterCard[]>(() => {
       title: d.title,
       subtitle: d.subtitle,
       group: 'Docker',
+      dockerConceptIcon: d.icon,
     })
   }
   return rows

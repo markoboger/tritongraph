@@ -1,3 +1,5 @@
+import type { DockerConceptIconKey } from './dockerConceptIcons'
+
 /** Bundled example / dojo entry shown as a card on the Triton home screen. */
 export type StarterCardKind = 'dojo' | 'yaml' | 'sbt' | 'ts' | 'docker'
 
@@ -10,4 +12,6 @@ export type StarterCard = {
   subtitle?: string
   /** Human-readable collection, e.g. "sbt tutorial", "Dojo". */
   group?: string
+  /** When `kind === 'docker'`, which concept glyph to show on the card. */
+  dockerConceptIcon?: DockerConceptIconKey
 }

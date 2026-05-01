@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Build context / project directory  folder + build hammer for Dockerfile context.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" aria-hidden="true">
+  <g stroke="#0f172a" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M40 68 L40 152 H160 V68 H96 L84 52 H52 Z" fill="#f8fafc" />
+    <path d="M40 68 H160 V152 H40 Z" fill="none" />
+    <path d="M118 88 L158 128 L142 144 L102 104 Z" fill="#cbd5e1" stroke="#0f172a" />
+    <path d="M102 104 L118 88 L126 96 L110 112 Z" fill="#94a3b8" />
+    <rect x="52" y="120" width="56" height="6" rx="2" fill="#64748b" stroke="none" opacity="0.5" />
+    <rect x="52" y="132" width="40" height="6" rx="2" fill="#64748b" stroke="none" opacity="0.5" />
+  </g>
+</svg>
