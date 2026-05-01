@@ -148,6 +148,12 @@ export interface IlographResource {
    */
   'x-triton-node-type'?: string
   /**
+   * Optional header icon for module/package flow nodes: a Docker concept key (`image`,
+   * `container`, `service`, …) resolved by the editor, or a `http(s)://` / site-root (`/…`)
+   * URL to an SVG/PNG. See `dockerConceptIcons.ts` and `ilographDocumentToFlow`.
+   */
+  'x-triton-icon'?: string
+  /**
    * Non-standard: immediate child packages shown inside a focused root package box (not
    * separate Vue Flow nodes). Used by the Scala package view so the outer package can render
    * direct sub-packages as stacked inner cards while the outer node stays a single leaf.

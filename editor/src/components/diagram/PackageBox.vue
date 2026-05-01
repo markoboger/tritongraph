@@ -159,6 +159,8 @@ const props = withDefaults(
      * Forces the same horizontal compact header as {@link GeneralFocusedBox}`innerDiagramHost`.
      */
     innerDiagramDescendant?: boolean
+    /** Resolved from YAML `x-triton-icon` — overrides folder / Scala leaf icon when set. */
+    iconUrl?: string
   }>(),
   {
     innerPackages: () => [],
@@ -213,6 +215,13 @@ const focusedLegacyCompartments = computed<readonly BoxCompartment[]>(() =>
 )
 
 const isScalaLeaf = computed(() => props.leafVisual === 'artefact')
+
+const headerIconUrlForPackage = computed(() => {
+  const u = props.iconUrl?.trim()
+  if (u) return u
+  if (isScalaLeaf.value) return scalaIconForKind(props.subtitle)
+  return folderIconUrl
+})
 
 
 const relationTypeVisibilityRef = inject<Ref<Record<string, boolean>>>(
@@ -374,6 +383,7 @@ const {
     props.focusedInnerArtefactId,
     props.embedded,
     props.leafVisual,
+    props.iconUrl,
     props.boxId,
     hasCoverage.value,
     simulatedMetrics.value.issueCount,
@@ -610,7 +620,13 @@ function onHeaderDblClick() {
       }"
     >
       <div class="package-box__embedded-folder">
-        <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
+        <img
+          class="lang-svg folder-icon"
+          :src="headerIconUrlForPackage"
+          alt=""
+          aria-hidden="true"
+          decoding="async"
+        />
       </div>
       <div
         ref="packageBodyEl"
@@ -693,7 +709,13 @@ function onHeaderDblClick() {
     <template #header-icon>
       <slot name="focused-header-icon">
         <div class="lang-icon-slot lang-icon-slot--header">
-          <img class="lang-svg folder-icon" :src="folderIconUrl" alt="" aria-hidden="true" decoding="async" />
+          <img
+            class="lang-svg folder-icon"
+            :src="headerIconUrlForPackage"
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+          />
         </div>
       </slot>
     </template>
@@ -895,7 +917,7 @@ function onHeaderDblClick() {
           v-else
           class="lang-svg"
           :class="isScalaLeaf ? 'scala-leaf-icon' : 'folder-icon'"
-          :src="isScalaLeaf ? scalaIconForKind(subtitle) : folderIconUrl"
+          :src="headerIconUrlForPackage"
           :alt="isScalaLeaf ? (subtitle ?? '') : ''"
           aria-hidden="true"
           decoding="async"

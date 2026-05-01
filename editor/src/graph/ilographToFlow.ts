@@ -10,6 +10,7 @@ import type { BoxCompartment, BoxCompartmentRow } from '../diagram/boxCompartmen
 import { resourceKey, splitRefs } from '../ilograph/refs'
 import { boxColorForId, isNamedBoxColor } from './boxColors'
 import { languageIconForId } from './languages'
+import { dockerConceptIconUrl, isDockerConceptIconKey } from '../triton/dockerConceptIcons'
 import { dependencyEdgeLabelStyle, dependencyEdgeStyle, markersForAggregateEdge, markersForRelation } from './edgeTheme'
 import { isAggregateEdge, strokeForIlographRelation } from './relationKinds'
 import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE } from './handles'
@@ -67,6 +68,16 @@ function defaultPosition(index: number): { x: number; y: number } {
   const col = index % 4
   const row = Math.floor(index / 4)
   return { x: col * 220 + 40, y: row * 120 + 40 }
+}
+
+/** Resolves `x-triton-icon` on an Ilograph resource to a URL for {@link ProjectBox} / {@link PackageBox}. */
+function resolveTritonIconUrl(raw: unknown): { url?: string; key?: string } {
+  if (typeof raw !== 'string') return {}
+  const s = raw.trim()
+  if (!s) return {}
+  if (isDockerConceptIconKey(s)) return { url: dockerConceptIconUrl(s), key: s }
+  if (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('/')) return { url: s }
+  return {}
 }
 
 function normalizeInnerPackageSpec(raw: unknown): TritonInnerPackageSpec | null {
@@ -285,6 +296,7 @@ export function ilographDocumentToFlow(
       Number.isFinite(res['x-triton-preferred-leaf-height'])
         ? Number(res['x-triton-preferred-leaf-height'])
         : undefined
+    const { url: tritonIconUrl, key: tritonIconKey } = resolveTritonIconUrl(res['x-triton-icon'])
     const sz = !isGroup ? savedSizes?.[id] : undefined
     const savedW = sz && typeof sz.w === 'number' && Number.isFinite(sz.w) && sz.w > 0 ? sz.w : undefined
     const savedH = sz && typeof sz.h === 'number' && Number.isFinite(sz.h) && sz.h > 0 ? sz.h : undefined
@@ -326,6 +338,8 @@ export function ilographDocumentToFlow(
           : {}),
         ...(boxColor ? { boxColor } : {}),
         ...(!isGroup && pinnedIds.has(id) ? { pinned: true } : {}),
+        ...(tritonIconUrl ? { iconUrl: tritonIconUrl } : {}),
+        ...(tritonIconKey ? { tritonIconKey } : {}),
         ...(!isGroup ? { language: languageIconForId(id), drillNote: drillNoteForModuleId(id) } : {}),
         ...(innerPackages?.length ? { innerPackages } : {}),
         ...(innerArtefacts?.length ? { innerArtefacts } : {}),

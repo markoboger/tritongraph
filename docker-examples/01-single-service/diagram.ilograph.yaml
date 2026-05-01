@@ -6,10 +6,13 @@ description: |
 resources:
   - name: registry-nginx
     subtitle: Image — remote layers + tag (immutable digest at pull)
+    x-triton-icon: image
   - name: compose-service-web
     subtitle: Service — desired state in docker-compose.yml
+    x-triton-icon: service
   - name: container-web-1
     subtitle: Container — running instance (id, cgroups, writable layer)
+    x-triton-icon: container
   - name: host-port-18080
     subtitle: Host port mapping (publish 18080 → container 80)
 

@@ -7,14 +7,19 @@ description: |
 resources:
   - name: project-repo
     subtitle: Project — build context directory on disk
+    x-triton-icon: project
   - name: dockerfile-build
     subtitle: Build — Dockerfile instructions → image layers
+    x-triton-icon: image
   - name: image-api-local
     subtitle: Image — tagged artifact from build
+    x-triton-icon: image
   - name: compose-service-api
     subtitle: Service — compose block for `api`
+    x-triton-icon: service
   - name: container-api-1
     subtitle: Container — one running instance
+    x-triton-icon: container
 
 perspectives:
   - name: dependencies

@@ -117,6 +117,10 @@ function buildResourceTree(nodes: ExportFlowNode[]): IlographResource[] {
           IlographResource['x-triton-inner-artefact-relations']
         >
       }
+      const iconKey = (n.data as Record<string, unknown> | undefined)?.tritonIconKey
+      if (typeof iconKey === 'string' && iconKey.trim()) {
+        res['x-triton-icon'] = iconKey.trim()
+      }
       const nested = subtree(n.id)
       if (nested.length) res.children = nested
       resources.push(res)

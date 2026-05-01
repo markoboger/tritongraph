@@ -44,6 +44,7 @@ const props = defineProps<{
     pinned?: boolean
     boxColor?: string
     language?: string
+    iconUrl?: string
     projectKind?: 'project' | 'module' | 'general'
     projectCompartments?: readonly BoxCompartment[]
     preferredFocusWidth?: number
@@ -93,6 +94,7 @@ const { cycleColor, onRename, onDescriptionChange, togglePin } = useDiagramNodeA
       :description="(data.notes as string | undefined) || data.description"
       :notes="data.drillNote"
       :language="data.language"
+      :icon-url="data.iconUrl"
       :kind="data.projectKind"
       :box-color="data.boxColor"
       :compartments="data.projectCompartments"

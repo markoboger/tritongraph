@@ -112,6 +112,8 @@ const props = defineProps<{
     innerArtefactColors?: Record<string, string>
     /** Internal flag: true when layerDrillFocus is set due to cross-package relations (not user drill). */
     __crossPackageFocus?: boolean
+    iconUrl?: string
+    tritonIconKey?: string
   }
 }>()
 
@@ -390,6 +392,7 @@ onUnmounted(() => {
     <PackageBox
       v-else-if="isScalaArtefactLeaf"
       leaf-visual="artefact"
+      :icon-url="data.iconUrl"
       :box-id="id"
       :label="data.label"
       :subtitle="data.subtitle ?? ''"
@@ -407,6 +410,7 @@ onUnmounted(() => {
     />
     <PackageBox
       v-else
+      :icon-url="data.iconUrl"
       :box-id="id"
       :label="data.label"
       :subtitle="data.subtitle"

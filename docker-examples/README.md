@@ -16,3 +16,7 @@ From repo root, e.g. `docker compose -f docker-examples/01-single-service/docker
 SVG marks live in `editor/src/assets/language-icons/docker-*.svg` and are re-exported from
 `editor/src/triton/dockerConceptIcons.ts` (`image`, `container`, `service`, `database`, `network`,
 `volume`, `project`). Starter cards use a subset; the rest are available for future diagram UI.
+
+In each `diagram.ilograph.yaml`, set **`x-triton-icon: <key>`** on a resource (sibling of `name` /
+`subtitle`) to show that glyph on the flow node. Keys match `dockerConceptIcons`. You can also
+set a full URL or a site path (`/my.svg`) for custom artwork.

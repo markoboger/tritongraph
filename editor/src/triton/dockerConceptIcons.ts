@@ -25,3 +25,7 @@ export type DockerConceptIconKey = keyof typeof dockerConceptIcons
 export function dockerConceptIconUrl(key: DockerConceptIconKey): string {
   return dockerConceptIcons[key]
 }
+
+export function isDockerConceptIconKey(s: string): s is DockerConceptIconKey {
+  return Object.prototype.hasOwnProperty.call(dockerConceptIcons, s)
+}

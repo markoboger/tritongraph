@@ -6,16 +6,22 @@ description: |
 resources:
   - name: image-alpine
     subtitle: Image — shared base for api + worker
+    x-triton-icon: image
   - name: network-internal
     subtitle: Network — bridge `internal`
+    x-triton-icon: network
   - name: compose-service-api
     subtitle: Service — `api`
+    x-triton-icon: service
   - name: compose-service-worker
     subtitle: Service — `worker`
+    x-triton-icon: service
   - name: container-api-1
     subtitle: Container — instance of `api`
+    x-triton-icon: container
   - name: container-worker-1
     subtitle: Container — instance of `worker`
+    x-triton-icon: container
 
 perspectives:
   - name: dependencies

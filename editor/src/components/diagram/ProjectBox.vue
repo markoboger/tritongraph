@@ -25,8 +25,10 @@ const props = defineProps<{
   /** Free-text "what does this module do" — surfaced in the AI prompt. */
   description?: string
   kind?: 'project' | 'module' | 'general'
-  /** Kept for YAML round-trip; not used for the icon (all project boxes show the cube). */
+  /** Kept for YAML round-trip; not used for the icon when {@link iconUrl} is set. */
   language?: string
+  /** Resolved from YAML `x-triton-icon` (Docker concept key or absolute URL). */
+  iconUrl?: string
   compartments?: readonly BoxCompartment[]
   boxColor?: NamedBoxColor | string
   pinned: boolean
@@ -57,6 +59,11 @@ const projectIconUrl = computed(() =>
       ? genericIconUrl
       : cubeIconUrl,
 )
+const headerIconUrl = computed(() => {
+  const u = props.iconUrl?.trim()
+  if (u) return u
+  return projectIconUrl.value
+})
 const displayNoun = computed(() =>
   projectKind.value === 'project' ? 'project' : projectKind.value === 'general' ? 'box' : 'module',
 )
@@ -231,6 +238,7 @@ watch(
     props.pinned,
     props.boxColor,
     props.language,
+    props.iconUrl,
     props.showPinTool,
     props.showColorTool,
     props.boxId,
@@ -273,7 +281,7 @@ const { editing, draftLabel, draftDescription, startEditing, commitEdit, cancelE
     >
       <template #header-icon>
         <div class="lang-icon-slot lang-icon-slot--header">
-          <img class="lang-svg cube-icon" :src="projectIconUrl" alt="" aria-hidden="true" decoding="async" />
+          <img class="lang-svg cube-icon" :src="headerIconUrl" alt="" aria-hidden="true" decoding="async" />
         </div>
       </template>
       <template #subtitle>
@@ -328,7 +336,7 @@ const { editing, draftLabel, draftDescription, startEditing, commitEdit, cancelE
       />
 
       <div class="lang-icon-slot">
-        <img class="lang-svg cube-icon" :src="projectIconUrl" alt="" aria-hidden="true" decoding="async" />
+        <img class="lang-svg cube-icon" :src="headerIconUrl" alt="" aria-hidden="true" decoding="async" />
       </div>
 
       <div

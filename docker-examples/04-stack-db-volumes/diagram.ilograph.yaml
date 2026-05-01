@@ -6,22 +6,31 @@ description: |
 resources:
   - name: image-alpine-app
     subtitle: Image — app container base
+    x-triton-icon: image
   - name: image-postgres
     subtitle: Image — postgres:16-alpine
+    x-triton-icon: image
   - name: volume-db-data
     subtitle: Volume — named `db-data` (engine-managed storage)
+    x-triton-icon: volume
   - name: volume-app-cache
     subtitle: Volume — named `app-cache`
+    x-triton-icon: volume
   - name: network-app-net
     subtitle: Network — `app-net`
+    x-triton-icon: network
   - name: compose-service-app
     subtitle: Service — `app`
+    x-triton-icon: service
   - name: compose-service-db
     subtitle: Service — `db` (database role)
+    x-triton-icon: database
   - name: container-app-1
     subtitle: Container — app instance
+    x-triton-icon: container
   - name: container-db-1
     subtitle: Container — db instance
+    x-triton-icon: container
   - name: host-port-18082
     subtitle: Host port — publish 18082 → 8080
 
