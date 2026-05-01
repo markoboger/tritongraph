@@ -6,7 +6,10 @@ import FlowPackageNode from './components/diagram/FlowPackageNode.vue'
 import GroupNode from './components/GroupNode.vue'
 import GraphWorkspace from './components/GraphWorkspace.vue'
 import DiagramTopBar from './components/common/DiagramTopBar.vue'
+import TritonRuntimeHome from './components/TritonRuntimeHome.vue'
+import type { StarterCard } from './triton/tritonStarterCard'
 import YamlDiffEditor from './components/YamlDiffEditor.vue'
+import SourceCodeViewer from './components/SourceCodeViewer.vue'
 import { parseIlographYaml, stringifyIlographYaml } from './ilograph/parse'
 import type {
   IlographDocument,
@@ -101,21 +104,10 @@ const requestedTabKey = runtimeQuery?.get('tab')?.trim() ?? ''
 const requestedDojo = runtimeQuery?.get('dojo')?.trim() ?? ''
 const initialRequestedPerspectiveName = runtimeQuery?.get('perspective')?.trim() ?? ''
 const initialRequestedDojoDepth = Number.parseInt(runtimeQuery?.get('dojoDepth')?.trim() ?? '', 10)
-const runtimeWorkspaceSession = computed(() => {
-  const workspacePath = runtimeQuery?.get('workspaceFolder')?.trim() ?? ''
-  const rawRuntimeUrl = runtimeQuery?.get('runtimeUrl')?.trim() ?? ''
-  const runtimeUrl = rawRuntimeUrl.replace(/\/$/, '')
-  if (!workspacePath || !runtimeUrl) return null
-  const workspaceName =
-    runtimeQuery?.get('workspaceName')?.trim() ||
-    workspacePath.split(/[\\/]/).filter(Boolean).pop() ||
-    'workspace'
-  return {
-    workspacePath,
-    workspaceName,
-    runtimeUrl,
-  }
-})
+
+/** Pinned first tab: local runtime repo picker (replaces visiting triton-runtime HTML on :4317). */
+const RUNTIME_HOME_TAB_KEY = 'triton-runtime-home'
+
 const ideSession = computed(() => {
   const ideOpenUrl = runtimeQuery?.get('ideOpenUrl')?.trim() ?? ''
   if (!ideOpenUrl) return null
@@ -140,7 +132,6 @@ const projectRoot = computed(() => {
 const status = ref('')
 
 const graphRef = ref<InstanceType<typeof GraphWorkspace> | null>(null)
-const examplesMenu = ref<HTMLDetailsElement | null>(null)
 /** Checked node kinds are visible (`false` means hidden). Synced from current artefact kinds. */
 const nodeTypeVisibility = ref<Record<string, boolean>>({})
 /** Checked relation types are visible (`false` means hidden). Synced from current edges’ labels. */
@@ -656,6 +647,65 @@ const dojoExamples = computed(() => [
   ...dojoFixtures.map((fixture) => ({ id: fixture.id, title: fixture.title })),
 ])
 
+/** Cards for the Triton home screen (bundled YAML, dojos, sbt, TypeScript examples). */
+const tritonStarterCards = computed<StarterCard[]>(() => {
+  const rows: StarterCard[] = []
+  rows.push({
+    kind: 'yaml',
+    selectionId: '__builtin__',
+    title: 'Ilograph layer demo',
+    subtitle: 'Bundled YAML diagram · five layers',
+    group: 'YAML',
+  })
+  for (const d of dojoExamples.value) {
+    rows.push({
+      kind: 'dojo',
+      selectionId: `dojo:${d.id}`,
+      title: d.title,
+      subtitle: 'Interactive playground',
+      group: 'Dojo',
+    })
+  }
+  for (const e of scalaExamples) {
+    rows.push({
+      kind: 'sbt',
+      selectionId: exampleSelectionId(e.root, e.dir),
+      title: exampleOptionLabel(e.dir),
+      subtitle: e.path,
+      group: 'Scala (bundled)',
+    })
+  }
+  for (const e of sbtExamplesTutorial) {
+    rows.push({
+      kind: 'sbt',
+      selectionId: exampleSelectionId(e.root, e.dir),
+      title: exampleOptionLabel(e.dir),
+      subtitle: e.path,
+      group: 'sbt tutorial',
+    })
+  }
+  for (const e of sbtExamplesLargeOss) {
+    rows.push({
+      kind: 'sbt',
+      selectionId: exampleSelectionId(e.root, e.dir),
+      title: exampleOptionLabel(e.dir),
+      subtitle: e.path,
+      group: 'sbt (large OSS)',
+    })
+  }
+  for (const t of tsExamples) {
+    const base = (t.file ?? '').replace(/\.ilograph\.(ya?ml)$/i, '')
+    rows.push({
+      kind: 'ts',
+      selectionId: tsExampleSelectionId(t.root, t.dir, t.file),
+      title: `${exampleOptionLabel(t.dir)} — ${base}`,
+      subtitle: t.path,
+      group: 'TypeScript',
+    })
+  }
+  return rows
+})
+
 /**
  * One opened diagram = one entry here. The active tab's payload is held in the top-level
  * `nodes` / `edges` / `sourcePath` / `yamlBaseline` / … refs (so all existing logic and the
@@ -676,6 +726,7 @@ interface DiagramTab {
   id: string
   key: string
   title: string
+  kind?: 'diagram' | 'source' | 'runtime'
   iconUrl?: string
   /** Tooltip on the tab + value used by the source-path overlay when this tab is active. */
   sourcePath: string
@@ -685,6 +736,9 @@ interface DiagramTab {
   nodes: any[]
   edges: any[]
   dojoDepth?: number
+  sourceContent?: string
+  sourceLanguage?: string
+  sourceLine?: number
 }
 
 interface RuntimeWorkspaceBundle {
@@ -705,13 +759,42 @@ interface RuntimeWorkspaceActionResult {
   note?: string
 }
 
+interface RuntimeWorkspaceSource {
+  ok: boolean
+  workspacePath: string
+  relPath: string
+  source: string
+}
+
 interface ProjectScope {
   id: string
   baseDir?: string
 }
 
-const tabs = ref<DiagramTab[]>([])
-const activeTabId = ref<string | null>(null)
+function uid(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `id-${Math.random().toString(16).slice(2)}`
+}
+
+/** Pinned Runtime tab exists from the first paint (Docker :8080 and dev) — do not rely on onMounted alone. */
+function createRuntimeHomeDiagramTab(): DiagramTab {
+  return {
+    id: uid(),
+    key: RUNTIME_HOME_TAB_KEY,
+    title: 'Triton',
+    kind: 'runtime',
+    iconUrl: folderIconUrl,
+    sourcePath: '',
+    fileName: '',
+    perspectiveName: undefined,
+    yamlBaseline: '',
+    nodes: [],
+    edges: [],
+  }
+}
+
+const runtimeHomeTabSeed = createRuntimeHomeDiagramTab()
+const tabs = ref<DiagramTab[]>([runtimeHomeTabSeed])
+const activeTabId = ref<string | null>(runtimeHomeTabSeed.id)
 
 const activeTab = computed<DiagramTab | undefined>(() =>
   tabs.value.find((t) => t.id === activeTabId.value),
@@ -746,8 +829,49 @@ const activeRuntimeWorkspace = computed<{ workspacePath: string; workspaceName: 
   const parsed = parseRuntimeTabKey(activeTab.value?.key ?? '')
   return parsed ? { workspacePath: parsed.workspacePath, workspaceName: parsed.workspaceName } : null
 })
+
+/**
+ * Triton-runtime base URL for API calls. Re-reads the live URL when tabs change so `history.replaceState`
+ * updates stay in sync.
+ */
+const effectiveRuntimeUrl = computed(() => {
+  void activeTabId.value
+  if (typeof window === 'undefined') {
+    const u = String(import.meta.env.VITE_TRITON_RUNTIME_URL ?? '').trim()
+    return (u || 'http://127.0.0.1:4317').replace(/\/$/, '')
+  }
+  const live = new URLSearchParams(window.location.search).get('runtimeUrl')?.trim() ?? ''
+  const env = String(import.meta.env.VITE_TRITON_RUNTIME_URL ?? '').trim()
+  return (live || env || 'http://127.0.0.1:4317').replace(/\/$/, '')
+})
+
+const runtimeWorkspaceSession = computed(() => {
+  void activeTabId.value
+  const runtimeUrl = effectiveRuntimeUrl.value
+  const fromTab = activeRuntimeWorkspace.value
+  const pathFromUrl =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('workspaceFolder')?.trim() ?? ''
+      : runtimeQuery?.get('workspaceFolder')?.trim() ?? ''
+  const nameFromUrl =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('workspaceName')?.trim() ?? ''
+      : runtimeQuery?.get('workspaceName')?.trim() ?? ''
+  const workspacePath = fromTab?.workspacePath || pathFromUrl
+  const workspaceName =
+    fromTab?.workspaceName ||
+    nameFromUrl ||
+    (workspacePath ? workspacePath.split(/[\\/]/).filter(Boolean).pop() || 'workspace' : '') ||
+    'workspace'
+  if (!runtimeUrl || !workspacePath) return null
+  return { workspacePath, workspaceName, runtimeUrl }
+})
+const activeSourceTab = computed<DiagramTab | null>(() => (
+  activeTab.value?.kind === 'source' ? activeTab.value : null
+))
 const runtimeActionBusy = ref<string>('')
 const runtimeEmptyStateMessage = computed(() => {
+  if (activeTab.value?.kind === 'runtime') return ''
   if (!activeRuntimeWorkspace.value || nodes.value.length) return ''
   const text = status.value.trim()
   if (!text) return ''
@@ -774,25 +898,11 @@ const runtimeEmptyStateMessage = computed(() => {
  * Provided downward so leaf node components (`FlowProjectNode`, `FlowPackageNode`, …) can
  * persist user edits without prop-drilling the key through every layer.
  */
-const activeWorkspaceKey = computed<string>(() => activeTab.value?.key ?? '')
+const activeWorkspaceKey = computed<string>(() =>
+  activeTab.value?.kind === 'runtime' ? '' : activeTab.value?.key ?? '',
+)
 provide('tritonWorkspaceKey', activeWorkspaceKey)
-
-/**
- * Which dropdown row should look "active". The packages view of an example highlights the same
- * sbt menu entry — a packages tab is conceptually a sub-view of that example, not its own pick.
- */
-const activeExampleSelectionKey = computed<string>(() => {
-  const k = activeTab.value?.key ?? ''
-  if (k === 'builtin') return '__builtin__'
-  if (k.startsWith('sbt:')) return k
-  if (k.startsWith('packages:')) return `sbt:${stripExampleProjectSuffix(k.slice('packages:'.length))}`
-  if (k.startsWith('ts:')) return k
-  if (k.startsWith('ts-packages:')) {
-    const parsed = parseTsExampleTabBody(k.slice('ts-packages:'.length))
-    return parsed ? tsExampleSelectionId(parsed.root, parsed.dir, parsed.file) : ''
-  }
-  return ''
-})
+provide('tritonRuntimeWorkspaceSession', runtimeWorkspaceSession)
 
 /** `(root, dir)` of the example backing the active tab; `null` for builtin / file uploads. */
 const activeExample = computed<{ root: string; dir: string } | null>(() => {
@@ -829,6 +939,7 @@ const activeExample = computed<{ root: string; dir: string } | null>(() => {
  * (packages tab → sbt tab → packages tab) are picked up without component re-creation.
  */
 provide('tritonActiveExample', activeExample)
+provide('tritonOpenRuntimeSourceTab', openRuntimeSourceTab)
 provide('tritonNodeTypeVisibility', nodeTypeVisibility)
 provide('tritonRelationTypeVisibility', relationTypeVisibility)
 provide('tritonMetricTooltipsEnabled', metricTooltipsEnabled)
@@ -841,10 +952,6 @@ const nodeTypes = {
   artefact: FlowPackageNode,
   group: GroupNode,
 } as NodeTypesObject
-
-function uid(): string {
-  return globalThis.crypto?.randomUUID?.() ?? `id-${Math.random().toString(16).slice(2)}`
-}
 
 function readFlowViewport(): { width: number; height: number } {
   const el = document.querySelector('.flow-wrap')
@@ -996,11 +1103,11 @@ async function fetchRuntimeWorkspaceBundle(
   workspacePath: string,
   workspaceName: string,
 ): Promise<RuntimeWorkspaceBundle> {
-  const session = runtimeWorkspaceSession.value
-  if (!session?.runtimeUrl) {
-    throw new Error('No runtime URL was supplied by the IDE session.')
+  const runtimeUrl = effectiveRuntimeUrl.value
+  if (!runtimeUrl) {
+    throw new Error('No Triton runtime URL is configured (set ?runtimeUrl= or VITE_TRITON_RUNTIME_URL).')
   }
-  const url = new URL(`${session.runtimeUrl}/api/workspace/bundle`)
+  const url = new URL(`${runtimeUrl}/api/workspace/bundle`)
   url.searchParams.set('workspacePath', workspacePath)
   const res = await fetch(url.toString(), { method: 'GET' })
   if (!res.ok) {
@@ -1041,15 +1148,79 @@ async function fetchRuntimeWorkspaceBundle(
   }
 }
 
+async function fetchRuntimeWorkspaceSource(
+  workspacePath: string,
+  relPath: string,
+): Promise<RuntimeWorkspaceSource> {
+  const runtimeUrl = effectiveRuntimeUrl.value
+  if (!runtimeUrl) {
+    throw new Error('No Triton runtime URL is configured (set ?runtimeUrl= or VITE_TRITON_RUNTIME_URL).')
+  }
+  const url = new URL(`${runtimeUrl}/api/workspace/source`)
+  url.searchParams.set('workspacePath', workspacePath)
+  url.searchParams.set('relPath', relPath)
+  const res = await fetch(url.toString(), { method: 'GET' })
+  const body = (await res.json().catch(() => ({}))) as Partial<RuntimeWorkspaceSource> & { error?: string }
+  if (!res.ok) {
+    throw new Error(String(body.error || `Runtime source request failed (${res.status}).`))
+  }
+  return {
+    ok: body.ok === true,
+    workspacePath: String(body.workspacePath ?? workspacePath),
+    relPath: String(body.relPath ?? relPath),
+    source: String(body.source ?? ''),
+  }
+}
+
+function runtimeSourceTabKey(workspacePath: string, workspaceName: string, relPath: string, line: number): string {
+  return `runtime-source:${workspacePath}::${workspaceName}::${relPath}::${line}`
+}
+
+async function openRuntimeSourceTab(relPath: string, line = 1): Promise<void> {
+  const session = runtimeWorkspaceSession.value
+  const runtimeWs = activeRuntimeWorkspace.value ?? session
+  if (!effectiveRuntimeUrl.value || !runtimeWs) {
+    status.value = 'Runtime source preview is only available for runtime-backed workspaces.'
+    return
+  }
+  const normalizedLine = Math.max(1, Math.floor(line || 1))
+  const title = relPath.split('/').filter(Boolean).pop() || relPath
+  await openOrActivateTab(
+    {
+      key: runtimeSourceTabKey(runtimeWs.workspacePath, runtimeWs.workspaceName, relPath, normalizedLine),
+      title,
+      iconUrl: folderIconUrl,
+      kind: 'source',
+    },
+    async () => {
+      const source = await fetchRuntimeWorkspaceSource(runtimeWs.workspacePath, relPath)
+      sourcePath.value = `${runtimeWs.workspacePath}/${source.relPath}`
+      fileName.value = title
+      perspectiveName.value = undefined
+      yamlBaseline.value = ''
+      nodes.value = []
+      edges.value = []
+      if (activeTab.value) {
+        activeTab.value.sourceContent = source.source
+        activeTab.value.sourceLanguage = undefined
+        activeTab.value.sourceLine = normalizedLine
+        activeTab.value.sourcePath = `${runtimeWs.workspacePath}/${source.relPath}`
+        activeTab.value.fileName = title
+      }
+      status.value = `Opened source preview for ${source.relPath} at line ${normalizedLine}.`
+    },
+  )
+}
+
 async function postRuntimeWorkspaceAction(
   workspacePath: string,
   action: 'refresh' | 'sbt-test' | 'sbt-coverage',
 ): Promise<RuntimeWorkspaceActionResult> {
-  const session = runtimeWorkspaceSession.value
-  if (!session?.runtimeUrl) {
-    throw new Error('No runtime URL was supplied by the IDE session.')
+  const runtimeUrl = effectiveRuntimeUrl.value
+  if (!runtimeUrl) {
+    throw new Error('No Triton runtime URL is configured (set ?runtimeUrl= or VITE_TRITON_RUNTIME_URL).')
   }
-  const url = `${session.runtimeUrl}/api/workspace/action`
+  const url = `${runtimeUrl}/api/workspace/action`
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -1069,7 +1240,6 @@ async function postRuntimeWorkspaceAction(
 }
 
 async function selectExample(id: string) {
-  if (examplesMenu.value) examplesMenu.value.open = false
   if (id === '__builtin__') {
     await openBuiltinTab()
     return
@@ -1123,6 +1293,16 @@ async function activateTabById(id: string): Promise<void> {
   const target = tabs.value.find((t) => t.id === id)
   if (!target) return
   activeTabId.value = id
+  if (target.kind === 'source' || target.kind === 'runtime') {
+    nodes.value = []
+    edges.value = []
+    perspectiveName.value = undefined
+    sourcePath.value = target.kind === 'source' ? target.sourcePath : ''
+    fileName.value = target.kind === 'source' ? target.fileName : ''
+    yamlBaseline.value = ''
+    await nextTick()
+    return
+  }
   /** Assign whole arrays so Vue Flow re-syncs from the saved snapshot (object identities differ
    *  per tab, which is fine — it gives a clean rebuild rather than mixing previous-tab state). */
   nodes.value = target.nodes
@@ -1136,7 +1316,28 @@ async function activateTabById(id: string): Promise<void> {
   await graphRef.value?.fitToViewport()
 }
 
+function reorderRuntimeHomeFirst(): void {
+  const i = tabs.value.findIndex((t) => t.key === RUNTIME_HOME_TAB_KEY)
+  if (i <= 0) return
+  const next = [...tabs.value]
+  const [home] = next.splice(i, 1)
+  tabs.value = [home, ...next]
+}
+
+/** Ensures the pinned Runtime tab exists at index 0 (creates it if missing). */
+function ensureRuntimeHomeTab(): void {
+  if (tabs.value.some((t) => t.key === RUNTIME_HOME_TAB_KEY)) {
+    reorderRuntimeHomeFirst()
+    return
+  }
+  const tab = createRuntimeHomeDiagramTab()
+  tabs.value = [tab, ...tabs.value]
+  if (!activeTabId.value) activeTabId.value = tab.id
+}
+
 async function closeTab(id: string): Promise<void> {
+  const victim = tabs.value.find((t) => t.id === id)
+  if (victim?.key === RUNTIME_HOME_TAB_KEY) return
   const idx = tabs.value.findIndex((t) => t.id === id)
   if (idx < 0) return
   const wasActive = activeTabId.value === id
@@ -1150,7 +1351,7 @@ async function closeTab(id: string): Promise<void> {
     sourcePath.value = ''
     fileName.value = 'diagram.ilograph.yaml'
     yamlBaseline.value = ''
-    status.value = 'No diagram open. Pick an example or open a YAML file.'
+    status.value = 'No diagram open. Open the Triton tab to pick an example or add a repository.'
     return
   }
   /** Activate the neighbor that "took the closed tab's slot" (next to the right; or the new last). */
@@ -1159,12 +1360,13 @@ async function closeTab(id: string): Promise<void> {
 }
 
 async function openOrActivateTab(
-  spec: { key: string; title: string; iconUrl?: string },
+  spec: { key: string; title: string; iconUrl?: string; kind?: 'diagram' | 'source' },
   loader: () => Promise<void>,
 ): Promise<void> {
   const existing = tabs.value.find((t) => t.key === spec.key)
   if (existing) {
     await activateTabById(existing.id)
+    reorderRuntimeHomeFirst()
     return
   }
   snapshotActiveTab()
@@ -1172,6 +1374,7 @@ async function openOrActivateTab(
     id: uid(),
     key: spec.key,
     title: spec.title,
+    kind: spec.kind ?? 'diagram',
     iconUrl: spec.iconUrl,
     sourcePath: '',
     fileName: '',
@@ -1194,6 +1397,7 @@ async function openOrActivateTab(
   await loader()
   /** Capture loader-produced state so re-activation via `activateTabById` later restores it. */
   snapshotActiveTab()
+  reorderRuntimeHomeFirst()
 }
 
 async function openBuiltinTab(): Promise<void> {
@@ -2263,7 +2467,6 @@ async function openDojoTab(id: string): Promise<void> {
     id === ABSTRACTION_LAYERS_DOJO_ID ||
     id === BREAKPOINT_LAYOUTS_DOJO_ID
   ) {
-    showYamlEditor.value = true
     sidePanelTab.value = 'dojo'
   }
 }
@@ -2274,6 +2477,7 @@ function runtimeTabKey(prefix: 'runtime-sbt' | 'runtime-packages', workspacePath
 
 function isRestorableTabKey(key: string): boolean {
   return (
+    key === RUNTIME_HOME_TAB_KEY ||
     key === 'builtin' ||
     key.startsWith('dojo:') ||
     key.startsWith('sbt:') ||
@@ -2295,6 +2499,16 @@ function syncUrlFromState(): void {
   params.delete('dojoDepth')
 
   const key = activeTab.value?.key?.trim() ?? ''
+  const rtWs = activeRuntimeWorkspace.value
+  if (rtWs) {
+    params.set('runtimeUrl', effectiveRuntimeUrl.value)
+    params.set('workspaceFolder', rtWs.workspacePath)
+    params.set('workspaceName', rtWs.workspaceName)
+  } else if (key !== RUNTIME_HOME_TAB_KEY) {
+    /** Keep `workspaceFolder` on the Triton home tab so toolbar actions still resolve the last workspace. */
+    params.delete('workspaceFolder')
+    params.delete('workspaceName')
+  }
   if (key && isRestorableTabKey(key)) params.set('tab', key)
   const perspective = perspectiveName.value?.trim() ?? ''
   if (perspective) params.set('perspective', perspective)
@@ -2321,6 +2535,12 @@ function syncUrlFromState(): void {
 async function openTabFromUrlKey(key: string): Promise<boolean> {
   const trimmed = key.trim()
   if (!trimmed) return false
+  if (trimmed === RUNTIME_HOME_TAB_KEY) {
+    ensureRuntimeHomeTab()
+    const home = tabs.value.find((t) => t.key === RUNTIME_HOME_TAB_KEY)
+    if (home) await activateTabById(home.id)
+    return true
+  }
   if (trimmed === 'builtin') {
     await openBuiltinTab()
     return true
@@ -2513,16 +2733,41 @@ async function openRuntimePackagesTab(workspacePath: string, workspaceName: stri
 }
 
 async function reloadActiveRuntimeTab(): Promise<void> {
-  const runtimeWs = activeRuntimeWorkspace.value
-  if (!runtimeWs || !activeTab.value) return
-  const key = activeTab.value.key
-  const parsed = parseRuntimeTabKey(key)
+  const session = runtimeWorkspaceSession.value
+  const fromActive = activeRuntimeWorkspace.value
+  const runtimeWs =
+    fromActive ??
+    (session ? { workspacePath: session.workspacePath, workspaceName: session.workspaceName } : null)
+  if (!runtimeWs) return
+
+  const key = activeTab.value?.key ?? ''
   if (key.startsWith('runtime-sbt:')) {
     await loadSbtBuildForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName)
-  } else if (key.startsWith('runtime-packages:')) {
-    await loadScalaPackagesForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName, parsed?.projectId)
+    snapshotActiveTab()
+    return
   }
-  snapshotActiveTab()
+  if (key.startsWith('runtime-packages:')) {
+    const parsed = parseRuntimeTabKey(key)
+    await loadScalaPackagesForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName, parsed?.projectId)
+    snapshotActiveTab()
+    return
+  }
+  const sbtKey = runtimeTabKey('runtime-sbt', runtimeWs.workspacePath, runtimeWs.workspaceName)
+  const sbtEntry = tabs.value.find((t) => t.key === sbtKey)
+  if (sbtEntry) {
+    await activateTabById(sbtEntry.id)
+    await loadSbtBuildForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName)
+    snapshotActiveTab()
+    return
+  }
+  const pkgPrefix = `runtime-packages:${runtimeWs.workspacePath}`
+  const pkgEntry = tabs.value.find((t) => t.key.startsWith(pkgPrefix))
+  if (pkgEntry) {
+    const parsed = parseRuntimeTabKey(pkgEntry.key)
+    await activateTabById(pkgEntry.id)
+    await loadScalaPackagesForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName, parsed?.projectId)
+    snapshotActiveTab()
+  }
 }
 
 async function loadSbtBuildForExample(root: string, dir: string) {
@@ -2852,9 +3097,13 @@ async function runRuntimeWorkspaceAction(
   action: 'refresh' | 'sbt-test' | 'sbt-coverage',
   label: string,
 ): Promise<void> {
-  const runtimeWs = activeRuntimeWorkspace.value
+  const session = runtimeWorkspaceSession.value
+  const fromActive = activeRuntimeWorkspace.value
+  const runtimeWs =
+    fromActive ??
+    (session ? { workspacePath: session.workspacePath, workspaceName: session.workspaceName } : null)
   if (!runtimeWs) {
-    status.value = `Cannot ${label.toLowerCase()} — no runtime-backed workspace is active.`
+    status.value = `Cannot ${label.toLowerCase()} — open a runtime-backed repo or add one on the Triton tab first.`
     return
   }
   runtimeActionBusy.value = action
@@ -2951,47 +3200,6 @@ function onNodeLinkAction(payload: { nodeId: string; href: string }) {
   }
   status.value = `Ignored link with unrecognized target: ${href}`
 }
-
-function onFilePick(ev: Event) {
-  const input = ev.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  const reader = new FileReader()
-  reader.onload = () => {
-    const text = String(reader.result)
-    const name = file.name
-    /** Each upload gets a unique key so re-picking the same file opens a fresh tab. */
-    void openOrActivateTab(
-      { key: `file:${name}#${uid()}`, title: name },
-      async () => {
-        sourcePath.value = name
-        await applyDoc(text, name, true)
-      },
-    )
-    input.value = ''
-  }
-  reader.readAsText(file)
-}
-
-function downloadYaml() {
-  const doc = flowToIlographDocument(
-    slimNodesForExport(nodes.value),
-    slimEdgesForExport(edges.value),
-    {
-      perspectiveName: perspectiveName.value,
-    },
-  )
-  const text = stringifyIlographYaml(doc)
-  const blob = new Blob([text], { type: 'text/yaml;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = fileName.value || 'diagram.ilograph.yaml'
-  a.click()
-  URL.revokeObjectURL(url)
-  status.value = 'Exported Ilograph-compatible YAML (includes optional x-triton-editor positions).'
-}
-
 
 async function addRootModule() {
   const id = `module-${uid()}`
@@ -3327,6 +3535,11 @@ const activeDojoId = computed(() => {
   return key.startsWith('dojo:') ? key.slice('dojo:'.length) : ''
 })
 
+/** Edge control to show/hide the YAML side panel (not on Triton or source tabs). */
+const showYamlSideToggle = computed(
+  () => !!activeTab.value && !activeSourceTab.value && activeTab.value.kind !== 'runtime',
+)
+
 const showDojoPanel = computed(
   () =>
     activeDojoId.value === PACKAGE_NESTING_DOJO_ID ||
@@ -3473,6 +3686,7 @@ onMounted(() => {
     const workspaceLabel = ideSession.value.workspaceName ? ` (${ideSession.value.workspaceName})` : ''
     status.value = `Connected to ${ideSession.value.ideName}${workspaceLabel} for open-in-editor links.`
   }
+  ensureRuntimeHomeTab()
   if (requestedTabKey) {
     void openTabFromUrlKey(requestedTabKey)
     return
@@ -3486,11 +3700,17 @@ onMounted(() => {
     void openDojoTab(requestedDojo)
     return
   }
+  const home = tabs.value.find((t) => t.key === RUNTIME_HOME_TAB_KEY)
+  if (home) {
+    void activateTabById(home.id)
+    if (!ideSession.value) {
+      status.value =
+        'Pick a repository on the Triton tab, or open a bundled example or dojo from there.'
+    }
+    return
+  }
   /**
-   * Boot into the first bundled Scala example (currently `scala-examples/animal-fruit`)
-   * because the Scala package + artefact diagram is the showcase view we iterate on most.
-   * Fall back to the Ilograph reference demo if the Scala bundle is empty so the editor
-   * still has *something* to show on first load.
+   * Fallback when the pinned Runtime tab could not be created: first bundled Scala example, or builtin.
    */
   const scalaDefault = scalaExamples[0]
   if (scalaDefault) {
@@ -3508,144 +3728,8 @@ onUnmounted(() => {
 
 <template>
   <div class="shell">
-    <header class="toolbar">
-      <div class="brand">TritonGraph</div>
-      <div v-if="ideSession" class="ide-session-chip" :title="ideSession.ideOpenUrl">
-        <span class="ide-session-chip__label">Connected to {{ ideSession.ideName }}</span>
-        <span v-if="ideSession.workspaceName" class="ide-session-chip__meta">{{ ideSession.workspaceName }}</span>
-      </div>
-      <div v-if="activeRuntimeWorkspace" class="runtime-actions">
-        <button
-          type="button"
-          class="btn"
-          :disabled="!!runtimeActionBusy"
-          @click="void runRuntimeWorkspaceAction('refresh', 'Refreshing workspace')"
-        >
-          {{ runtimeActionBusy === 'refresh' ? 'Refreshing…' : 'Refresh' }}
-        </button>
-        <button
-          type="button"
-          class="btn"
-          :disabled="!!runtimeActionBusy"
-          @click="void runRuntimeWorkspaceAction('sbt-test', 'Running sbt test')"
-        >
-          {{ runtimeActionBusy === 'sbt-test' ? 'Running tests…' : 'Run sbt test' }}
-        </button>
-        <button
-          type="button"
-          class="btn"
-          :disabled="!!runtimeActionBusy"
-          @click="void runRuntimeWorkspaceAction('sbt-coverage', 'Running coverage')"
-        >
-          {{ runtimeActionBusy === 'sbt-coverage' ? 'Running coverage…' : 'Run coverage' }}
-        </button>
-      </div>
-      <details ref="examplesMenu" class="examples-menu">
-        <summary class="btn menu-summary">Examples</summary>
-        <div class="menu-panel" role="menu" aria-label="Example diagrams">
-          <template v-if="scalaExamples.length">
-            <div class="menu-heading" role="presentation">Scala examples</div>
-            <button
-              v-for="e in scalaExamples"
-              :key="e.root + '/' + e.dir"
-              type="button"
-              class="menu-item"
-              role="menuitem"
-              :class="{ 'menu-item--active': activeExampleSelectionKey === exampleSelectionId(e.root, e.dir) }"
-              :title="e.path"
-              @click="selectExample(exampleSelectionId(e.root, e.dir))"
-            >
-              {{ exampleOptionLabel(e.dir) }}
-            </button>
-            <div class="menu-sep" role="separator" />
-          </template>
-          <template v-if="tsExamples.length">
-            <div class="menu-heading" role="presentation">TS examples</div>
-            <button
-              v-for="t in tsExamples"
-              :key="t.root + '/' + t.dir + '/' + t.file"
-              type="button"
-              class="menu-item"
-              role="menuitem"
-              :class="{ 'menu-item--active': activeExampleSelectionKey === tsExampleSelectionId(t.root, t.dir, t.file) }"
-              :title="t.path"
-              @click="selectExample(tsExampleSelectionId(t.root, t.dir, t.file))"
-            >
-              {{ exampleOptionLabel(t.dir) }} — {{ (t.file ?? '').replace(/\.ilograph\.(ya?ml)$/i, '') }}
-            </button>
-            <div class="menu-sep" role="separator" />
-          </template>
-          <button
-            type="button"
-            class="menu-item"
-            role="menuitem"
-            :class="{ 'menu-item--active': activeExampleSelectionKey === '__builtin__' }"
-            @click="selectExample('__builtin__')"
-          >
-            Ilograph demo (five layers)
-          </button>
-          <template v-if="dojoExamples.length">
-            <div class="menu-sep" role="separator" />
-            <div class="menu-heading" role="presentation">Dojo</div>
-            <button
-              v-for="dojo in dojoExamples"
-              :key="dojo.id"
-              type="button"
-              class="menu-item"
-              role="menuitem"
-              :class="{ 'menu-item--active': activeTab?.key === `dojo:${dojo.id}` }"
-              @click="selectExample(`dojo:${dojo.id}`)"
-            >
-              {{ dojo.title }}
-            </button>
-          </template>
-          <template v-if="sbtExamplesTutorial.length">
-            <div class="menu-sep" role="separator" />
-            <div class="menu-heading" role="presentation">Bundled sbt (tutorial)</div>
-            <button
-              v-for="e in sbtExamplesTutorial"
-              :key="e.root + '/' + e.dir"
-              type="button"
-              class="menu-item"
-              role="menuitem"
-              :class="{ 'menu-item--active': activeExampleSelectionKey === exampleSelectionId(e.root, e.dir) }"
-              :title="e.path"
-              @click="selectExample(exampleSelectionId(e.root, e.dir))"
-            >
-              {{ exampleOptionLabel(e.dir) }}
-            </button>
-          </template>
-          <template v-if="sbtExamplesLargeOss.length">
-            <div class="menu-sep" role="separator" />
-            <div class="menu-heading" role="presentation">Bundled sbt (large OSS)</div>
-            <button
-              v-for="e in sbtExamplesLargeOss"
-              :key="e.root + '/' + e.dir"
-              type="button"
-              class="menu-item"
-              role="menuitem"
-              :class="{ 'menu-item--active': activeExampleSelectionKey === exampleSelectionId(e.root, e.dir) }"
-              :title="e.path"
-              @click="selectExample(exampleSelectionId(e.root, e.dir))"
-            >
-              {{ exampleOptionLabel(e.dir) }}
-            </button>
-          </template>
-        </div>
-      </details>
-      <label class="btn file">
-        Open YAML
-        <input type="file" accept=".yaml,.yml,text/yaml" hidden @change="onFilePick" />
-      </label>
-      <button type="button" class="btn" @click="downloadYaml">Download YAML</button>
-      <button type="button" class="btn" @click="showYamlEditor = !showYamlEditor">
-        {{ showYamlEditor ? 'Hide Panel' : 'Show Panel' }}
-      </button>
-      <span class="status">{{ status }}</span>
-    </header>
-
     <div
-      v-if="tabs.length"
+      v-if="tabs.length > 0"
       class="tab-strip"
       role="tablist"
       aria-label="Open diagrams"
@@ -3664,6 +3748,7 @@ onUnmounted(() => {
         <img v-if="tab.iconUrl" class="tab__icon" :src="tab.iconUrl" alt="" aria-hidden="true" />
         <span class="tab__title">{{ tab.title }}</span>
         <span
+          v-if="tab.key !== RUNTIME_HOME_TAB_KEY"
           class="tab__close"
           role="button"
           tabindex="0"
@@ -3675,9 +3760,13 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <div class="main" :class="{ 'main--no-side': !showYamlEditor }">
-      <div class="flow-wrap">
+    <div
+      class="main"
+      :class="{ 'main--no-side': !showYamlEditor || !!activeSourceTab || activeTab?.kind === 'runtime' }"
+    >
+      <div class="flow-wrap flow-wrap--runtime-host">
         <DiagramTopBar
+          v-if="!activeSourceTab && activeTab?.kind !== 'runtime'"
           :source-path="sourcePath"
           :source-path-logo-url="sourcePathLogoUrl"
           :node-types="nodeTypesList"
@@ -3696,7 +3785,7 @@ onUnmounted(() => {
           "
         />
         <div
-          v-if="ideSession"
+          v-if="!activeSourceTab && activeTab?.kind !== 'runtime' && ideSession"
           class="ide-session-overlay"
           :title="ideSession.activeFile ? `${ideSession.ideName} active file: ${ideSession.activeFile}` : `Opened from ${ideSession.ideName}`"
         >
@@ -3705,31 +3794,102 @@ onUnmounted(() => {
             {{ ideSession.ideName }}<template v-if="ideSession.activeFile"> · {{ ideSession.activeFile }}</template>
           </span>
         </div>
-        <div v-if="runtimeEmptyStateMessage" class="runtime-empty-state" role="status" aria-live="polite">
+        <div
+          v-if="!activeSourceTab && activeTab?.kind !== 'runtime' && runtimeEmptyStateMessage"
+          class="runtime-empty-state"
+          role="status"
+          aria-live="polite"
+        >
           <div class="runtime-empty-state__title">Runtime Workspace Not Loaded</div>
           <div class="runtime-empty-state__body">{{ runtimeEmptyStateMessage }}</div>
           <div class="runtime-empty-state__hint">
-            Check that `triton-runtime` is running for this workspace, then use `Refresh`.
+            Check that `triton-runtime` is running for this workspace, then use Refresh workspace on the Triton tab.
           </div>
         </div>
-        <GraphWorkspace
-          ref="graphRef"
-          v-model:nodes="nodes"
-          v-model:edges="edges"
-          :node-types="nodeTypes"
-          :node-type-visibility="nodeTypeVisibility"
-          :relation-type-visibility="relationTypeVisibility"
-          :abstraction-dojo-resize="abstractionDojoResizeForGraph"
-          :focus-relation-depth="focusRelationDepth"
-          :nodes-draggable="
-            activeTab?.key === `dojo:${ABSTRACTION_LAYERS_DOJO_ID}` ||
-            activeTab?.key === `dojo:${BREAKPOINT_LAYOUTS_DOJO_ID}`
-          "
-          @status="(s) => (status = s)"
-          @link-action="onNodeLinkAction"
+        <SourceCodeViewer
+          v-if="activeSourceTab"
+          :source="activeSourceTab.sourceContent ?? ''"
+          :file-path="activeSourceTab.sourcePath || activeSourceTab.title"
+          :language="activeSourceTab.sourceLanguage"
+          :line="activeSourceTab.sourceLine"
         />
+        <div v-else-if="activeTab?.kind === 'runtime'" class="triton-tab-page">
+          <TritonRuntimeHome
+            :runtime-base-url="effectiveRuntimeUrl"
+            :starter-cards="tritonStarterCards"
+            :ide-session="ideSession"
+            :runtime-workspace-active="!!runtimeWorkspaceSession"
+            :runtime-action-busy="runtimeActionBusy"
+            :status-message="status"
+            @open-sbt="(p) => void openRuntimeSbtTab(p.workspacePath, p.workspaceName)"
+            @open-packages="(p) => void openRuntimePackagesTab(p.workspacePath, p.workspaceName)"
+            @select-example="(id) => void selectExample(id)"
+            @runtime-workspace-action="(p) => void runRuntimeWorkspaceAction(p.action, p.label)"
+          />
+        </div>
+        <div v-else class="diagram-with-yaml-toggle">
+          <GraphWorkspace
+            ref="graphRef"
+            v-model:nodes="nodes"
+            v-model:edges="edges"
+            :node-types="nodeTypes"
+            :node-type-visibility="nodeTypeVisibility"
+            :relation-type-visibility="relationTypeVisibility"
+            :abstraction-dojo-resize="abstractionDojoResizeForGraph"
+            :focus-relation-depth="focusRelationDepth"
+            :nodes-draggable="
+              activeTab?.key === `dojo:${ABSTRACTION_LAYERS_DOJO_ID}` ||
+              activeTab?.key === `dojo:${BREAKPOINT_LAYOUTS_DOJO_ID}`
+            "
+            @status="(s) => (status = s)"
+            @link-action="onNodeLinkAction"
+          />
+          <button
+            v-if="showYamlSideToggle"
+            type="button"
+            class="yaml-side-toggle"
+            :class="{ 'yaml-side-toggle--panel-open': showYamlEditor }"
+            :aria-expanded="showYamlEditor"
+            aria-controls="triton-yaml-side-panel"
+            :aria-label="showYamlEditor ? 'Hide YAML and tools panel' : 'Show YAML and tools panel'"
+            @click="showYamlEditor = !showYamlEditor"
+          >
+            <svg
+              class="yaml-side-toggle__icon"
+              viewBox="0 0 8 20"
+              width="8"
+              height="20"
+              aria-hidden="true"
+            >
+              <polyline
+                v-if="!showYamlEditor"
+                class="yaml-side-toggle__stroke"
+                points="5.5,3 2.5,10 5.5,17"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.35"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <polyline
+                v-else
+                class="yaml-side-toggle__stroke"
+                points="2.5,3 5.5,10 2.5,17"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.35"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
       </div>
-      <aside v-if="showYamlEditor" class="side">
+      <aside
+        v-if="showYamlEditor && !activeSourceTab && activeTab?.kind !== 'runtime'"
+        id="triton-yaml-side-panel"
+        class="side"
+      >
         <div class="side-panel-tabs" role="tablist" aria-label="YAML and tools">
           <button
             type="button"
@@ -4050,44 +4210,12 @@ onUnmounted(() => {
   background: #f8fafc;
   color: #0f172a;
 }
-.toolbar {
+.triton-tab-page {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid #e2e8f0;
-  background: #fff;
-}
-.brand {
-  font-weight: 700;
-  margin-right: 8px;
-  font-family: ui-sans-serif, system-ui, sans-serif;
-}
-.ide-session-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
-  border: 1px solid #bfdbfe;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  font-size: 12px;
-  line-height: 1;
-}
-.ide-session-chip__label {
-  font-weight: 700;
-}
-.ide-session-chip__meta {
-  color: #475569;
-}
-.runtime-actions {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
+  flex-direction: column;
+  overflow: hidden;
 }
 .btn {
   border: 1px solid #cbd5e1;
@@ -4221,74 +4349,6 @@ onUnmounted(() => {
 .btn.primary:hover {
   background: #1d4ed8;
 }
-.btn.file {
-  display: inline-block;
-}
-.status {
-  margin-left: auto;
-  font-size: 12px;
-  color: #64748b;
-}
-
-.examples-menu {
-  position: relative;
-}
-.examples-menu .menu-summary {
-  list-style: none;
-  user-select: none;
-}
-.examples-menu .menu-summary::-webkit-details-marker {
-  display: none;
-}
-.menu-panel {
-  position: absolute;
-  z-index: 50;
-  margin-top: 4px;
-  min-width: min(100vw - 32px, 360px);
-  max-height: min(70vh, 520px);
-  overflow: auto;
-  padding: 4px;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
-  background: #fff;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
-}
-.menu-sep {
-  height: 1px;
-  margin: 4px 6px;
-  background: #e2e8f0;
-}
-.menu-heading {
-  padding: 6px 10px 4px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: #64748b;
-}
-.menu-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: 0;
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-size: 13px;
-  color: #0f172a;
-  background: transparent;
-  cursor: pointer;
-}
-.menu-item:hover {
-  background: #f1f5f9;
-}
-.menu-item--active {
-  background: #eff6ff;
-  font-weight: 600;
-}
-.menu-item:focus-visible {
-  outline: 2px solid #93c5fd;
-  outline-offset: 1px;
-}
 .menu-check {
   display: flex;
   align-items: flex-start;
@@ -4332,6 +4392,69 @@ onUnmounted(() => {
   min-width: 0;
   height: 100%;
   position: relative;
+}
+.flow-wrap--runtime-host {
+  display: flex;
+  flex-direction: column;
+}
+/* Stack graph + YAML handle so flex does not push the handle below the fold (GraphWorkspace is height:100%). */
+.diagram-with-yaml-toggle {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.diagram-with-yaml-toggle > :first-child {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.yaml-side-toggle {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 48px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 6px 0 0 6px;
+  background: rgba(241, 245, 249, 0.88);
+  color: rgba(100, 116, 139, 0.72);
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.85), -1px 0 6px rgba(15, 23, 42, 0.04);
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease,
+    width 0.18s ease;
+}
+.yaml-side-toggle:hover {
+  width: 15px;
+  background: rgba(248, 250, 252, 0.98);
+  color: #475569;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.55), -2px 0 10px rgba(15, 23, 42, 0.08);
+}
+.yaml-side-toggle:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
+}
+.yaml-side-toggle--panel-open {
+  color: #64748b;
+}
+.yaml-side-toggle__icon {
+  display: block;
+  flex-shrink: 0;
+}
+.yaml-side-toggle__stroke {
+  vector-effect: non-scaling-stroke;
 }
 .ide-session-overlay {
   position: absolute;

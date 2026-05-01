@@ -1,0 +1,27 @@
+services:
+  triton-runtime:
+    build:
+      context: ./packages/triton-runtime
+    container_name: triton-runtime
+    environment:
+      TRITON_RUNTIME_HOST: 0.0.0.0
+      TRITON_RUNTIME_PORT: 4317
+      TRITON_PUBLIC_RUNTIME_URL: http://127.0.0.1:4317
+      TRITON_EDITOR_URL: http://127.0.0.1:8080
+      TRITON_ALLOWED_REPO_ROOTS: /repos
+    ports:
+      - "4317:4317"
+    volumes:
+      - ${TRITON_LOCAL_REPOS:-..}:/repos:ro
+
+  triton-ui:
+    build:
+      context: .
+      dockerfile: ./editor/Dockerfile
+      args:
+        VITE_TRITON_RUNTIME_URL: http://127.0.0.1:4317
+    container_name: triton-ui
+    ports:
+      - "8080:8080"
+    depends_on:
+      - triton-runtime

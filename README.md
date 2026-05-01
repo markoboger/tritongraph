@@ -34,6 +34,54 @@ npm start
 
 This starts the local Triton runtime, usually at `http://127.0.0.1:4317`.
 
+### Standalone runtime + browser UI
+
+The runtime can now be used independently from the IDE plugin:
+
+1. Start the browser UI:
+
+```bash
+cd /Users/markoboger/workspace/tritongraph/editor
+npm install
+npm run dev
+```
+
+2. Start the runtime:
+
+```bash
+cd /Users/markoboger/workspace/tritongraph/packages/triton-runtime
+npm install
+TRITON_ALLOWED_REPO_ROOTS=/Users/markoboger/workspace \
+TRITON_EDITOR_URL=http://127.0.0.1:5173 \
+npm start
+```
+
+3. Open [http://127.0.0.1:4317](http://127.0.0.1:4317), enter an absolute repo path such as `/Users/markoboger/workspace/chess`, and open either:
+- `sbt` diagram
+- package diagram
+
+The runtime validates that the repo path is inside `TRITON_ALLOWED_REPO_ROOTS`, then launches the existing runtime-backed editor flow against that local repository. The landing page also shows discovered repositories under the configured roots plus a clickable list of recently opened repositories.
+
+### Docker Compose deployment
+
+You can also run a first standalone deployment with Docker Compose:
+
+```bash
+cd /Users/markoboger/workspace/tritongraph
+TRITON_LOCAL_REPOS=/Users/markoboger/workspace docker compose up --build
+```
+
+Then:
+
+- open [http://127.0.0.1:4317](http://127.0.0.1:4317)
+- select a discovered mounted repo such as `/repos/chess`, or enter it directly
+- open the generated diagram link in the Triton UI
+
+Compose services:
+
+- `triton-runtime` on `4317`
+- `triton-ui` on `8080`
+
 ### IDE-managed startup
 
 If you have the Triton extension installed in VS Code, Cursor, or Windsurf, you can let the extension start both services for you:

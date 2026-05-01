@@ -172,6 +172,14 @@ const activeExampleRef = inject<Ref<{ root: string; dir: string } | null> | unde
   'tritonActiveExample',
   undefined,
 )
+const runtimeWorkspaceSession = inject<Ref<{ workspacePath: string; workspaceName: string; runtimeUrl: string } | null> | undefined>(
+  'tritonRuntimeWorkspaceSession',
+  undefined,
+)
+const openRuntimeSourceTab = inject<((relPath: string, line?: number) => void) | undefined>(
+  'tritonOpenRuntimeSourceTab',
+  undefined,
+)
 const emitLinkAction = inject<((nodeId: string, href: string) => void) | undefined>(
   'tritonEmitLinkAction',
   undefined,
@@ -182,9 +190,9 @@ function onLinkAction(href: string) {
 }
 
 function canOpenInEditor(): boolean {
-  if (!activeExampleRef?.value) return false
   if (!props.data.sourceFile) return false
-  return true
+  if (runtimeWorkspaceSession?.value) return true
+  return !!activeExampleRef?.value
 }
 
 /**
@@ -198,10 +206,15 @@ function canOpenInEditor(): boolean {
  * to 1 when composing the editor URL.
  */
 function triggerOpenInEditor(line?: number): void {
-  const ex = activeExampleRef?.value
   const relPath = props.data.sourceFile
-  if (!ex || !relPath) return
+  if (!relPath) return
   const effectiveRow = line !== undefined ? line : (props.data.sourceRow ?? 0)
+  if (runtimeWorkspaceSession?.value && openRuntimeSourceTab) {
+    openRuntimeSourceTab(relPath, effectiveRow + 1)
+    return
+  }
+  const ex = activeExampleRef?.value
+  if (!ex) return
   openInEditor({
     root: ex.root,
     exampleDir: ex.dir,

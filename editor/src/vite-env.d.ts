@@ -1,5 +1,10 @@
 /// <reference types="vite/client" />
 
+interface ImportMetaEnv {
+  /** Default triton-runtime base URL when the page is not opened with `?runtimeUrl=`. */
+  readonly VITE_TRITON_RUNTIME_URL?: string
+}
+
 declare module 'virtual:sbt-examples' {
   export interface SbtExampleEncoded {
     /** Logical examples-root name (`sbt-examples`, `scala-examples`, …). */

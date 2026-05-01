@@ -2,6 +2,7 @@ const http = require('http')
 const fs = require('fs')
 const path = require('path')
 const cp = require('child_process')
+const os = require('os')
 
 const IGNORED_DIRS = new Set([
   '.git',
@@ -13,6 +14,8 @@ const IGNORED_DIRS = new Set([
   'dist',
   'out',
 ])
+const RECENT_REPOS_LIMIT = 12
+const REPO_DISCOVERY_MAX_DEPTH = 3
 
 function applyCorsHeaders(res) {
   res.setHeader('access-control-allow-origin', '*')
@@ -51,12 +54,28 @@ function safeJsonParse(text) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+}
+
+function safeJsonScriptText(value) {
+  return JSON.stringify(value).replaceAll('<', '\\u003c')
+}
+
 function fileExists(p) {
   try {
     return fs.existsSync(p)
   } catch {
     return false
   }
+}
+
+function ensureDirSync(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true })
 }
 
 function probeWorkspace(workspacePath) {
@@ -86,11 +105,248 @@ function probeWorkspace(workspacePath) {
   }
 }
 
+function splitConfiguredRoots(raw) {
+  return String(raw || '')
+    .split(/[,\n;]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
+function normalizePathForCompare(value) {
+  const normalized = path.resolve(value)
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+function pathIsInsideRoot(candidatePath, rootPath) {
+  const candidate = normalizePathForCompare(candidatePath)
+  const root = normalizePathForCompare(rootPath)
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`)
+}
+
+function runtimeConfig(options = {}) {
+  const envAllowed = splitConfiguredRoots(process.env.TRITON_ALLOWED_REPO_ROOTS)
+  const optAllowed = Array.isArray(options.allowedRepoRoots)
+    ? options.allowedRepoRoots.map((entry) => String(entry || '').trim()).filter(Boolean)
+    : []
+  const allowedRepoRoots = (optAllowed.length ? optAllowed : envAllowed).map((root) => path.resolve(root))
+  const publicRuntimeUrl = String(
+    options.publicRuntimeUrl ||
+      process.env.TRITON_PUBLIC_RUNTIME_URL ||
+      (options.host && options.port ? `http://${options.host}:${options.port}` : ''),
+  ).trim()
+  const editorUrl = String(options.editorUrl || process.env.TRITON_EDITOR_URL || 'http://127.0.0.1:5173')
+    .trim()
+    .replace(/\/$/, '')
+  const stateDir = path.resolve(
+    String(options.stateDir || process.env.TRITON_RUNTIME_STATE_DIR || path.join(os.homedir(), '.triton-runtime')).trim(),
+  )
+  return {
+    allowedRepoRoots,
+    publicRuntimeUrl,
+    editorUrl,
+    stateDir,
+  }
+}
+
+function validateWorkspacePath(workspacePath, config) {
+  const input = String(workspacePath || '').trim()
+  if (!input) {
+    return { ok: false, statusCode: 400, error: 'missing_workspace_path' }
+  }
+  if (!path.isAbsolute(input)) {
+    return { ok: false, statusCode: 400, error: 'workspace_path_must_be_absolute', workspacePath: input }
+  }
+  let realPath
+  try {
+    realPath = fs.realpathSync(input)
+  } catch {
+    return { ok: false, statusCode: 404, error: 'workspace_path_not_found', workspacePath: input }
+  }
+  let stat
+  try {
+    stat = fs.statSync(realPath)
+  } catch {
+    return { ok: false, statusCode: 404, error: 'workspace_path_not_found', workspacePath: input }
+  }
+  if (!stat.isDirectory()) {
+    return { ok: false, statusCode: 400, error: 'workspace_path_not_directory', workspacePath: realPath }
+  }
+  if (config.allowedRepoRoots.length && !config.allowedRepoRoots.some((root) => pathIsInsideRoot(realPath, root))) {
+    return {
+      ok: false,
+      statusCode: 403,
+      error: 'workspace_path_not_allowed',
+      workspacePath: realPath,
+      allowedRepoRoots: config.allowedRepoRoots,
+    }
+  }
+  return { ok: true, workspacePath: realPath }
+}
+
+function validateWorkspaceRelativeFile(workspacePath, relPath) {
+  const root = String(workspacePath || '').trim()
+  const rel = String(relPath || '').trim()
+  if (!root) return { ok: false, statusCode: 400, error: 'missing_workspace_path' }
+  if (!rel) return { ok: false, statusCode: 400, error: 'missing_rel_path' }
+  const normalizedRel = rel.replace(/\\/g, '/').replace(/^\/+/, '')
+  const absPath = path.resolve(root, normalizedRel)
+  if (!pathIsInsideRoot(absPath, root)) {
+    return { ok: false, statusCode: 403, error: 'source_path_not_allowed', relPath: normalizedRel }
+  }
+  let stat
+  try {
+    stat = fs.statSync(absPath)
+  } catch {
+    return { ok: false, statusCode: 404, error: 'source_path_not_found', relPath: normalizedRel }
+  }
+  if (!stat.isFile()) {
+    return { ok: false, statusCode: 400, error: 'source_path_not_file', relPath: normalizedRel }
+  }
+  return { ok: true, absPath, relPath: normalizedRel }
+}
+
 function readUtf8IfFile(filePath) {
   try {
     return fs.statSync(filePath).isFile() ? fs.readFileSync(filePath, 'utf8') : null
   } catch {
     return null
+  }
+}
+
+function recentReposFilePath(config) {
+  return path.join(config.stateDir, 'recent-repos.json')
+}
+
+function readJsonFile(filePath, fallbackValue) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  } catch {
+    return fallbackValue
+  }
+}
+
+function writeJsonFile(filePath, value) {
+  ensureDirSync(path.dirname(filePath))
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2))
+}
+
+function repoDisplayName(repoPath) {
+  return path.basename(repoPath) || repoPath
+}
+
+function repoMetadata(repoPath) {
+  const probe = probeWorkspace(repoPath)
+  return {
+    workspacePath: repoPath,
+    workspaceName: repoDisplayName(repoPath),
+    probe,
+  }
+}
+
+function readRecentRepos(config) {
+  const recentPath = recentReposFilePath(config)
+  const raw = readJsonFile(recentPath, [])
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((entry) => {
+      const repoPath = String(entry && entry.workspacePath ? entry.workspacePath : '').trim()
+      if (!repoPath || !fileExists(repoPath)) return null
+      return {
+        workspacePath: repoPath,
+        workspaceName: String(entry.workspaceName || repoDisplayName(repoPath)).trim() || repoDisplayName(repoPath),
+        lastOpenedAt: String(entry.lastOpenedAt || '').trim(),
+        probe: probeWorkspace(repoPath),
+      }
+    })
+    .filter(Boolean)
+}
+
+function rememberRecentRepo(config, workspacePath, workspaceName) {
+  const recent = readRecentRepos(config).filter((entry) => entry.workspacePath !== workspacePath)
+  recent.unshift({
+    workspacePath,
+    workspaceName: workspaceName || repoDisplayName(workspacePath),
+    lastOpenedAt: new Date().toISOString(),
+    probe: probeWorkspace(workspacePath),
+  })
+  writeJsonFile(recentReposFilePath(config), recent.slice(0, RECENT_REPOS_LIMIT))
+}
+
+function directoryLooksLikeRepo(dirPath) {
+  return (
+    fileExists(path.join(dirPath, '.git')) ||
+    fileExists(path.join(dirPath, 'build.sbt')) ||
+    fileExists(path.join(dirPath, 'project')) ||
+    fileExists(path.join(dirPath, 'package.json')) ||
+    fileExists(path.join(dirPath, 'pom.xml')) ||
+    fileExists(path.join(dirPath, 'src'))
+  )
+}
+
+function discoverReposUnderRoot(rootPath, maxDepth = REPO_DISCOVERY_MAX_DEPTH) {
+  const repos = []
+  const seen = new Set()
+
+  function visit(dirPath, depth) {
+    let stat
+    try {
+      stat = fs.statSync(dirPath)
+    } catch {
+      return
+    }
+    if (!stat.isDirectory()) return
+    if (seen.has(dirPath)) return
+    seen.add(dirPath)
+
+    if (directoryLooksLikeRepo(dirPath)) {
+      repos.push(repoMetadata(dirPath))
+      return
+    }
+    if (depth >= maxDepth) return
+
+    let entries = []
+    try {
+      entries = fs.readdirSync(dirPath, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      if (IGNORED_DIRS.has(entry.name)) continue
+      visit(path.join(dirPath, entry.name), depth + 1)
+    }
+  }
+
+  visit(rootPath, 0)
+  repos.sort((a, b) => a.workspaceName.localeCompare(b.workspaceName) || a.workspacePath.localeCompare(b.workspacePath))
+  return repos
+}
+
+function discoverAllowedRepos(config) {
+  if (!config.allowedRepoRoots.length) return []
+  const out = []
+  const seen = new Set()
+  for (const root of config.allowedRepoRoots) {
+    for (const repo of discoverReposUnderRoot(root)) {
+      if (seen.has(repo.workspacePath)) continue
+      seen.add(repo.workspacePath)
+      out.push(repo)
+    }
+  }
+  out.sort((a, b) => a.workspaceName.localeCompare(b.workspaceName) || a.workspacePath.localeCompare(b.workspacePath))
+  return out
+}
+
+function apiHomeModel(config) {
+  return {
+    ok: true,
+    runtime: {
+      publicRuntimeUrl: config.publicRuntimeUrl,
+      editorUrl: config.editorUrl,
+      allowedRepoRoots: config.allowedRepoRoots,
+    },
+    recentRepos: readRecentRepos(config),
+    discoveredRepos: discoverAllowedRepos(config),
   }
 }
 
@@ -233,6 +489,308 @@ function readWorkspaceBundle(workspacePath) {
   }
 }
 
+function runtimeWorkspaceLaunchUrls(workspacePath, workspaceName, config) {
+  const runtimeUrl = config.publicRuntimeUrl || ''
+  const editorUrl = config.editorUrl || ''
+  if (!runtimeUrl || !editorUrl) {
+    return {
+      runtimeUrl,
+      editorUrl,
+      sbtDiagramUrl: '',
+      packagesDiagramUrl: '',
+    }
+  }
+  const sbt = new URL(editorUrl)
+  sbt.searchParams.set('runtimeUrl', runtimeUrl)
+  sbt.searchParams.set('workspaceFolder', workspacePath)
+  sbt.searchParams.set('workspaceName', workspaceName)
+
+  const packages = new URL(sbt.toString())
+  packages.searchParams.set('tab', `runtime-packages:${workspacePath}::${workspaceName}`)
+  return {
+    runtimeUrl,
+    editorUrl,
+    sbtDiagramUrl: sbt.toString(),
+    packagesDiagramUrl: packages.toString(),
+  }
+}
+
+function analyzeLocalWorkspace(body, config) {
+  const validation = validateWorkspacePath(body.workspacePath, config)
+  if (!validation.ok) {
+    return {
+      statusCode: validation.statusCode,
+      body: { ok: false, error: validation.error, workspacePath: validation.workspacePath, allowedRepoRoots: validation.allowedRepoRoots },
+    }
+  }
+  const workspacePath = validation.workspacePath
+  const probe = probeWorkspace(workspacePath)
+  const workspaceName =
+    String(body.workspaceName || '').trim() || path.basename(workspacePath) || path.basename(path.dirname(workspacePath)) || 'workspace'
+  rememberRecentRepo(config, workspacePath, workspaceName)
+  const launch = runtimeWorkspaceLaunchUrls(workspacePath, workspaceName, config)
+  const analysisId = `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      analysisId,
+      mode: 'local-path',
+      workspacePath,
+      workspaceName,
+      probe,
+      bundleUrl: `${config.publicRuntimeUrl || ''}/api/workspace/bundle?workspacePath=${encodeURIComponent(workspacePath)}`,
+      launch,
+    },
+  }
+}
+
+function runtimeHomeHtml(config) {
+  const home = apiHomeModel(config)
+  const allowedRoots = config.allowedRepoRoots.length
+    ? `<ul>${config.allowedRepoRoots.map((root) => `<li><code>${escapeHtml(root)}</code></li>`).join('')}</ul>`
+    : '<p><em>No root restriction configured.</em></p>'
+  const editorUrl = config.editorUrl
+    ? `<code>${escapeHtml(config.editorUrl)}</code>`
+    : '<em>not configured</em>'
+  const runtimeUrl = config.publicRuntimeUrl
+    ? `<code>${escapeHtml(config.publicRuntimeUrl)}</code>`
+    : '<em>not configured</em>'
+  const placeholder = escapeHtml(path.join(os.homedir(), 'workspace', 'chess'))
+  const bootstrapJson = safeJsonScriptText(home)
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Triton Runtime</title>
+  <style>
+    :root { color-scheme: light; }
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; background: linear-gradient(180deg, #eff6ff 0%, #f8fafc 40%, #ecfeff 100%); color: #0f172a; }
+    main { max-width: 1160px; margin: 0 auto; padding: 32px 20px 48px; }
+    .stack { display: grid; gap: 20px; }
+    .card { background: rgba(255, 255, 255, 0.96); border: 1px solid #cbd5e1; border-radius: 18px; padding: 20px; box-shadow: 0 14px 40px rgba(15, 23, 42, 0.07); }
+    h1 { margin: 0 0 8px; font-size: 30px; }
+    p { line-height: 1.5; }
+    code { background: #e2e8f0; padding: 2px 6px; border-radius: 6px; }
+    form { display: grid; gap: 12px; margin-top: 16px; }
+    label { font-weight: 600; }
+    input { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid #94a3b8; font: inherit; box-sizing: border-box; }
+    button { width: fit-content; padding: 12px 18px; border: 0; border-radius: 10px; background: #0f766e; color: white; font: inherit; cursor: pointer; }
+    button:hover { background: #115e59; }
+    .button-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .button-secondary { background: #dbeafe; color: #1d4ed8; }
+    .button-secondary:hover { background: #bfdbfe; }
+    .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }
+    .columns { display: grid; grid-template-columns: 1.1fr 1fr; gap: 20px; }
+    .section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+    .section-title h2 { margin: 0; font-size: 20px; }
+    .repo-list { display: grid; gap: 12px; }
+    .repo-item { border: 1px solid #dbe4f0; border-radius: 14px; padding: 14px; background: #ffffff; }
+    .repo-item header { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+    .repo-item h3 { margin: 0 0 6px; font-size: 17px; }
+    .repo-item p { margin: 4px 0; }
+    .repo-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .repo-path { color: #334155; word-break: break-all; }
+    .repo-meta { color: #475569; font-size: 14px; }
+    .badge { display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 999px; background: #ccfbf1; color: #115e59; font-size: 12px; font-weight: 700; }
+    .empty { color: #64748b; font-style: italic; }
+    .result { margin-top: 20px; display: none; }
+    .result.visible { display: block; }
+    .links { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+    .link { display: inline-block; padding: 10px 14px; border-radius: 10px; background: #dbeafe; color: #1d4ed8; text-decoration: none; font-weight: 600; }
+    .error { color: #b91c1c; font-weight: 600; }
+    pre { overflow: auto; white-space: pre-wrap; word-break: break-word; background: #f8fafc; border-radius: 12px; padding: 14px; border: 1px solid #e2e8f0; }
+    @media (max-width: 960px) {
+      .columns, .meta { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="stack">
+      <div class="card">
+        <h1>Triton Runtime</h1>
+        <p>Browse local repositories under the configured workspace roots, reopen recent repos, or analyze a path directly with the standalone Triton runtime.</p>
+        <form id="analysis-form">
+          <div>
+            <label for="workspacePath">Local repository path</label>
+            <input id="workspacePath" name="workspacePath" type="text" placeholder="${placeholder}" />
+          </div>
+          <div class="button-row">
+            <button type="submit">Analyze Local Repository</button>
+            <button id="refresh-repos" class="button-secondary" type="button">Refresh Repository List</button>
+          </div>
+        </form>
+        <div class="meta">
+          <div>
+            <strong>Public runtime URL</strong>
+            <div>${runtimeUrl}</div>
+          </div>
+          <div>
+            <strong>Editor URL</strong>
+            <div>${editorUrl}</div>
+          </div>
+        </div>
+        <div>
+          <strong>Allowed repository roots</strong>
+          ${allowedRoots}
+        </div>
+        <div id="result" class="result">
+          <p id="result-summary"></p>
+          <div class="links">
+            <a id="sbt-link" class="link" href="#" target="_blank" rel="noreferrer">Open sbt diagram</a>
+            <a id="packages-link" class="link" href="#" target="_blank" rel="noreferrer">Open package diagram</a>
+          </div>
+          <pre id="result-json"></pre>
+        </div>
+        <p id="error" class="error"></p>
+      </div>
+      <div class="columns">
+        <section class="card">
+          <div class="section-title">
+            <h2>Recent Repositories</h2>
+            <span class="repo-meta">click to reopen</span>
+          </div>
+          <div id="recent-repos" class="repo-list"></div>
+        </section>
+        <section class="card">
+          <div class="section-title">
+            <h2>Discovered Repositories</h2>
+            <span class="repo-meta">under allowed roots</span>
+          </div>
+          <div id="discovered-repos" class="repo-list"></div>
+        </section>
+      </div>
+    </div>
+  </main>
+  <script id="runtime-home-bootstrap" type="application/json">${bootstrapJson}</script>
+  <script>
+    const bootstrap = JSON.parse(document.getElementById('runtime-home-bootstrap').textContent);
+    const form = document.getElementById('analysis-form');
+    const workspacePathInput = document.getElementById('workspacePath');
+    const refreshReposButton = document.getElementById('refresh-repos');
+    const recentRepos = document.getElementById('recent-repos');
+    const discoveredRepos = document.getElementById('discovered-repos');
+    const result = document.getElementById('result');
+    const resultSummary = document.getElementById('result-summary');
+    const resultJson = document.getElementById('result-json');
+    const error = document.getElementById('error');
+    const sbtLink = document.getElementById('sbt-link');
+    const packagesLink = document.getElementById('packages-link');
+    function formatLastOpened(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString();
+    }
+    function repoKind(repo) {
+      return repo && repo.probe && repo.probe.kind ? repo.probe.kind : 'workspace';
+    }
+    function renderRepoItem(repo, includeLastOpened) {
+      const lastOpened = includeLastOpened && repo.lastOpenedAt
+        ? '<p class="repo-meta">Last opened: ' + formatLastOpened(repo.lastOpenedAt) + '</p>'
+        : '';
+      return '<article class="repo-item">' +
+        '<header>' +
+          '<div>' +
+            '<h3>' + repo.workspaceName + '</h3>' +
+            '<p class="repo-path"><code>' + repo.workspacePath + '</code></p>' +
+            '<p class="repo-meta">Detected: <span class="badge">' + repoKind(repo) + '</span></p>' +
+            lastOpened +
+          '</div>' +
+        '</header>' +
+        '<div class="repo-actions">' +
+          '<button type="button" data-open-repo="' + repo.workspacePath + '">Analyze</button>' +
+          '<button type="button" class="button-secondary" data-fill-path="' + repo.workspacePath + '">Use Path</button>' +
+        '</div>' +
+      '</article>';
+    }
+    function renderRepoLists(model) {
+      recentRepos.innerHTML = model.recentRepos && model.recentRepos.length
+        ? model.recentRepos.map((repo) => renderRepoItem(repo, true)).join('')
+        : '<p class="empty">No repositories opened yet.</p>';
+      discoveredRepos.innerHTML = model.discoveredRepos && model.discoveredRepos.length
+        ? model.discoveredRepos.map((repo) => renderRepoItem(repo, false)).join('')
+        : '<p class="empty">No repositories discovered under the configured roots.</p>';
+    }
+    async function refreshRepoLists() {
+      const response = await fetch('/api/home');
+      const body = await response.json();
+      if (!response.ok || !body.ok) {
+        throw new Error(body.error || ('Failed to refresh repositories (' + response.status + ').'));
+      }
+      renderRepoLists(body);
+      return body;
+    }
+    async function submitWorkspacePath(workspacePath) {
+      error.textContent = '';
+      result.classList.remove('visible');
+      if (!workspacePath) {
+        error.textContent = 'Please enter an absolute repository path.';
+        return;
+      }
+      try {
+        const response = await fetch('/api/analysis/local', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ workspacePath }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || !body.ok) {
+          error.textContent = body.error || ('Request failed (' + response.status + ').');
+          resultJson.textContent = JSON.stringify(body, null, 2);
+          result.classList.add('visible');
+          return;
+        }
+        resultSummary.textContent = 'Ready: ' + body.workspaceName + ' (' + body.probe.kind + ')';
+        resultJson.textContent = JSON.stringify(body, null, 2);
+        if (body.launch && body.launch.sbtDiagramUrl) {
+          sbtLink.href = body.launch.sbtDiagramUrl;
+          sbtLink.style.display = '';
+        } else {
+          sbtLink.style.display = 'none';
+        }
+        if (body.launch && body.launch.packagesDiagramUrl) {
+          packagesLink.href = body.launch.packagesDiagramUrl;
+          packagesLink.style.display = '';
+        } else {
+          packagesLink.style.display = 'none';
+        }
+        result.classList.add('visible');
+        refreshRepoLists().catch(() => {});
+      } catch (err) {
+        error.textContent = err && err.message ? err.message : String(err);
+      }
+    }
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await submitWorkspacePath(workspacePathInput.value.trim());
+    });
+    refreshReposButton.addEventListener('click', () => {
+      refreshRepoLists().catch((err) => {
+        error.textContent = err && err.message ? err.message : String(err);
+      });
+    });
+    document.addEventListener('click', (event) => {
+      const fillPath = event.target && event.target.getAttribute ? event.target.getAttribute('data-fill-path') : '';
+      if (fillPath) {
+        workspacePathInput.value = fillPath;
+        workspacePathInput.focus();
+        return;
+      }
+      const openRepo = event.target && event.target.getAttribute ? event.target.getAttribute('data-open-repo') : '';
+      if (openRepo) {
+        workspacePathInput.value = openRepo;
+        submitWorkspacePath(openRepo);
+      }
+    });
+    renderRepoLists(bootstrap);
+  </script>
+</body>
+</html>`
+}
+
 function commandForAction(action, body) {
   if (action === 'refresh') return null
   if (action === 'sbt-test') {
@@ -304,7 +862,8 @@ async function handleWorkspaceAction(body) {
   }
 }
 
-function createRuntimeServer() {
+function createRuntimeServer(options = {}) {
+  const config = runtimeConfig(options)
   return http.createServer(async (req, res) => {
     const method = req.method || 'GET'
     const url = new URL(req.url || '/', 'http://127.0.0.1')
@@ -316,22 +875,102 @@ function createRuntimeServer() {
       return
     }
 
+    if (method === 'GET' && url.pathname === '/') {
+      const html = runtimeHomeHtml(config)
+      applyCorsHeaders(res)
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'content-length': Buffer.byteLength(html),
+        'cache-control': 'no-store',
+      })
+      res.end(html)
+      return
+    }
+
     if (method === 'GET' && url.pathname === '/health') {
       sendJson(res, 200, {
         ok: true,
         service: 'triton-runtime',
         version: '0.1.0',
+        allowedRepoRoots: config.allowedRepoRoots,
+        editorUrl: config.editorUrl,
+        publicRuntimeUrl: config.publicRuntimeUrl,
       })
+      return
+    }
+
+    if (method === 'GET' && url.pathname === '/api/home') {
+      sendJson(res, 200, apiHomeModel(config))
+      return
+    }
+
+    if (method === 'POST' && url.pathname === '/api/analysis/local') {
+      const raw = await collectBody(req)
+      const body = safeJsonParse(raw)
+      if (!body) {
+        sendJson(res, 400, { ok: false, error: 'invalid_json' })
+        return
+      }
+      const result = analyzeLocalWorkspace(body, config)
+      sendJson(res, result.statusCode, result.body)
       return
     }
 
     if (method === 'GET' && url.pathname === '/api/workspace/bundle') {
       const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
-      if (!workspacePath) {
-        sendJson(res, 400, { ok: false, error: 'missing_workspace_path' })
+      const validation = validateWorkspacePath(workspacePath, config)
+      if (!validation.ok) {
+        sendJson(res, validation.statusCode, {
+          ok: false,
+          error: validation.error,
+          workspacePath: validation.workspacePath,
+          allowedRepoRoots: validation.allowedRepoRoots,
+        })
         return
       }
-      sendJson(res, 200, readWorkspaceBundle(workspacePath))
+      sendJson(res, 200, readWorkspaceBundle(validation.workspacePath))
+      return
+    }
+
+    if (method === 'GET' && url.pathname === '/api/workspace/source') {
+      const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
+      const relPath = String(url.searchParams.get('relPath') || '').trim()
+      const validation = validateWorkspacePath(workspacePath, config)
+      if (!validation.ok) {
+        sendJson(res, validation.statusCode, {
+          ok: false,
+          error: validation.error,
+          workspacePath: validation.workspacePath,
+          allowedRepoRoots: validation.allowedRepoRoots,
+        })
+        return
+      }
+      const fileValidation = validateWorkspaceRelativeFile(validation.workspacePath, relPath)
+      if (!fileValidation.ok) {
+        sendJson(res, fileValidation.statusCode, {
+          ok: false,
+          error: fileValidation.error,
+          workspacePath: validation.workspacePath,
+          relPath: fileValidation.relPath,
+        })
+        return
+      }
+      const source = readUtf8IfFile(fileValidation.absPath)
+      if (source == null) {
+        sendJson(res, 500, {
+          ok: false,
+          error: 'source_path_unreadable',
+          workspacePath: validation.workspacePath,
+          relPath: fileValidation.relPath,
+        })
+        return
+      }
+      sendJson(res, 200, {
+        ok: true,
+        workspacePath: validation.workspacePath,
+        relPath: fileValidation.relPath,
+        source,
+      })
       return
     }
 
@@ -359,7 +998,7 @@ function createRuntimeServer() {
 function startRuntimeServer(options = {}) {
   const host = String(options.host || '127.0.0.1')
   const port = Number(options.port || 4317)
-  const server = createRuntimeServer()
+  const server = createRuntimeServer({ ...options, host, port })
   return new Promise((resolve, reject) => {
     server.once('error', reject)
     server.listen(port, host, () => {
