@@ -1,6 +1,9 @@
 /**
- * Placeholder “sbt build.sbt” style notes for layer drill (internal panel).
+ * Placeholder “sbt build.sbt” style notes for layer drill (internal “Notes” compartment).
  * Deterministic per module id so reloads stay stable until we parse real build metadata.
+ *
+ * **Not** attached to YAML resources whose `x-triton-icon` is a Docker concept key (see
+ * `ilographToFlow.ts` — those diagrams use real compartments instead).
  */
 
 function hashString(s: string): number {

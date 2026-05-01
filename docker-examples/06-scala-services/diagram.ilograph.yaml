@@ -1,0 +1,45 @@
+description: "Two images and services; subtitle links jump to the bundled sbt graph, per-service Scala packages, and an inner package drill."
+resources:
+  - name: docker-examples-06-api:local
+    subtitle: image
+    x-triton-icon: image
+    x-triton-project-compartments:
+      - id: df
+        title: dockerfile
+        rows:
+          - { value: "api/Dockerfile → FROM alpine:3.20" }
+  - name: docker-examples-06-worker:local
+    subtitle: image
+    x-triton-icon: image
+    x-triton-project-compartments:
+      - id: df
+        title: dockerfile
+        rows:
+          - { value: "worker/Dockerfile → FROM alpine:3.20" }
+  - name: api
+    subtitle: "[sbt](triton://diagram/sbt?root=docker-examples&dir=06-scala-services) · [packages](triton://diagram/packages?root=docker-examples&dir=06-scala-services&project=api) · [inner](triton://diagram/package?root=docker-examples&dir=06-scala-services&project=api&node=com.example.api.config)"
+    x-triton-icon: service
+    x-triton-project-compartments:
+      - id: s
+        title: scala
+        rows:
+          - { value: "sbt project id api → com.example.api" }
+  - name: worker
+    subtitle: "[sbt](triton://diagram/sbt?root=docker-examples&dir=06-scala-services) · [packages](triton://diagram/packages?root=docker-examples&dir=06-scala-services&project=worker) · [inner](triton://diagram/package?root=docker-examples&dir=06-scala-services&project=worker&node=com.example.worker.config)"
+    x-triton-icon: service
+    x-triton-project-compartments:
+      - id: s
+        title: scala
+        rows:
+          - { value: "sbt project id worker → com.example.worker" }
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    relations:
+      - from: docker-examples-06-api:local
+        to: api
+        label: image
+      - from: docker-examples-06-worker:local
+        to: worker
+        label: image

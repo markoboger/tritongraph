@@ -340,7 +340,15 @@ export function ilographDocumentToFlow(
         ...(!isGroup && pinnedIds.has(id) ? { pinned: true } : {}),
         ...(tritonIconUrl ? { iconUrl: tritonIconUrl } : {}),
         ...(tritonIconKey ? { tritonIconKey } : {}),
-        ...(!isGroup ? { language: languageIconForId(id), drillNote: drillNoteForModuleId(id) } : {}),
+        ...(!isGroup
+          ? {
+              language: languageIconForId(id),
+              // Skip synthetic sbt drill notes for Docker-tagged leaves (`sbtStyleDrillNotes`).
+              ...(typeof tritonIconKey === 'string' && isDockerConceptIconKey(tritonIconKey.trim())
+                ? {}
+                : { drillNote: drillNoteForModuleId(id) }),
+            }
+          : {}),
         ...(innerPackages?.length ? { innerPackages } : {}),
         ...(innerArtefacts?.length ? { innerArtefacts } : {}),
         ...(innerArtefactRelations?.length ? { innerArtefactRelations } : {}),

@@ -1,0 +1,12 @@
+# Example 06 — two services with Scala sources under sbt subprojects `api` and `worker`.
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: docker-examples-06-api:local
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    image: docker-examples-06-worker:local

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { SUBTITLE_INLINE_LINK_RE } from './subtitleMarkdownLinks'
 
 const props = defineProps<{
   text?: string
@@ -15,16 +16,14 @@ interface SubtitleSegment {
   href?: string
 }
 
-const SUBTITLE_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
-
 const segments = computed<SubtitleSegment[]>(() => {
   const text = String(props.text ?? '')
   if (!text) return []
   const out: SubtitleSegment[] = []
   let last = 0
-  SUBTITLE_LINK_RE.lastIndex = 0
+  SUBTITLE_INLINE_LINK_RE.lastIndex = 0
   let match: RegExpExecArray | null
-  while ((match = SUBTITLE_LINK_RE.exec(text)) !== null) {
+  while ((match = SUBTITLE_INLINE_LINK_RE.exec(text)) !== null) {
     if (match.index > last) out.push({ kind: 'text', value: text.slice(last, match.index) })
     out.push({ kind: 'link', value: match[1] ?? '', href: match[2] ?? '' })
     last = match.index + match[0].length

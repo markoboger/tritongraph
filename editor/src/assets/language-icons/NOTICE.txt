@@ -4,6 +4,9 @@ openjdk.svg, rust.svg, go.svg, kotlin.svg, ruby.svg, swift.svg) are from Simple 
 
 generic.svg is a minimal local placeholder (gray circle), not from Simple Icons.
 
+docker-icon.svg is an original vector mark (blue whale + containers, transparent background)
+for the Docker brand slot in the diagram top bar. docker-icon.webp is optional reference raster.
+
 docker-image.svg, docker-container.svg, docker-service.svg, docker-database.svg,
 docker-network.svg, docker-volume.svg, and docker-project.svg are original Triton icons
-(slate / blue palette, no third-party trademarks), for Docker / Compose diagram concepts.
+(slate / blue palette) for per-node Docker / Compose diagram concepts.

@@ -1,4 +1,5 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { subtitleHasMarkdownLinks } from '../common/subtitleMarkdownLinks'
 import { nextCompactLayout, nextFlatLayout, nextMetricsBreakLayout, nextSuperflatLayout, nextSuperslimLayout } from './boxChromeLayout'
 
 type PackageBoxChromeLayoutOptions = {
@@ -6,6 +7,8 @@ type PackageBoxChromeLayoutOptions = {
   focused: () => boolean
   forceCompactHeader?: () => boolean
   label: () => string
+  /** Raw package subtitle (before synthetic inner-diagram link wrapping). */
+  subtitle?: () => string
   hasCoverage: () => boolean
   issueCount: () => number
   watchSources: () => readonly unknown[]
@@ -25,6 +28,8 @@ export function usePackageBoxChromeLayout(options: PackageBoxChromeLayoutOptions
   const slimLayout = ref(false)
 
   const subtitleHiddenForVerticalTitle = computed(() => {
+    const raw = options.subtitle?.() ?? ''
+    if (subtitleHasMarkdownLinks(raw)) return false
     if (compactLayout.value) return true
     if (superflatLayout.value) return true
     if (superslimLayout.value) return true

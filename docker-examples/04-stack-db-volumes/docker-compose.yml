@@ -1,6 +1,7 @@
 services:
   app:
-    image: alpine:3.20
+    build: ./app
+    image: docker-examples-04-app:local
     command: ["sleep", "infinity"]
     ports:
       - "18082:8080"
@@ -10,7 +11,8 @@ services:
     depends_on:
       - db
   db:
-    image: postgres:16-alpine
+    build: ./db
+    image: docker-examples-04-db:local
     environment:
       POSTGRES_PASSWORD: example
     volumes:

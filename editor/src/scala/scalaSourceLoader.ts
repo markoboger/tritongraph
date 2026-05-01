@@ -1,4 +1,5 @@
 import { scalaSourceEncodedEntries } from 'virtual:scala-sources'
+import { dockerScalaSourceFallbacks } from '../triton/dockerScalaExampleFallbacks'
 
 export interface LoadedScalaFile {
   /** Logical examples-root name (`sbt-examples`, `scala-examples`, …). */
@@ -19,12 +20,25 @@ function decodeUtf8Base64(b64: string): string {
 }
 
 export function listScalaSources(): LoadedScalaFile[] {
-  return (scalaSourceEncodedEntries ?? []).map((e) => ({
+  const out = (scalaSourceEncodedEntries ?? []).map((e) => ({
     root: e.root,
     exampleDir: e.exampleDir,
     relPath: e.relPath,
     source: decodeUtf8Base64(e.b64),
   }))
+  for (const fallback of dockerScalaSourceFallbacks) {
+    if (
+      !out.some(
+        (f) =>
+          f.root === fallback.root &&
+          f.exampleDir === fallback.exampleDir &&
+          f.relPath === fallback.relPath,
+      )
+    ) {
+      out.push({ ...fallback })
+    }
+  }
+  return out
 }
 
 /** Convenience filter for one `(root, exampleDir)` pair plus an optional sub-path prefix (e.g. `core/`). */

@@ -20,21 +20,24 @@ const monacoEditorPlugin =
 
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 /**
- * Two repo-root example folders:
- *   - `sbt-examples`   : the original tutorial / large-OSS sbt builds (numbered 01-…).
- *   - `scala-examples` : richer Scala source projects that exercise the package-graph parser
- *                        (e.g. `animal-fruit` with nested packages for containment rendering).
- * Both folders contain `<dir>/build.sbt`, so both surface as sbt project tabs as well as package
- * tabs (when their subprojects have `.scala` sources).
+ * Repo-root example folders scanned for `<dir>/build.sbt` and bundled Scala sources:
+ *   - `sbt-examples`    : tutorial / large-OSS sbt builds (numbered 01-…).
+ *   - `scala-examples`  : nested packages, package-graph parser exercises.
+ *   - `docker-examples` : Compose-backed samples that also ship a root `build.sbt` (e.g. 06).
  */
 const repoRoot = path.resolve(dirname, '..')
 const exampleRoots = [
   { name: 'sbt-examples', dir: path.resolve(repoRoot, 'sbt-examples') },
   { name: 'scala-examples', dir: path.resolve(repoRoot, 'scala-examples') },
+  { name: 'docker-examples', dir: path.resolve(repoRoot, 'docker-examples') },
 ]
 const tsExampleRoots = [{ name: 'ts-examples', dir: path.resolve(repoRoot, 'ts-examples') }]
 
 export default defineConfig({
+  /** Keep SVG/PNG URLs as separate `/assets/*` files so `<img src>` works in strict embeds (long `data:image/svg+xml` blobs in the main chunk have been seen to break). */
+  build: {
+    assetsInlineLimit: 0,
+  },
   plugins: [
     vue(),
     ...dockerExamplesStaticPlugin(repoRoot),

@@ -1,22 +1,16 @@
 # Docker examples
 
-Runnable `docker-compose.yml` snippets plus **Ilograph** diagrams (`diagram.ilograph.yaml`) that map Docker / Compose concepts to the graph model used in the Triton tab (**Docker Examples** section).
+Each folder is a runnable **`docker-compose.yml`** plus a matching **`diagram.ilograph.yaml`**. Dockerfiles live **only where Compose references them** (`build:` / `dockerfile:`).
 
-| Folder | Diagram focus |
-|--------|----------------|
-| `01-single-service` | Registry **Image**, Compose **Service**, runtime **Container** |
-| `02-build-context` | **Project** context → **Build** (Dockerfile) → **Image** → service → container |
-| `03-network-dependencies` | **Network**, `depends_on`, two services |
-| `04-stack-db-volumes` | **Database** service, named **Volume**, **Port** mapping, bind-style host path |
+| # | Folder | Compose highlights |
+|---|--------|----------------------|
+| 01 | `01-single-service` | `web` built from `./Dockerfile`, tagged `docker-examples-01-web:local` |
+| 02 | `02-build-context` | `api` — `build.context` `.`, `Dockerfile`, image `docker-examples-02-api:local` |
+| 03 | `03-network-dependencies` | `api` / `worker` each have `api/Dockerfile`, `worker/Dockerfile`; `internal` network |
+| 04 | `04-stack-db-volumes` | `app/Dockerfile`, `db/Dockerfile`, volumes, `app-net`, port on `app` |
+| 05 | `05-healthcheck` | Like 01 plus **`healthcheck`** on `web`, port **18083** |
+| 06 | `06-scala-services` | `api` / `worker` with per-service Dockerfiles, root **`build.sbt`** (Scala under `api/`, `worker/`) |
 
-From repo root, e.g. `docker compose -f docker-examples/01-single-service/docker-compose.yml up` (adjust ports if busy).
+From repo root, e.g. `docker compose -f docker-examples/01-single-service/docker-compose.yml build` then `up` (change host ports if busy).
 
-### Concept icons (editor)
-
-SVG marks live in `editor/src/assets/language-icons/docker-*.svg` and are re-exported from
-`editor/src/triton/dockerConceptIcons.ts` (`image`, `container`, `service`, `database`, `network`,
-`volume`, `project`). Starter cards use a subset; the rest are available for future diagram UI.
-
-In each `diagram.ilograph.yaml`, set **`x-triton-icon: <key>`** on a resource (sibling of `name` /
-`subtitle`) to show that glyph on the flow node. Keys match `dockerConceptIcons`. You can also
-set a full URL or a site path (`/my.svg`) for custom artwork.
+Diagram icons: `x-triton-icon` keys match `editor/src/triton/dockerConceptIcons.ts`.

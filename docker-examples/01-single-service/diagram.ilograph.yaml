@@ -1,36 +1,30 @@
-description: |
-  **Simplest mapping:** Compose declares a **Service** (`web`) that references a registry **Image**
-  (`nginx:1.27-alpine`). The engine **instantiates** a **Container** from that image. No local
-  `build:` — the image is fetched, not produced from a repo **Project** in this example.
-
+description: "Compose service web; image tag docker-examples-01-web:local from ./Dockerfile."
 resources:
-  - name: registry-nginx
-    subtitle: Image — remote layers + tag (immutable digest at pull)
+  - name: docker-examples-01-web:local
+    subtitle: image
     x-triton-icon: image
-  - name: compose-service-web
-    subtitle: Service — desired state in docker-compose.yml
+    x-triton-project-compartments:
+      - id: base
+        title: dockerfile
+        rows:
+          - { value: "FROM nginx:1.27-alpine" }
+  - name: web
+    subtitle: service
     x-triton-icon: service
-  - name: container-web-1
-    subtitle: Container — running instance (id, cgroups, writable layer)
-    x-triton-icon: container
-  - name: host-port-18080
-    subtitle: Host port mapping (publish 18080 → container 80)
-
+    x-triton-project-compartments:
+      - id: ports
+        title: ports
+        rows:
+          - { value: "18080:80" }
+      - id: runtime
+        title: container
+        rows:
+          - { value: "One instance per this service." }
 perspectives:
   - name: dependencies
     orientation: leftToRight
     color: royalblue
-    notes: |
-      **Left → right** approximates *spec / artifact → runtime*. **Image** is referenced by the
-      **Service**; the **Service** is *instantiated* as a **Container**. **Port** attaches the
-      published host side to the service (Compose wires it to the container).
     relations:
-      - from: registry-nginx
-        to: compose-service-web
-        label: image ref
-      - from: compose-service-web
-        to: container-web-1
-        label: instantiates
-      - from: compose-service-web
-        to: host-port-18080
-        label: publishes
+      - from: docker-examples-01-web:local
+        to: web
+        label: image

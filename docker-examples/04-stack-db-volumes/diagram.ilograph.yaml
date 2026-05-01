@@ -1,75 +1,77 @@
-description: |
-  **Data + wiring:** **Database** here is the `db` **Service** running a Postgres **Image** with a
-  named **Volume** for `/var/lib/postgresql/data`. The `app` **Service** mounts another **Volume**
-  (`app-cache`), publishes a **Port**, `depends_on` **db**, and attaches to the same **Network**.
-
+description: "Built app/db images, volumes db-data and app-cache, network app-net, port on app."
 resources:
-  - name: image-alpine-app
-    subtitle: Image — app container base
+  - name: docker-examples-04-app:local
+    subtitle: image
     x-triton-icon: image
-  - name: image-postgres
-    subtitle: Image — postgres:16-alpine
+    x-triton-project-compartments:
+      - id: df
+        title: dockerfile
+        rows:
+          - { value: "app/Dockerfile → FROM alpine:3.20" }
+  - name: docker-examples-04-db:local
+    subtitle: image
     x-triton-icon: image
-  - name: volume-db-data
-    subtitle: Volume — named `db-data` (engine-managed storage)
-    x-triton-icon: volume
-  - name: volume-app-cache
-    subtitle: Volume — named `app-cache`
-    x-triton-icon: volume
-  - name: network-app-net
-    subtitle: Network — `app-net`
+    x-triton-project-compartments:
+      - id: df
+        title: dockerfile
+        rows:
+          - { value: "db/Dockerfile → FROM postgres:16-alpine" }
+  - name: app-net
+    subtitle: network
     x-triton-icon: network
-  - name: compose-service-app
-    subtitle: Service — `app`
-    x-triton-icon: service
-  - name: compose-service-db
-    subtitle: Service — `db` (database role)
+  - name: db-data
+    subtitle: volume
+    x-triton-icon: volume
+  - name: app-cache
+    subtitle: volume
+    x-triton-icon: volume
+  - name: db
+    subtitle: service
     x-triton-icon: database
-  - name: container-app-1
-    subtitle: Container — app instance
-    x-triton-icon: container
-  - name: container-db-1
-    subtitle: Container — db instance
-    x-triton-icon: container
-  - name: host-port-18082
-    subtitle: Host port — publish 18082 → 8080
-
+    x-triton-project-compartments:
+      - id: v
+        title: volumes
+        rows:
+          - { value: "db-data → /var/lib/postgresql/data" }
+  - name: app
+    subtitle: service
+    x-triton-icon: service
+    x-triton-project-compartments:
+      - id: p
+        title: ports
+        rows:
+          - { value: "18082:8080" }
+      - id: v
+        title: volumes
+        rows:
+          - { value: "app-cache → /tmp/cache" }
+      - id: d
+        title: depends_on
+        rows:
+          - { value: "db" }
 perspectives:
   - name: dependencies
     orientation: leftToRight
     color: royalblue
-    notes: |
-      **mounts** connect **Service** to **Volume** (named volumes in this file). **Database** is
-      modeled as the `db` service + its data volume + image, not a separate Docker type. **Port**
-      maps host traffic into the app service.
     relations:
-      - from: image-alpine-app
-        to: compose-service-app
-        label: image ref
-      - from: image-postgres
-        to: compose-service-db
-        label: image ref
-      - from: compose-service-app
-        to: container-app-1
-        label: instantiates
-      - from: compose-service-db
-        to: container-db-1
-        label: instantiates
-      - from: compose-service-app
-        to: compose-service-db
+      - from: docker-examples-04-app:local
+        to: app
+        label: image
+      - from: docker-examples-04-db:local
+        to: db
+        label: image
+      - from: db
+        to: db-data
+        label: volumes
+      - from: app
+        to: app-cache
+        label: volumes
+      - from: app
+        to: db
         label: depends_on
-      - from: compose-service-db
-        to: volume-db-data
-        label: mounts
-      - from: compose-service-app
-        to: volume-app-cache
-        label: mounts
-      - from: compose-service-app
-        to: network-app-net
-        label: attaches to
-      - from: compose-service-db
-        to: network-app-net
-        label: attaches to
-      - from: compose-service-app
-        to: host-port-18082
-        label: publishes
+      - from: app
+        to: app-net
+        label: networks
+      - from: db
+        to: app-net
+        label: networks

@@ -1,0 +1,30 @@
+description: "Service web with compose healthcheck; image from ./Dockerfile."
+resources:
+  - name: docker-examples-05-web:local
+    subtitle: image
+    x-triton-icon: image
+    x-triton-project-compartments:
+      - id: df
+        title: dockerfile
+        rows:
+          - { value: "FROM nginx:1.27-alpine" }
+  - name: web
+    subtitle: service
+    x-triton-icon: service
+    x-triton-project-compartments:
+      - id: hc
+        title: healthcheck
+        rows:
+          - { value: "wget homepage; interval 10s" }
+      - id: p
+        title: ports
+        rows:
+          - { value: "18083:80" }
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    relations:
+      - from: docker-examples-05-web:local
+        to: web
+        label: image

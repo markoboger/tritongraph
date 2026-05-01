@@ -1,6 +1,7 @@
 import { parseBuildSbt } from './parseBuildSbt'
 import { sbtProjectsToIlographDocument } from './sbtProjectsToIlographDocument'
 import { stringifyIlographYaml } from '../ilograph/parse'
+import { dockerScalaSbtExampleFallbacks } from '../triton/dockerScalaExampleFallbacks'
 import { sbtExampleEncodedEntries } from 'virtual:sbt-examples'
 
 export interface SbtExampleEntry {
@@ -27,12 +28,18 @@ function decodeUtf8Base64(b64: string): string {
  */
 export function listSbtExamples(): SbtExampleEntry[] {
   const rows = sbtExampleEncodedEntries ?? []
-  return rows.map((e) => ({
+  const out = rows.map((e) => ({
     root: e.root,
     dir: e.dir,
     path: `${e.root}/${e.dir}/build.sbt`,
     source: decodeUtf8Base64(e.b64),
   }))
+  for (const fallback of dockerScalaSbtExampleFallbacks) {
+    if (!out.some((e) => e.root === fallback.root && e.dir === fallback.dir)) {
+      out.push({ ...fallback })
+    }
+  }
+  return out
 }
 
 export interface SbtExampleYamlOptions {

@@ -9,6 +9,7 @@ import DiagramTopBar from './components/common/DiagramTopBar.vue'
 import TritonRuntimeHome from './components/TritonRuntimeHome.vue'
 import type { StarterCard } from './triton/tritonStarterCard'
 import { dockerDiagramExamples } from './triton/dockerDiagramExamples'
+import { dockerBrandIconUrl, isDockerConceptIconKey } from './triton/dockerConceptIcons'
 import YamlDiffEditor from './components/YamlDiffEditor.vue'
 import SourceCodeViewer from './components/SourceCodeViewer.vue'
 import { parseIlographYaml, stringifyIlographYaml } from './ilograph/parse'
@@ -99,6 +100,8 @@ const sourcePath = ref('')
 const sourcePathLogoUrl = computed(() => {
   const src = sourcePath.value.trim()
   if (src.endsWith('/build.sbt') || src.endsWith('\\build.sbt')) return sbtLogoUrl
+  const norm = src.replace(/\\/g, '/')
+  if (norm.includes('docker-examples/')) return dockerBrandIconUrl
   return cubeIconUrl
 })
 const runtimeQuery = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
@@ -169,11 +172,18 @@ function normalizeNodeTypeKey(kind: unknown): string {
   return s.length ? s : '(unknown)'
 }
 
-function collectNodeTypeKeys(nodeList: readonly any[]): string[] {
+function collectNodeTypeKeys(nodeList: readonly any[], diagramTabKey: string): string[] {
+  const dockerModuleKinds = diagramTabKey.trim().startsWith('docker:')
   const out = new Set<string>()
   for (const node of nodeList) {
     const data = node?.data as Record<string, unknown> | undefined
-    if (String(node?.type ?? '') === 'artefact') out.add(normalizeNodeTypeKey(data?.subtitle))
+    const nodeType = String(node?.type ?? '')
+    if (nodeType === 'artefact') out.add(normalizeNodeTypeKey(data?.subtitle))
+    if (dockerModuleKinds && nodeType === 'module') {
+      const rawIcon = data?.tritonIconKey
+      const iconKey = typeof rawIcon === 'string' ? rawIcon.trim().toLowerCase() : ''
+      if (isDockerConceptIconKey(iconKey)) out.add(iconKey)
+    }
     const raw = data?.innerArtefacts
     if (!Array.isArray(raw)) continue
     for (const artefact of raw) {
@@ -202,12 +212,19 @@ function preferredFocusWidthForVisibleInnerContent(data: Record<string, unknown>
   })
 }
 
-function applyNodeTypeVisibilityToNodes(nodeList: readonly any[]): any[] {
+function applyNodeTypeVisibilityToNodes(nodeList: readonly any[], diagramTabKey: string): any[] {
+  const dockerModuleKinds = diagramTabKey.trim().startsWith('docker:')
   return nodeList.map((node) => {
     const data = { ...((node?.data ?? {}) as Record<string, unknown>) }
     let changed = false
     const kindKey = normalizeNodeTypeKey(data.subtitle)
-    const nodeKindHidden = String(node?.type ?? '') === 'artefact' && nodeTypeVisibility.value[kindKey] === false
+    const rawIcon = data.tritonIconKey
+    const iconKey = typeof rawIcon === 'string' ? rawIcon.trim().toLowerCase() : ''
+    const dockerFilterKey =
+      dockerModuleKinds && String(node?.type ?? '') === 'module' && isDockerConceptIconKey(iconKey) ? iconKey : null
+    const nodeKindHidden =
+      (String(node?.type ?? '') === 'artefact' && nodeTypeVisibility.value[kindKey] === false) ||
+      (dockerFilterKey !== null && nodeTypeVisibility.value[dockerFilterKey] === false)
     const hidden = nodeKindHidden || Boolean((node as { hidden?: boolean }).hidden && data.__nodeKindHidden !== true)
 
     if (String(node?.type ?? '') === 'package') {
@@ -231,7 +248,8 @@ function applyNodeTypeVisibilityToNodes(nodeList: readonly any[]): any[] {
       }
     }
 
-    if ((node as { hidden?: boolean }).hidden !== hidden || data.__nodeKindHidden !== nodeKindHidden) {
+    const prevKindHidden = data.__nodeKindHidden === true
+    if ((node as { hidden?: boolean }).hidden !== hidden || prevKindHidden !== nodeKindHidden) {
       changed = true
       if (nodeKindHidden) data.__nodeKindHidden = true
       else delete data.__nodeKindHidden
@@ -240,21 +258,6 @@ function applyNodeTypeVisibilityToNodes(nodeList: readonly any[]): any[] {
     return changed ? { ...node, hidden, data } : node
   })
 }
-
-const nodeTypesMenuSig = computed(() => collectNodeTypeKeys(nodes.value).sort().join('\n'))
-
-watch(nodeTypesMenuSig, (sig) => {
-  const keys = sig.length ? sig.split('\n') : []
-  const prev = nodeTypeVisibility.value
-  const next: Record<string, boolean> = {}
-  for (const k of keys) {
-    next[k] = prev[k] !== false
-  }
-  nodeTypeVisibility.value = next
-  nodes.value = applyNodeTypeVisibilityToNodes(nodes.value)
-})
-
-const nodeTypesList = computed(() => (nodeTypesMenuSig.value.length ? nodeTypesMenuSig.value.split('\n') : []))
 
 const relationTypesMenuSig = computed(() => {
   const keys = new Set(relationTypesFromSignature(relationTypeKeysSignature(edges.value)))
@@ -282,7 +285,7 @@ function mergeEdgesWithVisibility(es: any[]) {
 
 function setNodeTypeVisible(nodeKey: string, visible: boolean) {
   nodeTypeVisibility.value = { ...nodeTypeVisibility.value, [nodeKey]: visible }
-  nodes.value = applyNodeTypeVisibilityToNodes(nodes.value)
+  nodes.value = applyNodeTypeVisibilityToNodes(nodes.value, activeTab.value?.key ?? '')
   edges.value = mergeEdgesWithVisibility(edges.value)
   void nextTick(async () => {
     graphRef.value?.refreshEdgeEmphasis?.()
@@ -830,6 +833,23 @@ const activeTabId = ref<string | null>(runtimeHomeTabSeed.id)
 const activeTab = computed<DiagramTab | undefined>(() =>
   tabs.value.find((t) => t.id === activeTabId.value),
 )
+
+const nodeTypesMenuSig = computed(() =>
+  collectNodeTypeKeys(nodes.value, activeTab.value?.key ?? '').sort().join('\n'),
+)
+
+watch(nodeTypesMenuSig, (sig) => {
+  const keys = sig.length ? sig.split('\n') : []
+  const prev = nodeTypeVisibility.value
+  const next: Record<string, boolean> = {}
+  for (const k of keys) {
+    next[k] = prev[k] !== false
+  }
+  nodeTypeVisibility.value = next
+  nodes.value = applyNodeTypeVisibilityToNodes(nodes.value, activeTab.value?.key ?? '')
+})
+
+const nodeTypesList = computed(() => (nodeTypesMenuSig.value.length ? nodeTypesMenuSig.value.split('\n') : []))
 
 function stripExampleProjectSuffix(body: string): string {
   const hash = body.indexOf('#')
@@ -2606,6 +2626,25 @@ async function openSbtExampleTab(root: string, dir: string): Promise<void> {
   )
 }
 
+/**
+ * Like {@link openSbtExampleTab}, but always re-runs the loader when the tab already exists so
+ * markdown deep links (e.g. from Docker diagrams) cannot resurrect an empty snapshot.
+ */
+async function ensureSbtExampleLoaded(root: string, dir: string): Promise<void> {
+  const tabKey = `sbt:${root}/${dir}`
+  const existing = tabs.value.find((t) => t.key === tabKey)
+  if (existing) {
+    await activateTabById(existing.id)
+    await loadSbtBuildForExample(root, dir)
+    snapshotActiveTab()
+    return
+  }
+  await openOrActivateTab(
+    { key: tabKey, title: dir, iconUrl: stackedCubesIconUrl },
+    () => loadSbtBuildForExample(root, dir),
+  )
+}
+
 async function openTsExampleTab(root: string, dir: string, file: string): Promise<void> {
   const hit = tsExamplesAll.find((e) => e.root === root && e.dir === dir && e.file === file)
   if (!hit) {
@@ -2709,6 +2748,111 @@ async function openScalaPackagesTab(root: string, dir: string, projectId?: strin
     },
     () => loadScalaPackagesForExample(root, dir, projectId),
   )
+}
+
+/**
+ * Ensures the packages tab for `(root, dir, projectId)` is active and its loader has run so
+ * `nodes` reflect that example (re-scans when re-activating an existing tab).
+ */
+async function ensureScalaPackagesExampleLoaded(root: string, dir: string, projectId?: string): Promise<void> {
+  const scopeSuffix = projectId ? `#${projectId}` : ''
+  const tabKey = `packages:${root}/${dir}${scopeSuffix}`
+  const existing = tabs.value.find((t) => t.key === tabKey)
+  if (existing) {
+    await activateTabById(existing.id)
+    await loadScalaPackagesForExample(root, dir, projectId)
+    snapshotActiveTab()
+    return
+  }
+  await openOrActivateTab(
+    { key: tabKey, title: projectId ? `${dir}:${projectId}` : dir, iconUrl: cubeIconUrl },
+    () => loadScalaPackagesForExample(root, dir, projectId),
+  )
+}
+
+async function openScalaPackagesTabThenInnerDiagram(
+  root: string,
+  dir: string,
+  projectId: string | undefined,
+  packageFqn: string,
+): Promise<void> {
+  await ensureScalaPackagesExampleLoaded(root, dir, projectId)
+  await nextTick()
+  await openPackageInnerDiagramTab(packageFqn)
+}
+
+function decodeBundledQueryValue(raw: string): string {
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, ' '))
+  } catch {
+    return raw
+  }
+}
+
+/** Parse `root` + `dir` from subtitle links; regex fallback if `new URL` rejects the scheme. */
+function parseBundledExampleFromTritonHref(href: string): { root: string; dir: string } | null {
+  const u = String(href ?? '').trim()
+  let root = ''
+  let dir = ''
+  if (u.startsWith('triton://')) {
+    try {
+      const url = new URL(u)
+      root = url.searchParams.get('root')?.trim() ?? ''
+      dir = url.searchParams.get('dir')?.trim() ?? ''
+    } catch {
+      /* fall through */
+    }
+  }
+  if (!root || !dir) {
+    const rm = u.match(/[?&]root=([^&#]+)/)
+    const dm = u.match(/[?&]dir=([^&#]+)/)
+    if (rm?.[1] && dm?.[1]) {
+      root = decodeBundledQueryValue(rm[1]).trim()
+      dir = decodeBundledQueryValue(dm[1]).trim()
+    }
+  }
+  return root && dir ? { root, dir } : null
+}
+
+function parseBundledProjectFromTritonHref(href: string): string {
+  const u = String(href ?? '').trim()
+  if (u.startsWith('triton://')) {
+    try {
+      const p = new URL(u).searchParams.get('project')?.trim() ?? ''
+      if (p) return p
+    } catch {
+      /* fall through */
+    }
+  }
+  const m = u.match(/[?&]project=([^&#]+)/)
+  return m?.[1] ? decodeBundledQueryValue(m[1]).trim() : ''
+}
+
+function parseBundledPackageNodeFromTritonHref(href: string): string {
+  const u = String(href ?? '').trim()
+  if (u.startsWith('triton://')) {
+    try {
+      const n = new URL(u).searchParams.get('node')?.trim() ?? ''
+      if (n) return n
+    } catch {
+      /* fall through */
+    }
+  }
+  const m = u.match(/[?&]node=([^&#]+)/)
+  return m?.[1] ? decodeBundledQueryValue(m[1]).trim() : ''
+}
+
+/** Normalized pathname for `triton://host/path?…` (trailing slash stripped). */
+function tritonHrefPathname(href: string): string {
+  const u = String(href ?? '').trim()
+  if (!u.startsWith('triton://')) return ''
+  try {
+    return new URL(u).pathname.replace(/\/+$/, '') || '/'
+  } catch {
+    const m = u.match(/^triton:\/\/[^/?#]+(\/[^?#]*)/)
+    const p = (m?.[1] ?? '/').replace(/\/+$/, '')
+    return p || '/'
+  }
 }
 
 async function openRuntimeSbtTab(workspacePath: string, workspaceName: string): Promise<void> {
@@ -3252,6 +3396,11 @@ watch(
  * project),
  * `triton:sbt` (open/activate the sbt build tab). Unknown links fall through to a normal
  * `window.open` so authors can also embed external docs links.
+ *
+ * Absolute example targets (from Docker diagrams, etc.):
+ *   `triton://diagram/sbt?root=docker-examples&dir=06-scala-services`
+ *   `triton://diagram/packages?root=…&dir=…&project=api`
+ *   `triton://diagram/package?root=…&dir=…&project=api&node=com.example.api.config`
  */
 function onNodeLinkAction(payload: { nodeId: string; href: string }) {
   const href = payload.href.trim()
@@ -3261,14 +3410,26 @@ function onNodeLinkAction(payload: { nodeId: string; href: string }) {
   } catch {
     tritonUrl = null
   }
-  const projectId = tritonUrl?.searchParams.get('project')?.trim() ?? ''
+  const exampleFromQuery = parseBundledExampleFromTritonHref(href)
+  const bundledProjectId = parseBundledProjectFromTritonHref(href)
+  const bundledPackageNodeId = parseBundledPackageNodeFromTritonHref(href)
+  const tritonPath = tritonHrefPathname(href)
   const tsModuleId = tritonUrl?.searchParams.get('module')?.trim() ?? ''
-  const packageNodeId = tritonUrl?.searchParams.get('node')?.trim() ?? ''
-  if (tritonUrl?.pathname === '/package') {
-    void openPackageInnerDiagramTab(packageNodeId || payload.nodeId)
+  if (tritonPath === '/package') {
+    const node = bundledPackageNodeId || payload.nodeId
+    const lp = bundledProjectId
+    if (exampleFromQuery && node) {
+      void openScalaPackagesTabThenInnerDiagram(exampleFromQuery.root, exampleFromQuery.dir, lp || undefined, node)
+      return
+    }
+    if (!node) {
+      status.value = 'Cannot open package diagram — package node id is missing.'
+      return
+    }
+    void openPackageInnerDiagramTab(node)
     return
   }
-  if (tritonUrl?.pathname === '/ts-packages') {
+  if (tritonPath === '/ts-packages') {
     const activeKey = activeTab.value?.key ?? ''
     const parsed = activeKey.startsWith('ts:')
       ? parseTsExampleTabBody(activeKey.slice('ts:'.length))
@@ -3286,32 +3447,40 @@ function onNodeLinkAction(payload: { nodeId: string; href: string }) {
     void openTsPackagesTab(parsed.root, parsed.dir, parsed.file, tsModuleId)
     return
   }
-  if (href === 'triton:packages' || href === 'triton://diagram/packages' || tritonUrl?.pathname === '/packages') {
+  if (href === 'triton:packages' || href === 'triton://diagram/packages' || tritonPath === '/packages') {
     const runtimeWs = activeRuntimeWorkspace.value
-    if (runtimeWs) {
-      void openRuntimePackagesTab(runtimeWs.workspacePath, runtimeWs.workspaceName, projectId || undefined)
+    if (runtimeWs && !exampleFromQuery) {
+      void openRuntimePackagesTab(runtimeWs.workspacePath, runtimeWs.workspaceName, bundledProjectId || undefined)
       return
     }
-    const ex = activeExample.value
+    const ex = exampleFromQuery ?? activeExample.value
     if (!ex) {
       status.value = 'Cannot open packages view — no sbt example loaded.'
       return
     }
-    void openScalaPackagesTab(ex.root, ex.dir, projectId || undefined)
+    if (exampleFromQuery) {
+      void ensureScalaPackagesExampleLoaded(ex.root, ex.dir, bundledProjectId || undefined)
+    } else {
+      void openScalaPackagesTab(ex.root, ex.dir, bundledProjectId || undefined)
+    }
     return
   }
-  if (href === 'triton:sbt' || href === 'triton://diagram/sbt') {
+  if (href === 'triton:sbt' || href === 'triton://diagram/sbt' || tritonPath === '/sbt') {
     const runtimeWs = activeRuntimeWorkspace.value
-    if (runtimeWs) {
+    if (runtimeWs && !exampleFromQuery) {
       void openRuntimeSbtTab(runtimeWs.workspacePath, runtimeWs.workspaceName)
       return
     }
-    const ex = activeExample.value
+    const ex = exampleFromQuery ?? activeExample.value
     if (!ex) {
       status.value = 'Cannot open sbt view — no sbt example loaded.'
       return
     }
-    void openSbtExampleTab(ex.root, ex.dir)
+    if (exampleFromQuery) {
+      void ensureSbtExampleLoaded(ex.root, ex.dir)
+    } else {
+      void openSbtExampleTab(ex.root, ex.dir)
+    }
     return
   }
   if (/^https?:/i.test(href)) {

@@ -9,7 +9,7 @@ type StarterFoldSection = {
   cards: StarterCard[]
 }
 import stackedCubesIconUrl from '../assets/language-icons/stacked-cubes.svg'
-import { dockerConceptIconUrl } from '../triton/dockerConceptIcons'
+import { dockerBrandIconUrl } from '../triton/dockerConceptIcons'
 import cubeIconUrl from '../assets/language-icons/cube.svg'
 import sbtIconUrl from '../assets/language-icons/sbt.svg'
 import typescriptIconUrl from '../assets/language-icons/typescript.svg'
@@ -211,7 +211,7 @@ function starterIconUrl(card: StarterCard): string {
     case 'ts':
       return typescriptIconUrl
     case 'docker':
-      return dockerConceptIconUrl(card.dockerConceptIcon ?? 'image')
+      return dockerBrandIconUrl
   }
 }
 

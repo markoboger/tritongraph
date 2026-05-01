@@ -365,6 +365,7 @@ const {
   embedded: () => props.embedded,
   focused: () => props.focused,
   label: () => String(props.label ?? ''),
+  subtitle: () => String(props.subtitle ?? ''),
   hasCoverage: () => hasCoverage.value,
   issueCount: () => simulatedMetrics.value.issueCount,
   watchSources: () => [

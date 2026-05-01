@@ -1,6 +1,7 @@
-# Minimal stack: pull image, run one container from a Compose service.
+# Service `web` is built from ./Dockerfile (same base as the previous pull-only example).
 services:
   web:
-    image: nginx:1.27-alpine
+    build: .
+    image: docker-examples-01-web:local
     ports:
       - "18080:80"

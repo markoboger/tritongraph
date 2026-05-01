@@ -11,6 +11,7 @@ import GeneralFocusedBox from '../common/GeneralFocusedBox.vue'
 import BoxMetricStrip from '../common/BoxMetricStrip.vue'
 import BoxToolbar from '../common/BoxToolbar.vue'
 import MarkdownActionSubtitle from '../common/MarkdownActionSubtitle.vue'
+import { subtitleHasMarkdownLinks } from '../common/subtitleMarkdownLinks'
 import { buildFocusedBoxCompartments } from '../common/focusedBoxCompartments'
 import { useEditableBox } from '../common/useEditableBox'
 import { useBoxMetrics } from '../common/useBoxMetrics'
@@ -106,11 +107,14 @@ function syncMetricsBreakChrome(root: HTMLElement | null) {
 }
 
 const showUnfocusedSubtitle = computed(() => {
+  if (!props.subtitle?.trim()) return false
+  /** Drill / view-switch links must stay visible; chrome otherwise hides long subtitles (overflow / tight / tiny boxes). */
+  if (subtitleHasMarkdownLinks(props.subtitle)) return true
   if (compactLayout.value) return false
   if (superflatLayout.value) return false
   if (superslimLayout.value) return false
-  if (metricsBreakLayout.value && slimLayout.value) return !!props.subtitle?.trim()
-  return !!props.subtitle?.trim() && !tightLayout.value
+  if (metricsBreakLayout.value && slimLayout.value) return true
+  return !tightLayout.value
 })
 
 let measureCanvas: CanvasRenderingContext2D | null = null

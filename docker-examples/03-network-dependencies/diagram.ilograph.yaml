@@ -1,55 +1,66 @@
-description: |
-  **Topology:** Two **Services** share a user-defined **Network** (`internal`). `depends_on` adds an
-  ordering / stack **dependency** edge (startup order); it does not replace DNS — both attach to the
-  same **Network** so they can resolve each other by service name.
-
+description: "Built images per service, network internal, depends_on worker to api."
 resources:
-  - name: image-alpine
-    subtitle: Image — shared base for api + worker
+  - name: docker-examples-03-api:local
+    subtitle: image
     x-triton-icon: image
-  - name: network-internal
-    subtitle: Network — bridge `internal`
+    x-triton-project-compartments:
+      - id: df
+        title: dockerfile
+        rows:
+          - { value: "api/Dockerfile → FROM alpine:3.20" }
+  - name: docker-examples-03-worker:local
+    subtitle: image
+    x-triton-icon: image
+    x-triton-project-compartments:
+      - id: df
+        title: dockerfile
+        rows:
+          - { value: "worker/Dockerfile → FROM alpine:3.20" }
+  - name: internal
+    subtitle: network
     x-triton-icon: network
-  - name: compose-service-api
-    subtitle: Service — `api`
+    x-triton-project-compartments:
+      - id: d
+        title: compose
+        rows:
+          - { value: "driver: bridge" }
+  - name: api
+    subtitle: service
     x-triton-icon: service
-  - name: compose-service-worker
-    subtitle: Service — `worker`
+    x-triton-project-compartments:
+      - id: n
+        title: networks
+        rows:
+          - { value: "internal" }
+  - name: worker
+    subtitle: service
     x-triton-icon: service
-  - name: container-api-1
-    subtitle: Container — instance of `api`
-    x-triton-icon: container
-  - name: container-worker-1
-    subtitle: Container — instance of `worker`
-    x-triton-icon: container
-
+    x-triton-project-compartments:
+      - id: dep
+        title: depends_on
+        rows:
+          - { value: "api" }
+      - id: n
+        title: networks
+        rows:
+          - { value: "internal" }
 perspectives:
   - name: dependencies
     orientation: leftToRight
     color: royalblue
-    notes: |
-      **depends_on** (worker → api) is a Compose-level edge. **attaches to** links each **Service**
-      (and thus its **Container**) to the **Network**. Both services reuse the same **Image** ref
-      in this minimal file.
     relations:
-      - from: image-alpine
-        to: compose-service-api
-        label: image ref
-      - from: image-alpine
-        to: compose-service-worker
-        label: image ref
-      - from: compose-service-api
-        to: container-api-1
-        label: instantiates
-      - from: compose-service-worker
-        to: container-worker-1
-        label: instantiates
-      - from: compose-service-worker
-        to: compose-service-api
+      - from: docker-examples-03-api:local
+        to: api
+        label: image
+      - from: docker-examples-03-worker:local
+        to: worker
+        label: image
+      - from: worker
+        to: api
         label: depends_on
-      - from: compose-service-api
-        to: network-internal
-        label: attaches to
-      - from: compose-service-worker
-        to: network-internal
-        label: attaches to
+      - from: api
+        to: internal
+        label: networks
+      - from: worker
+        to: internal
+        label: networks
