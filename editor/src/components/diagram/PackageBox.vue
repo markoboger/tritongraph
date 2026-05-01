@@ -1298,7 +1298,7 @@ function onHeaderDblClick() {
   position: absolute;
   top: 1px;
   left: 1px;
-  z-index: 3;
+  z-index: 15;
   align-self: flex-start;
   justify-content: flex-start;
   align-items: flex-start;
@@ -1314,6 +1314,8 @@ function onHeaderDblClick() {
   )
   .package-box__body {
   justify-content: flex-start;
+  position: relative;
+  z-index: 0;
 }
 
 .package-box--has-metrics.package-box--metrics-break:not(.package-box--flat-layout)
@@ -1336,7 +1338,7 @@ function onHeaderDblClick() {
   position: absolute;
   top: 1px;
   left: 1px;
-  z-index: 3;
+  z-index: 15;
   align-items: flex-start;
   justify-content: flex-start;
   width: auto;

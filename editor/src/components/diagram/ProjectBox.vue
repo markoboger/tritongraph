@@ -694,7 +694,8 @@ const { editing, draftLabel, draftDescription, startEditing, commitEdit, cancelE
   position: absolute;
   top: 1px;
   left: 1px;
-  z-index: 3;
+  /** Above `.project-box__body` (in-flow, full size) so the logo is not painted over — see slim vertical rails. */
+  z-index: 15;
   align-self: flex-start;
   justify-content: flex-start;
   align-items: flex-start;
@@ -707,6 +708,8 @@ const { editing, draftLabel, draftDescription, startEditing, commitEdit, cancelE
 
 .project-box--has-metrics.project-box--metrics-break .project-box__body {
   justify-content: flex-start;
+  position: relative;
+  z-index: 0;
 }
 
 .project-box--has-metrics.project-box--metrics-break .lang-icon-slot :deep(.lang-svg),
