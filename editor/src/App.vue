@@ -48,7 +48,7 @@ import { parseBuildSbt } from './sbt/parseBuildSbt'
 import { sbtProjectsToIlographDocument } from './sbt/sbtProjectsToIlographDocument'
 import { getSbtTestLogFor } from './sbt/sbtTestLogLoader'
 import { parseSbtTestLog } from './sbt/parseSbtTestLog'
-import { getScoverageReportFor } from './sbt/scoverageReportLoader'
+import { getScoverageReportsFor, mergeParsedScoverageXml, scoverageReportsVersion } from './sbt/scoverageReportLoader'
 import { parseScoverageXml } from './sbt/parseScoverageXml'
 import { listScalaSourcesIn } from './scala/scalaSourceLoader'
 import {
@@ -78,6 +78,7 @@ import {
   clearScalaCoverageForWorkspace,
   clearScalaTestBlocksForWorkspace,
   clearScalaSpecsForWorkspace,
+  getScalaCoverage,
   getInnerArtefactOverlays,
   getNodeOverlay,
   importLegacyEditorOverlay,
@@ -416,6 +417,13 @@ function packageDiagramDocument(data: NonNullable<ReturnType<typeof packageDiagr
   }
 }
 
+function collectInnerPackageIds(pkgs: readonly TritonInnerPackageSpec[] | undefined, out: Set<string>) {
+  for (const p of pkgs ?? []) {
+    if (p?.id) out.add(String(p.id))
+    if (p?.innerPackages?.length) collectInnerPackageIds(p.innerPackages, out)
+  }
+}
+
 async function openPackageInnerDiagramTab(packageId: string): Promise<void> {
   const data = packageDiagramDataForNode(packageId)
   if (!data) {
@@ -431,6 +439,24 @@ async function openPackageInnerDiagramTab(packageId: string): Promise<void> {
     },
     async () => {
       sourcePath.value = `${sourcePath.value || parentKey}#${packageId}`
+      // Seed coverage into this derived workspace so metrics render inside the inner-diagram tab.
+      await whenOverlayStoreReady()
+      const ws = activeWorkspaceKey.value
+      const parentWs = parentKey
+      if (ws && parentWs && ws !== parentWs) {
+        const ids = new Set<string>([String(data.id)])
+        collectInnerPackageIds(data.innerPackages, ids)
+        for (const a of data.innerArtefacts ?? []) {
+          if (a?.id) ids.add(String(a.id))
+        }
+        clearScalaCoverageForWorkspace(ws)
+        for (const id of ids) {
+          const row = getScalaCoverage(parentWs, id)
+          if (typeof row.stmtPct === 'number' && Number.isFinite(row.stmtPct)) {
+            setScalaCoverage(ws, id, row.stmtPct)
+          }
+        }
+      }
       await applyDoc(stringifyIlographYaml(packageDiagramDocument(data)), `${data.name}.ilograph.yaml`, false, {
         moduleNodeType: 'package',
         initialLayerDrillId: data.id,
@@ -759,13 +785,6 @@ interface RuntimeWorkspaceActionResult {
   note?: string
 }
 
-interface RuntimeWorkspaceSource {
-  ok: boolean
-  workspacePath: string
-  relPath: string
-  source: string
-}
-
 interface ProjectScope {
   id: string
   baseDir?: string
@@ -805,6 +824,14 @@ function stripExampleProjectSuffix(body: string): string {
   return hash >= 0 ? body.slice(0, hash) : body
 }
 
+function baseTabKey(tabKey: string): string {
+  const k = String(tabKey ?? '')
+  if (!k.startsWith('package-inner:')) return k
+  const body = k.slice('package-inner:'.length)
+  const hash = body.indexOf('#')
+  return hash >= 0 ? body.slice(0, hash) : body
+}
+
 function parseRuntimeTabKey(
   key: string,
 ): { workspacePath: string; workspaceName: string; projectId?: string } | null {
@@ -826,7 +853,7 @@ function parseRuntimeTabKey(
 }
 
 const activeRuntimeWorkspace = computed<{ workspacePath: string; workspaceName: string } | null>(() => {
-  const parsed = parseRuntimeTabKey(activeTab.value?.key ?? '')
+  const parsed = parseRuntimeTabKey(baseTabKey(activeTab.value?.key ?? ''))
   return parsed ? { workspacePath: parsed.workspacePath, workspaceName: parsed.workspaceName } : null
 })
 
@@ -902,14 +929,11 @@ const activeWorkspaceKey = computed<string>(() =>
   activeTab.value?.kind === 'runtime' ? '' : activeTab.value?.key ?? '',
 )
 provide('tritonWorkspaceKey', activeWorkspaceKey)
-provide('tritonRuntimeWorkspaceSession', runtimeWorkspaceSession)
 
-/** `(root, dir)` of the example backing the active tab; `null` for builtin / file uploads. */
+/** `(root, dir)` of the example backing the active tab; `null` for builtin / file uploads / runtime. */
 const activeExample = computed<{ root: string; dir: string } | null>(() => {
-  const k = activeTab.value?.key ?? ''
-  if (k.startsWith('runtime-sbt:') || k.startsWith('runtime-packages:')) {
-    return { root: '', dir: '' }
-  }
+  const k = baseTabKey(activeTab.value?.key ?? '')
+  if (k.startsWith('runtime-sbt:') || k.startsWith('runtime-packages:')) return null
   let body = ''
   if (k.startsWith('sbt:')) {
     body = k.slice('sbt:'.length)
@@ -939,7 +963,7 @@ const activeExample = computed<{ root: string; dir: string } | null>(() => {
  * (packages tab → sbt tab → packages tab) are picked up without component re-creation.
  */
 provide('tritonActiveExample', activeExample)
-provide('tritonOpenRuntimeSourceTab', openRuntimeSourceTab)
+provide('tritonActiveRuntimeWorkspace', activeRuntimeWorkspace)
 provide('tritonNodeTypeVisibility', nodeTypeVisibility)
 provide('tritonRelationTypeVisibility', relationTypeVisibility)
 provide('tritonMetricTooltipsEnabled', metricTooltipsEnabled)
@@ -1146,70 +1170,6 @@ async function fetchRuntimeWorkspaceBundle(
           }
         : null,
   }
-}
-
-async function fetchRuntimeWorkspaceSource(
-  workspacePath: string,
-  relPath: string,
-): Promise<RuntimeWorkspaceSource> {
-  const runtimeUrl = effectiveRuntimeUrl.value
-  if (!runtimeUrl) {
-    throw new Error('No Triton runtime URL is configured (set ?runtimeUrl= or VITE_TRITON_RUNTIME_URL).')
-  }
-  const url = new URL(`${runtimeUrl}/api/workspace/source`)
-  url.searchParams.set('workspacePath', workspacePath)
-  url.searchParams.set('relPath', relPath)
-  const res = await fetch(url.toString(), { method: 'GET' })
-  const body = (await res.json().catch(() => ({}))) as Partial<RuntimeWorkspaceSource> & { error?: string }
-  if (!res.ok) {
-    throw new Error(String(body.error || `Runtime source request failed (${res.status}).`))
-  }
-  return {
-    ok: body.ok === true,
-    workspacePath: String(body.workspacePath ?? workspacePath),
-    relPath: String(body.relPath ?? relPath),
-    source: String(body.source ?? ''),
-  }
-}
-
-function runtimeSourceTabKey(workspacePath: string, workspaceName: string, relPath: string, line: number): string {
-  return `runtime-source:${workspacePath}::${workspaceName}::${relPath}::${line}`
-}
-
-async function openRuntimeSourceTab(relPath: string, line = 1): Promise<void> {
-  const session = runtimeWorkspaceSession.value
-  const runtimeWs = activeRuntimeWorkspace.value ?? session
-  if (!effectiveRuntimeUrl.value || !runtimeWs) {
-    status.value = 'Runtime source preview is only available for runtime-backed workspaces.'
-    return
-  }
-  const normalizedLine = Math.max(1, Math.floor(line || 1))
-  const title = relPath.split('/').filter(Boolean).pop() || relPath
-  await openOrActivateTab(
-    {
-      key: runtimeSourceTabKey(runtimeWs.workspacePath, runtimeWs.workspaceName, relPath, normalizedLine),
-      title,
-      iconUrl: folderIconUrl,
-      kind: 'source',
-    },
-    async () => {
-      const source = await fetchRuntimeWorkspaceSource(runtimeWs.workspacePath, relPath)
-      sourcePath.value = `${runtimeWs.workspacePath}/${source.relPath}`
-      fileName.value = title
-      perspectiveName.value = undefined
-      yamlBaseline.value = ''
-      nodes.value = []
-      edges.value = []
-      if (activeTab.value) {
-        activeTab.value.sourceContent = source.source
-        activeTab.value.sourceLanguage = undefined
-        activeTab.value.sourceLine = normalizedLine
-        activeTab.value.sourcePath = `${runtimeWs.workspacePath}/${source.relPath}`
-        activeTab.value.fileName = title
-      }
-      status.value = `Opened source preview for ${source.relPath} at line ${normalizedLine}.`
-    },
-  )
 }
 
 async function postRuntimeWorkspaceAction(
@@ -2770,6 +2730,28 @@ async function reloadActiveRuntimeTab(): Promise<void> {
   }
 }
 
+async function reloadActiveExampleTab(): Promise<void> {
+  if (!activeTab.value) return
+  const key = activeTab.value.key
+  if (key.startsWith('sbt:')) {
+    const body = key.slice('sbt:'.length)
+    const slash = body.indexOf('/')
+    if (slash < 0) return
+    await loadSbtBuildForExample(body.slice(0, slash), body.slice(slash + 1))
+    snapshotActiveTab()
+    return
+  }
+  if (key.startsWith('packages:')) {
+    const body = key.slice('packages:'.length)
+    const cleaned = stripExampleProjectSuffix(body)
+    const slash = cleaned.indexOf('/')
+    if (slash < 0) return
+    const projectId = body.includes('#') ? body.slice(body.indexOf('#') + 1) : ''
+    await loadScalaPackagesForExample(cleaned.slice(0, slash), cleaned.slice(slash + 1), projectId || undefined)
+    snapshotActiveTab()
+  }
+}
+
 async function loadSbtBuildForExample(root: string, dir: string) {
   const hit = sbtExamplesAll.find((e) => e.root === root && e.dir === dir)
   if (!hit) {
@@ -2784,10 +2766,10 @@ async function loadSbtBuildForExample(root: string, dir: string) {
     projectsWithScalaSources,
   })
   const allFiles = listScalaSourcesIn(hit.root, hit.dir)
-  const rep = getScoverageReportFor(hit.root, hit.dir)
-  if (allFiles.length && rep?.xml) {
+  const reps = getScoverageReportsFor(hit.root, hit.dir)
+  const parsedCoverage = reps.length ? mergeParsedScoverageXml(reps.map((r) => parseScoverageXml(r.xml))) : undefined
+  if (allFiles.length && parsedCoverage) {
     const graph = await buildScalaPackageGraph(allFiles)
-    const parsedCoverage = parseScoverageXml(rep.xml)
     const payload = buildScalaWorkspacePayload({
       sourcePath: `${hit.root}/${hit.dir}/build.sbt`,
       title: `sbt build: ${dir}`,
@@ -2900,9 +2882,9 @@ async function loadScalaPackagesForExample(root: string, dir: string, projectId?
       : `${root}/${dir}/`
     sourcePath.value = sourceLabel
     const log = getSbtTestLogFor(root, dir)
-    const rep = getScoverageReportFor(root, dir)
+    const reps = getScoverageReportsFor(root, dir)
     const parsedTestLog = log?.text ? parseSbtTestLog(log.text) : undefined
-    const parsedCoverage = rep?.xml ? parseScoverageXml(rep.xml) : undefined
+    const parsedCoverage = reps.length ? mergeParsedScoverageXml(reps.map((r) => parseScoverageXml(r.xml))) : undefined
     const ilographDoc = scalaPackageGraphToIlographDocument(graph, {
       title: projectScope ? `Scala packages: ${dir}:${projectScope.id}` : `Scala packages: ${dir}`,
       sourcePath: sourceLabel,
@@ -3123,6 +3105,102 @@ async function runRuntimeWorkspaceAction(
     runtimeActionBusy.value = ''
   }
 }
+
+/**
+ * Runtime workspace auto-refresh:
+ * After the user runs tests/coverage outside the UI (terminal, IDE task), the runtime server can
+ * already see new `sbt-test.log` / `scoverage.xml`, but the browser has no filesystem watchers.
+ * Poll the runtime bundle and reload the active runtime tab when either artifact changes.
+ */
+function runtimeBundleSignature(bundle: RuntimeWorkspaceBundle): string {
+  const log = bundle.testLog?.text ?? ''
+  const cov = bundle.coverageReport?.xml ?? ''
+  return [
+    bundle.testLog?.relPath ?? '',
+    String(log.length),
+    String(hashString(log)),
+    bundle.coverageReport?.relPath ?? '',
+    String(cov.length),
+    String(hashString(cov)),
+  ].join('|')
+}
+
+function hashString(s: string): number {
+  // Small stable hash (djb2) — enough to detect changes without storing full payloads.
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i)
+  // Force uint32 so the signature is stable across JS engines.
+  return h >>> 0
+}
+
+let runtimeAutoRefreshTimer: ReturnType<typeof setInterval> | null = null
+let runtimeAutoRefreshLastSig = ''
+let runtimeAutoRefreshBusy = false
+
+function stopRuntimeAutoRefresh(): void {
+  if (runtimeAutoRefreshTimer != null) clearInterval(runtimeAutoRefreshTimer)
+  runtimeAutoRefreshTimer = null
+  runtimeAutoRefreshLastSig = ''
+  runtimeAutoRefreshBusy = false
+}
+
+function startRuntimeAutoRefresh(): void {
+  stopRuntimeAutoRefresh()
+  if (typeof window === 'undefined') return
+  if (!activeRuntimeWorkspace.value) return
+
+  runtimeAutoRefreshTimer = setInterval(async () => {
+    const ws = activeRuntimeWorkspace.value
+    // Only run while a runtime tab is actually active.
+    if (!ws || !activeTab.value || !activeTab.value.key.startsWith('runtime-')) return
+    if (runtimeActionBusy.value) return
+    if (runtimeAutoRefreshBusy) return
+    runtimeAutoRefreshBusy = true
+    try {
+      const bundle = await fetchRuntimeWorkspaceBundle(ws.workspacePath, ws.workspaceName)
+      const sig = runtimeBundleSignature(bundle)
+      if (!runtimeAutoRefreshLastSig) {
+        runtimeAutoRefreshLastSig = sig
+        return
+      }
+      if (sig !== runtimeAutoRefreshLastSig) {
+        runtimeAutoRefreshLastSig = sig
+        await reloadActiveRuntimeTab()
+      }
+    } catch {
+      // Ignore transient runtime errors; user-triggered actions already surface failures.
+    } finally {
+      runtimeAutoRefreshBusy = false
+    }
+  }, 2500)
+}
+
+watch(
+  () => activeRuntimeWorkspace.value?.workspacePath ?? '',
+  () => startRuntimeAutoRefresh(),
+  { flush: 'post' },
+)
+
+watch(
+  () => activeTab.value?.key ?? '',
+  () => startRuntimeAutoRefresh(),
+  { flush: 'post' },
+)
+
+onUnmounted(() => stopRuntimeAutoRefresh())
+
+watch(
+  () => scoverageReportsVersion.value,
+  async () => {
+    // Only bundled examples rely on the Vite virtual module.
+    if (!activeTab.value) return
+    if (activeTab.value.key.startsWith('runtime-')) return
+    // Avoid spamming reload while another loader is in-flight.
+    if (runtimeActionBusy.value) return
+    await reloadActiveExampleTab()
+  },
+  { flush: 'post' },
+)
 
 /**
  * Internal `triton:` URL scheme used by markdown links inside project-box subtitles.

@@ -172,12 +172,8 @@ const activeExampleRef = inject<Ref<{ root: string; dir: string } | null> | unde
   'tritonActiveExample',
   undefined,
 )
-const runtimeWorkspaceSession = inject<Ref<{ workspacePath: string; workspaceName: string; runtimeUrl: string } | null> | undefined>(
-  'tritonRuntimeWorkspaceSession',
-  undefined,
-)
-const openRuntimeSourceTab = inject<((relPath: string, line?: number) => void) | undefined>(
-  'tritonOpenRuntimeSourceTab',
+const activeRuntimeWorkspaceRef = inject<Ref<{ workspacePath: string; workspaceName: string } | null> | undefined>(
+  'tritonActiveRuntimeWorkspace',
   undefined,
 )
 const emitLinkAction = inject<((nodeId: string, href: string) => void) | undefined>(
@@ -191,8 +187,7 @@ function onLinkAction(href: string) {
 
 function canOpenInEditor(): boolean {
   if (!props.data.sourceFile) return false
-  if (runtimeWorkspaceSession?.value) return true
-  return !!activeExampleRef?.value
+  return !!(activeExampleRef?.value || activeRuntimeWorkspaceRef?.value)
 }
 
 /**
@@ -209,19 +204,32 @@ function triggerOpenInEditor(line?: number): void {
   const relPath = props.data.sourceFile
   if (!relPath) return
   const effectiveRow = line !== undefined ? line : (props.data.sourceRow ?? 0)
-  if (runtimeWorkspaceSession?.value && openRuntimeSourceTab) {
-    openRuntimeSourceTab(relPath, effectiveRow + 1)
-    return
-  }
   const ex = activeExampleRef?.value
-  if (!ex) return
-  openInEditor({
-    root: ex.root,
-    exampleDir: ex.dir,
-    relPath,
-    // Tree-sitter `startRow` is 0-indexed; editor URL schemes are 1-indexed.
-    line: effectiveRow + 1,
-  })
+  const rt = activeRuntimeWorkspaceRef?.value
+  openInEditor(
+    ex
+      ? {
+          root: ex.root,
+          exampleDir: ex.dir,
+          relPath,
+          // Tree-sitter `startRow` is 0-indexed; editor URL schemes are 1-indexed.
+          line: effectiveRow + 1,
+        }
+      : rt
+        ? {
+            root: '',
+            exampleDir: '',
+            absBaseDir: rt.workspacePath,
+            relPath,
+            line: effectiveRow + 1,
+          }
+        : {
+            root: '',
+            exampleDir: '',
+            relPath,
+            line: effectiveRow + 1,
+          },
+  )
 }
 
 /** Same Vue node shell as packages so layout + chrome stay aligned (`type` from flow graph). */
