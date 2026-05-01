@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import type { StarterCard, StarterCardKind } from '../triton/tritonStarterCard'
 
 type StarterFoldSection = {
-  id: 'scala' | 'ts' | 'sbt' | 'dojo'
+  id: 'scala' | 'ts' | 'sbt' | 'dojo' | 'docker'
   title: string
   hint: string
   cards: StarterCard[]
@@ -141,6 +141,7 @@ const starterFoldSections = computed<StarterFoldSection[]>(() => {
   const sbtOnly = sortStartersByTitle(sbtPool.filter((c) => c.kind === 'sbt'))
   const sbt = [...yaml, ...sbtOnly]
   const dojo = sortStartersByTitle(all.filter((c) => c.kind === 'dojo'))
+  const docker = sortStartersByTitle(all.filter((c) => c.kind === 'docker'))
 
   const out: StarterFoldSection[] = []
   if (scala.length) {
@@ -175,6 +176,14 @@ const starterFoldSections = computed<StarterFoldSection[]>(() => {
       cards: dojo,
     })
   }
+  if (docker.length) {
+    out.push({
+      id: 'docker',
+      title: 'Docker Examples',
+      hint: 'Compose and Dockerfile concepts mapped to Ilograph diagrams (with runnable compose files in-repo).',
+      cards: docker,
+    })
+  }
   return out
 })
 
@@ -200,6 +209,8 @@ function starterIconUrl(kind: StarterCardKind): string {
       return sbtIconUrl
     case 'ts':
       return typescriptIconUrl
+    case 'docker':
+      return stackedCubesIconUrl
   }
 }
 
@@ -213,6 +224,8 @@ function starterKindLabel(kind: StarterCardKind): string {
       return 'SBT'
     case 'ts':
       return 'TypeScript'
+    case 'docker':
+      return 'Docker'
   }
 }
 
@@ -1074,6 +1087,10 @@ watch(
   background: #dbeafe;
   color: #1d4ed8;
 }
+.starter-kind--docker {
+  background: #e0f2fe;
+  color: #0369a1;
+}
 .runtime-home__grid--starters {
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
 }
@@ -1104,6 +1121,9 @@ watch(
 }
 .starter-card--ts {
   border-left-color: #2563eb;
+}
+.starter-card--docker {
+  border-left-color: #2496ed;
 }
 .starter-card__icon-wrap {
   flex-shrink: 0;

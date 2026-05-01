@@ -1,0 +1,38 @@
+description: |
+  **Build path:** A **Project** directory (build `context:`) plus a **Dockerfile** defines a **Build**
+  that produces a local **Image** (`docker-examples-02-api:local`). The Compose **Service** uses
+  that image; the engine still **instantiates** a **Container**. *Service* = declaration; *Container*
+  = instance.
+
+resources:
+  - name: project-repo
+    subtitle: Project — build context directory on disk
+  - name: dockerfile-build
+    subtitle: Build — Dockerfile instructions → image layers
+  - name: image-api-local
+    subtitle: Image — tagged artifact from build
+  - name: compose-service-api
+    subtitle: Service — compose block for `api`
+  - name: container-api-1
+    subtitle: Container — one running instance
+
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: |
+      **Project** feeds **Build** (`COPY`, `FROM`, …). **Build** *produces* **Image**. **Service**
+      references that image; **Container** is the runtime *instance* of the service spec.
+    relations:
+      - from: project-repo
+        to: dockerfile-build
+        label: context
+      - from: dockerfile-build
+        to: image-api-local
+        label: produces
+      - from: image-api-local
+        to: compose-service-api
+        label: image ref
+      - from: compose-service-api
+        to: container-api-1
+        label: instantiates

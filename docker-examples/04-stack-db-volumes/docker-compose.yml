@@ -1,0 +1,26 @@
+services:
+  app:
+    image: alpine:3.20
+    command: ["sleep", "infinity"]
+    ports:
+      - "18082:8080"
+    volumes:
+      - app-cache:/tmp/cache
+    networks: [app-net]
+    depends_on:
+      - db
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: example
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks: [app-net]
+
+volumes:
+  db-data:
+  app-cache:
+
+networks:
+  app-net:
+    driver: bridge

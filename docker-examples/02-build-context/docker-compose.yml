@@ -1,0 +1,8 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: docker-examples-02-api:local
+    ports:
+      - "18081:8080"

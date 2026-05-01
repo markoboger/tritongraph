@@ -8,6 +8,7 @@ import GraphWorkspace from './components/GraphWorkspace.vue'
 import DiagramTopBar from './components/common/DiagramTopBar.vue'
 import TritonRuntimeHome from './components/TritonRuntimeHome.vue'
 import type { StarterCard } from './triton/tritonStarterCard'
+import { dockerDiagramExamples } from './triton/dockerDiagramExamples'
 import YamlDiffEditor from './components/YamlDiffEditor.vue'
 import SourceCodeViewer from './components/SourceCodeViewer.vue'
 import { parseIlographYaml, stringifyIlographYaml } from './ilograph/parse'
@@ -729,6 +730,15 @@ const tritonStarterCards = computed<StarterCard[]>(() => {
       group: 'TypeScript',
     })
   }
+  for (const d of dockerDiagramExamples) {
+    rows.push({
+      kind: 'docker',
+      selectionId: `docker:${d.slug}`,
+      title: d.title,
+      subtitle: d.subtitle,
+      group: 'Docker',
+    })
+  }
   return rows
 })
 
@@ -741,6 +751,7 @@ const tritonStarterCards = computed<StarterCard[]>(() => {
  * `key` is a stable identity used to dedupe re-opens (e.g. clicking the same example twice
  * activates the existing tab instead of opening a second one). Format:
  *   - `builtin`                          — the bundled Ilograph YAML demo
+ *   - `docker:<slug>`                    — Docker / Compose mapping diagram (`docker-examples/<slug>/`)
  *   - `sbt:<root>/<dir>`                 — sbt build view of `<root>/<dir>/build.sbt`
  *   - `packages:<root>/<dir>`            — Scala package graph for the same `(root, dir)` example
  *   - `file:<name>#<uuid>`               — local YAML upload (always fresh, never deduped)
@@ -1119,6 +1130,23 @@ async function loadBuiltinExample() {
   await applyDoc(await res.text(), 'example.ilograph.yaml', true)
 }
 
+async function loadDockerExample(slug: string): Promise<void> {
+  const url = `/docker-examples/${slug}/diagram.ilograph.yaml`
+  const res = await fetch(url)
+  if (!res.ok) {
+    status.value = `Failed to load Docker diagram (${res.status}): ${url}`
+    throw new Error(`HTTP ${res.status}`)
+  }
+  sourcePath.value = `docker-examples/${slug}/diagram.ilograph.yaml`
+  await applyDoc(await res.text(), 'diagram.ilograph.yaml', true)
+}
+
+async function openDockerExampleTab(slug: string): Promise<void> {
+  const meta = dockerDiagramExamples.find((e) => e.slug === slug)
+  const label = meta?.title ?? slug
+  await openOrActivateTab({ key: `docker:${slug}`, title: `${label} · Docker` }, () => loadDockerExample(slug))
+}
+
 function exampleOptionLabel(dir: string): string {
   return dir.replace(/-/g, ' ')
 }
@@ -1223,6 +1251,12 @@ async function selectExample(id: string) {
     const [root, dir, ...rest] = parts
     const file = rest.join('/')
     await openTsExampleTab(root, dir, file)
+    return
+  }
+  if (id.startsWith('docker:')) {
+    const slug = id.slice('docker:'.length).trim()
+    if (!slug) return
+    await openDockerExampleTab(slug)
   }
 }
 
@@ -2446,7 +2480,8 @@ function isRestorableTabKey(key: string): boolean {
     key.startsWith('package-inner:') ||
     key.startsWith('packages:') ||
     key.startsWith('runtime-sbt:') ||
-    key.startsWith('runtime-packages:')
+    key.startsWith('runtime-packages:') ||
+    key.startsWith('docker:')
   )
 }
 
@@ -2526,6 +2561,12 @@ async function openTabFromUrlKey(key: string): Promise<boolean> {
     const parsed = parseTsExampleTabBody(trimmed.slice('ts-packages:'.length))
     if (!parsed?.moduleId) return false
     await openTsPackagesTab(parsed.root, parsed.dir, parsed.file, parsed.moduleId)
+    return true
+  }
+  if (trimmed.startsWith('docker:')) {
+    const slug = trimmed.slice('docker:'.length).trim()
+    if (!slug) return false
+    await openDockerExampleTab(slug)
     return true
   }
   if (trimmed.startsWith('packages:')) {

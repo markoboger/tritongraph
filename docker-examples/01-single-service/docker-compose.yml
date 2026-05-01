@@ -1,0 +1,6 @@
+# Minimal stack: pull image, run one container from a Compose service.
+services:
+  web:
+    image: nginx:1.27-alpine
+    ports:
+      - "18080:80"

@@ -12,6 +12,7 @@ COPY packages ./packages
 COPY sbt-examples ./sbt-examples
 COPY scala-examples ./scala-examples
 COPY ts-examples ./ts-examples
+COPY docker-examples ./docker-examples
 ARG VITE_TRITON_RUNTIME_URL=http://127.0.0.1:4317
 ENV VITE_TRITON_RUNTIME_URL=$VITE_TRITON_RUNTIME_URL
 RUN cd editor && npm run build

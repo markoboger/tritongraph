@@ -9,6 +9,7 @@ import { scalaSourcesVirtualModule } from './vite-plugin-scala-sources'
 import { scoverageReportsVirtualModule } from './vite-plugin-scoverage-reports'
 import { tritonConfigVirtualModule } from './vite-plugin-triton-config'
 import { tsExamplesVirtualModule } from './vite-plugin-ts-examples'
+import { dockerExamplesStaticPlugin } from './vite-plugin-docker-examples'
 
 const require = createRequire(import.meta.url)
 const monacoEditorMod = require('vite-plugin-monaco-editor') as
@@ -36,6 +37,7 @@ const tsExampleRoots = [{ name: 'ts-examples', dir: path.resolve(repoRoot, 'ts-e
 export default defineConfig({
   plugins: [
     vue(),
+    ...dockerExamplesStaticPlugin(repoRoot),
     sbtExamplesVirtualModule(exampleRoots),
     tsExamplesVirtualModule(tsExampleRoots),
     sbtTestLogsVirtualModule(exampleRoots),

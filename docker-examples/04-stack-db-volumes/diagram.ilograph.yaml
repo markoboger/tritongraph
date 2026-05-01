@@ -1,0 +1,66 @@
+description: |
+  **Data + wiring:** **Database** here is the `db` **Service** running a Postgres **Image** with a
+  named **Volume** for `/var/lib/postgresql/data`. The `app` **Service** mounts another **Volume**
+  (`app-cache`), publishes a **Port**, `depends_on` **db**, and attaches to the same **Network**.
+
+resources:
+  - name: image-alpine-app
+    subtitle: Image — app container base
+  - name: image-postgres
+    subtitle: Image — postgres:16-alpine
+  - name: volume-db-data
+    subtitle: Volume — named `db-data` (engine-managed storage)
+  - name: volume-app-cache
+    subtitle: Volume — named `app-cache`
+  - name: network-app-net
+    subtitle: Network — `app-net`
+  - name: compose-service-app
+    subtitle: Service — `app`
+  - name: compose-service-db
+    subtitle: Service — `db` (database role)
+  - name: container-app-1
+    subtitle: Container — app instance
+  - name: container-db-1
+    subtitle: Container — db instance
+  - name: host-port-18082
+    subtitle: Host port — publish 18082 → 8080
+
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: |
+      **mounts** connect **Service** to **Volume** (named volumes in this file). **Database** is
+      modeled as the `db` service + its data volume + image, not a separate Docker type. **Port**
+      maps host traffic into the app service.
+    relations:
+      - from: image-alpine-app
+        to: compose-service-app
+        label: image ref
+      - from: image-postgres
+        to: compose-service-db
+        label: image ref
+      - from: compose-service-app
+        to: container-app-1
+        label: instantiates
+      - from: compose-service-db
+        to: container-db-1
+        label: instantiates
+      - from: compose-service-app
+        to: compose-service-db
+        label: depends_on
+      - from: compose-service-db
+        to: volume-db-data
+        label: mounts
+      - from: compose-service-app
+        to: volume-app-cache
+        label: mounts
+      - from: compose-service-app
+        to: network-app-net
+        label: attaches to
+      - from: compose-service-db
+        to: network-app-net
+        label: attaches to
+      - from: compose-service-app
+        to: host-port-18082
+        label: publishes

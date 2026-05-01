@@ -1,0 +1,49 @@
+description: |
+  **Topology:** Two **Services** share a user-defined **Network** (`internal`). `depends_on` adds an
+  ordering / stack **dependency** edge (startup order); it does not replace DNS — both attach to the
+  same **Network** so they can resolve each other by service name.
+
+resources:
+  - name: image-alpine
+    subtitle: Image — shared base for api + worker
+  - name: network-internal
+    subtitle: Network — bridge `internal`
+  - name: compose-service-api
+    subtitle: Service — `api`
+  - name: compose-service-worker
+    subtitle: Service — `worker`
+  - name: container-api-1
+    subtitle: Container — instance of `api`
+  - name: container-worker-1
+    subtitle: Container — instance of `worker`
+
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: |
+      **depends_on** (worker → api) is a Compose-level edge. **attaches to** links each **Service**
+      (and thus its **Container**) to the **Network**. Both services reuse the same **Image** ref
+      in this minimal file.
+    relations:
+      - from: image-alpine
+        to: compose-service-api
+        label: image ref
+      - from: image-alpine
+        to: compose-service-worker
+        label: image ref
+      - from: compose-service-api
+        to: container-api-1
+        label: instantiates
+      - from: compose-service-worker
+        to: container-worker-1
+        label: instantiates
+      - from: compose-service-worker
+        to: compose-service-api
+        label: depends_on
+      - from: compose-service-api
+        to: network-internal
+        label: attaches to
+      - from: compose-service-worker
+        to: network-internal
+        label: attaches to

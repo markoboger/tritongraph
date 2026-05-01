@@ -1,0 +1,33 @@
+description: |
+  **Simplest mapping:** Compose declares a **Service** (`web`) that references a registry **Image**
+  (`nginx:1.27-alpine`). The engine **instantiates** a **Container** from that image. No local
+  `build:` — the image is fetched, not produced from a repo **Project** in this example.
+
+resources:
+  - name: registry-nginx
+    subtitle: Image — remote layers + tag (immutable digest at pull)
+  - name: compose-service-web
+    subtitle: Service — desired state in docker-compose.yml
+  - name: container-web-1
+    subtitle: Container — running instance (id, cgroups, writable layer)
+  - name: host-port-18080
+    subtitle: Host port mapping (publish 18080 → container 80)
+
+perspectives:
+  - name: dependencies
+    orientation: leftToRight
+    color: royalblue
+    notes: |
+      **Left → right** approximates *spec / artifact → runtime*. **Image** is referenced by the
+      **Service**; the **Service** is *instantiated* as a **Container**. **Port** attaches the
+      published host side to the service (Compose wires it to the container).
+    relations:
+      - from: registry-nginx
+        to: compose-service-web
+        label: image ref
+      - from: compose-service-web
+        to: container-web-1
+        label: instantiates
+      - from: compose-service-web
+        to: host-port-18080
+        label: publishes
