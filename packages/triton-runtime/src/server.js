@@ -17,7 +17,7 @@ const IGNORED_DIRS = new Set([
   'out',
 ])
 const REPO_DISCOVERY_MAX_DEPTH = 3
-const RUNTIME_VERSION = '0.7.0'
+const RUNTIME_VERSION = '0.7.1'
 
 function applyCorsHeaders(res) {
   res.setHeader('access-control-allow-origin', '*')
@@ -1026,6 +1026,53 @@ function verifyGithubSignature256(rawBody, secret, sigHeader) {
   }
 }
 
+function stripLeadingUtf8Bom(buf) {
+  if (!buf || buf.length < 3) return buf
+  if (buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return buf.subarray(3)
+  return buf
+}
+
+/**
+ * GitHub usually sends repository.clone_url; ping and some payloads omit it — fall back to html_url or full_name.
+ * Signature verification must use the raw request body unchanged; BOM stripping is only for JSON parsing.
+ */
+function githubRepositoryHttpsCloneUrl(repo) {
+  if (!repo || typeof repo !== 'object') return ''
+  const direct = typeof repo.clone_url === 'string' ? repo.clone_url.trim() : ''
+  if (direct) return direct
+  const html = typeof repo.html_url === 'string' ? repo.html_url.trim() : ''
+  if (html && /^https:\/\//i.test(html)) {
+    const base = html.replace(/\/+$/, '')
+    return base.toLowerCase().endsWith('.git') ? base : `${base}.git`
+  }
+  const fn = typeof repo.full_name === 'string' ? repo.full_name.trim() : ''
+  if (fn && /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(fn)) {
+    return `https://github.com/${fn}.git`
+  }
+  return ''
+}
+
+function parseGithubWebhookPayload(rawBuf) {
+  const stripped = stripLeadingUtf8Bom(rawBuf || Buffer.alloc(0))
+  const text = stripped.length ? stripped.toString('utf8') : ''
+  const trimmed = text.trim()
+  if (!trimmed) return { ok: false, error: 'empty_body' }
+  try {
+    return { ok: true, payload: JSON.parse(trimmed) }
+  } catch {
+    try {
+      const params = new URLSearchParams(trimmed)
+      const payloadParam = params.get('payload')
+      if (payloadParam) {
+        return { ok: true, payload: JSON.parse(payloadParam) }
+      }
+    } catch {
+      /* fall through */
+    }
+    return { ok: false, error: 'invalid_json' }
+  }
+}
+
 function assertWorkspaceMatchesGitCache(workspacePath, parsed, config) {
   const dest = hostedGitCloneDestPath(config, parsed.host, parsed.segments)
   if (!dest) return { ok: false, error: 'invalid_repository_path' }
@@ -1229,16 +1276,21 @@ async function apiGithubWebhookIngress(rawBody, req, config) {
   const sig = req.headers['x-hub-signature-256']
   const deliveryId = String(req.headers['x-github-delivery'] || '').trim()
 
-  let payload
-  try {
-    payload = JSON.parse(rawBody.length ? rawBody.toString('utf8') : '{}')
-  } catch {
-    return { statusCode: 400, body: { ok: false, error: 'invalid_json' } }
+  const parsedPayload = parseGithubWebhookPayload(rawBody)
+  if (!parsedPayload.ok) {
+    return { statusCode: 400, body: { ok: false, error: parsedPayload.error } }
   }
+  const payload = parsedPayload.payload
 
   const repo = payload.repository
-  const cloneUrl = repo && typeof repo.clone_url === 'string' ? repo.clone_url.trim() : ''
+  const cloneUrl = githubRepositoryHttpsCloneUrl(repo)
   if (!cloneUrl) {
+    if (event === 'ping') {
+      return {
+        statusCode: 200,
+        body: { ok: true, ignored: true, event: 'ping', reason: 'no_repository_clone_url_in_payload' },
+      }
+    }
     return { statusCode: 400, body: { ok: false, error: 'missing_repository_clone_url' } }
   }
   const parsed = parseHostedGitHttpsUrl(cloneUrl)

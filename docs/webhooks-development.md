@@ -50,5 +50,11 @@ Use the **Triton home UI** → **GitHub push webhooks** → **Register repositor
 
 ## Behaviour
 
-- **One webhook URL for all repos:** GitHub uses one **payload URL** per repo; the runtime matches **`repository.clone_url`** to a registered **`canonicalRepositoryUrl`**.
-- **Branch:** default **`main`**; configurable per registration. Only **`push`** events on **`refs/heads/<branch>`** trigger **`git pull`** (same path as **`POST /api/workspace/github/sync`**).
+- **One webhook URL for all repos:** GitHub uses one **payload URL** per repo; the runtime resolves the repo HTTPS URL from **`repository.clone_url`**, or **`repository.html_url` / `full_name`** when GitHub omits `clone_url` (e.g. some **ping** payloads), then matches the canonical URL to a registration.
+- **Branch:** default **`main`**; configurable per registration. Only **`push`** events on **`refs/heads/<branch>`** trigger **`git pull`** (same path as **`POST /api/workspace/github/sync`**). **Ping** deliveries are acknowledged with **200** and do not run sync.
+
+## Troubleshooting
+
+- **400 `invalid_json`:** In the repo webhook on GitHub, set **Content type** to **`application/json`** (not *application/x-www-form-urlencoded*), unless you intentionally use the legacy `payload=` form (the runtime will try to parse that too).
+- **400 `missing_repository_clone_url`:** Only on non-ping events with a malformed payload. For **ping**, the runtime returns **200** even when the payload has no resolvable repository URL.
+- **401 `invalid_signature`:** The **Secret** in GitHub must match the **`secret`** from registration; re-register or fix the secret on GitHub.
