@@ -28,7 +28,8 @@ services:
     environment:
       TRITON_RUNTIME_HOST: 0.0.0.0
       TRITON_RUNTIME_PORT: 4317
-      TRITON_PUBLIC_RUNTIME_URL: http://127.0.0.1:4317
+      # GitHub hits your machine via ngrok; set TRITON_PUBLIC_RUNTIME_URL in repo-root `.env` (see `.env.example`).
+      TRITON_PUBLIC_RUNTIME_URL: ${TRITON_PUBLIC_RUNTIME_URL:-http://127.0.0.1:4317}
       TRITON_EDITOR_URL: http://127.0.0.1:8080
       TRITON_ALLOWED_REPO_ROOTS: /repos
       TRITON_PERSISTENCE_BACKEND: postgres

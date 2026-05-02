@@ -1,3 +1,6 @@
+# Local overrides for docker compose (ngrok URL, tokens). Never commit.
+.env
+
 *.class
 *.log
 *.tasty
