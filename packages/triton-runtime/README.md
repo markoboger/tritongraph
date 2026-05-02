@@ -124,15 +124,26 @@ Goal: **courses / projects / webhooks** need durable storage on the server witho
 
 Optional JSON field **`courseId`** on **`POST /api/analysis/local`** and **`POST /api/analysis/github`** (and accepted on **`POST /api/workspace/github/sync`** before clone/sync): must reference an existing course or the handler returns **`course_not_found`**. After a successful registration, the workspace is linked to that course.
 
-**File persistence:** `directory.json` holds `{ "courses": [...], "courseWorkspaces": [...] }` alongside `recent-repos.json`.
+**File persistence:** `directory.json` holds `{ "courses": [...], "courseWorkspaces": [...] }` alongside `recent-repos.json`. Repo webhook registrations live in **`repo-webhooks.json`** (includes **`secret`** — treat the state dir like credentials).
 
-**Docker (repo root):** root `docker-compose.yml` starts Postgres and sets `TRITON_PERSISTENCE_BACKEND=postgres` plus `DATABASE_URL` on `triton-runtime`, with `depends_on` waiting for a healthy DB. Schema (`triton_courses`, `triton_course_workspaces`, `triton_recent_repos`) is applied on startup.
+**Docker (repo root):** root `docker-compose.yml` starts Postgres and sets `TRITON_PERSISTENCE_BACKEND=postgres` plus `DATABASE_URL` on `triton-runtime`, with `depends_on` waiting for a healthy DB. Schema (`triton_courses`, `triton_course_workspaces`, `triton_recent_repos`, webhook tables) is applied on startup.
 
 To use **file** persistence in Compose instead, comment those env lines and uncomment the file option in the same file (see comments there). For `npm start` without Docker, pass the same env vars manually if you want Postgres locally.
 
+### GitHub webhooks (push → git sync)
+
+| Method | Path | Notes |
+|--------|------|--------|
+| `POST` | `/api/webhooks/github` | **Ingress** for GitHub (`push` on configured branch). Validates `X-Hub-Signature-256`; dedupes `X-GitHub-Delivery`. |
+| `POST` | `/api/webhooks/github/register` | Body: `{ "repositoryUrl", "workspacePath", "branch?" }` (default branch `main`). Requires clone to exist; **`workspacePath`** must equal git-cache realpath. Returns **`secret`** + **`webhookUrl`**. |
+| `POST` | `/api/webhooks/github/delete` | Body: `{ "repositoryUrl" }` — removes registration. |
+| `GET` | `/api/webhooks/github/repos` | Lists registrations (no secrets). |
+
+When **`TRITON_WEBHOOK_ADMIN_TOKEN`** is set, register/delete/repos require **`Authorization: Bearer …`**. Local HTTPS tunnels: [docs/webhooks-development.md](../../docs/webhooks-development.md).
+
 Near-term next steps:
 
-- projects / webhooks on the same persistence interface
+- projects on the same persistence interface
 - let runtime-backed refresh/rescan requests update the browser's live data path directly
 - add workspace scan endpoints that return a fully built Triton payload, not just raw workspace inputs
 - package the runtime independently from the editor dev server

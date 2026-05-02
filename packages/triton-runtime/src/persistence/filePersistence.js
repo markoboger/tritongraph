@@ -29,6 +29,10 @@ function directoryFilePath(config) {
   return path.join(config.stateDir, 'directory.json')
 }
 
+function repoWebhooksFilePath(config) {
+  return path.join(config.stateDir, 'repo-webhooks.json')
+}
+
 function readDirectoryState(config) {
   const raw = readJsonFile(directoryFilePath(config), { courses: [], courseWorkspaces: [] })
   return {
@@ -42,6 +46,19 @@ function writeDirectoryState(config, state) {
     courses: state.courses,
     courseWorkspaces: state.courseWorkspaces,
   })
+}
+
+function readRepoWebhookState(config) {
+  const raw = readJsonFile(repoWebhooksFilePath(config), { repos: [], deliveries: [] })
+  return {
+    repos: Array.isArray(raw.repos) ? raw.repos : [],
+    deliveries: Array.isArray(raw.deliveries) ? raw.deliveries : [],
+  }
+}
+
+function writeRepoWebhookState(config, state) {
+  const deliveries = Array.isArray(state.deliveries) ? state.deliveries.slice(-400) : []
+  writeJsonFile(repoWebhooksFilePath(config), { repos: state.repos, deliveries })
 }
 
 function normalizeSlug(slug) {
@@ -196,6 +213,94 @@ function createFilePersistence(config) {
       rest.push(link)
       writeDirectoryState(config, { courses: state.courses, courseWorkspaces: rest })
       return { ok: true }
+    },
+
+    async registerRepoWebhook({ canonicalRepositoryUrl, workspacePath, workspaceName, branch, secret: secretIn, provider }) {
+      const canonical = String(canonicalRepositoryUrl || '').trim()
+      const wp = String(workspacePath || '').trim()
+      const wn = String(workspaceName || '').trim()
+      const br = String(branch || 'main').trim() || 'main'
+      const prov = String(provider || 'github').trim() || 'github'
+      if (!canonical) return { ok: false, error: 'repository_url_required' }
+      if (!wp) return { ok: false, error: 'workspace_path_required' }
+      const secret =
+        secretIn && String(secretIn).trim() ? String(secretIn).trim() : crypto.randomBytes(32).toString('hex')
+      const state = readRepoWebhookState(config)
+      const rest = state.repos.filter((r) => String(r.canonicalRepositoryUrl || '').trim() !== canonical)
+      const createdAt = new Date().toISOString()
+      rest.push({
+        canonicalRepositoryUrl: canonical,
+        workspacePath: wp,
+        workspaceName: wn || wp,
+        branch: br,
+        secret,
+        provider: prov,
+        createdAt,
+      })
+      rest.sort((a, b) => String(a.canonicalRepositoryUrl).localeCompare(String(b.canonicalRepositoryUrl)))
+      writeRepoWebhookState(config, { repos: rest, deliveries: state.deliveries })
+      const pub = {
+        canonicalRepositoryUrl: canonical,
+        workspacePath: wp,
+        workspaceName: wn || wp,
+        branch: br,
+        provider: prov,
+        createdAt,
+      }
+      return { ok: true, secret, webhook: pub }
+    },
+
+    async getRepoWebhook(canonicalRepositoryUrl) {
+      const canonical = String(canonicalRepositoryUrl || '').trim()
+      if (!canonical) return null
+      const { repos } = readRepoWebhookState(config)
+      const row = repos.find((r) => String(r.canonicalRepositoryUrl || '').trim() === canonical)
+      if (!row) return null
+      return {
+        canonicalRepositoryUrl: row.canonicalRepositoryUrl,
+        workspacePath: row.workspacePath,
+        workspaceName: row.workspaceName,
+        branch: row.branch || 'main',
+        secret: row.secret,
+        provider: row.provider || 'github',
+        createdAt: row.createdAt || '',
+      }
+    },
+
+    async listRepoWebhooks() {
+      const { repos } = readRepoWebhookState(config)
+      return repos.map((row) => ({
+        canonicalRepositoryUrl: row.canonicalRepositoryUrl,
+        workspacePath: row.workspacePath,
+        workspaceName: row.workspaceName,
+        branch: row.branch || 'main',
+        provider: row.provider || 'github',
+        createdAt: row.createdAt || '',
+      }))
+    },
+
+    async deleteRepoWebhook(canonicalRepositoryUrl) {
+      const canonical = String(canonicalRepositoryUrl || '').trim()
+      if (!canonical) return { ok: false, error: 'repository_url_required' }
+      const state = readRepoWebhookState(config)
+      const next = state.repos.filter((r) => String(r.canonicalRepositoryUrl || '').trim() !== canonical)
+      if (next.length === state.repos.length) return { ok: false, error: 'webhook_not_found' }
+      writeRepoWebhookState(config, { repos: next, deliveries: state.deliveries })
+      return { ok: true }
+    },
+
+    async tryClaimWebhookDelivery(deliveryId, { provider, canonicalRepositoryUrl }) {
+      const id = String(deliveryId || '').trim()
+      if (!id) return false
+      const state = readRepoWebhookState(config)
+      if (state.deliveries.includes(id)) return false
+      const deliveries = [...state.deliveries, id]
+      writeRepoWebhookState(config, { repos: state.repos, deliveries })
+      return true
+    },
+
+    async finishWebhookDelivery(_deliveryId, _status, _detail) {
+      /* file backend: no durable delivery log beyond id dedupe */
     },
   }
 }

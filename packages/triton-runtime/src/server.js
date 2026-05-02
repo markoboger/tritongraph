@@ -3,6 +3,7 @@ const fs = require('fs')
 const path = require('path')
 const cp = require('child_process')
 const os = require('os')
+const crypto = require('crypto')
 const { createPersistence } = require('./persistence')
 
 const IGNORED_DIRS = new Set([
@@ -16,7 +17,7 @@ const IGNORED_DIRS = new Set([
   'out',
 ])
 const REPO_DISCOVERY_MAX_DEPTH = 3
-const RUNTIME_VERSION = '0.6.0'
+const RUNTIME_VERSION = '0.7.0'
 
 function applyCorsHeaders(res) {
   res.setHeader('access-control-allow-origin', '*')
@@ -27,6 +28,12 @@ function applyCorsHeaders(res) {
 function runtimeCapabilities(config) {
   const caps = ['analysis-local', 'analysis-github', 'github-sync']
   if (typeof config.persistence.listCourses === 'function') caps.push('courses-api')
+  if (
+    typeof config.persistence.registerRepoWebhook === 'function' &&
+    typeof config.persistence.tryClaimWebhookDelivery === 'function'
+  ) {
+    caps.push('webhooks-github')
+  }
   return caps
 }
 
@@ -49,6 +56,15 @@ function collectBody(req) {
       raw += chunk
     })
     req.on('end', () => resolve(raw))
+    req.on('error', reject)
+  })
+}
+
+function collectBodyRaw(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    req.on('data', (chunk) => chunks.push(chunk))
+    req.on('end', () => resolve(Buffer.concat(chunks)))
     req.on('error', reject)
   })
 }
@@ -975,6 +991,259 @@ async function registerGithubWorkspace(body, config, token, mode) {
   }
 }
 
+function normalizeWebhookBranch(value) {
+  let s = String(value ?? 'main').trim()
+  if (!s) s = 'main'
+  if (s.startsWith('refs/heads/')) s = s.slice('refs/heads/'.length)
+  return s
+}
+
+function webhookAdminAuthorized(req) {
+  const required = String(process.env.TRITON_WEBHOOK_ADMIN_TOKEN || '').trim()
+  if (!required) return true
+  const auth = req.headers?.authorization
+  if (typeof auth !== 'string' || !/^Bearer\s+/i.test(auth)) return false
+  const token = auth.replace(/^Bearer\s+/i, '').trim()
+  if (token.length !== required.length) return false
+  try {
+    return crypto.timingSafeEqual(Buffer.from(token, 'utf8'), Buffer.from(required, 'utf8'))
+  } catch {
+    return false
+  }
+}
+
+function verifyGithubSignature256(rawBody, secret, sigHeader) {
+  if (!secret || typeof sigHeader !== 'string') return false
+  const expected =
+    'sha256=' + crypto.createHmac('sha256', String(secret)).update(rawBody).digest('hex')
+  const got = String(sigHeader).trim()
+  try {
+    const a = Buffer.from(expected, 'utf8')
+    const b = Buffer.from(got, 'utf8')
+    return a.length === b.length && crypto.timingSafeEqual(a, b)
+  } catch {
+    return false
+  }
+}
+
+function assertWorkspaceMatchesGitCache(workspacePath, parsed, config) {
+  const dest = hostedGitCloneDestPath(config, parsed.host, parsed.segments)
+  if (!dest) return { ok: false, error: 'invalid_repository_path' }
+  const gitMeta = path.join(dest, '.git')
+  if (!fileExists(gitMeta)) {
+    return {
+      ok: false,
+      error: 'clone_not_found',
+      hint: 'Clone the repository once via the runtime UI or POST /api/analysis/github before registering a webhook.',
+    }
+  }
+  let realDest
+  try {
+    realDest = fs.realpathSync(dest)
+  } catch (err) {
+    return {
+      ok: false,
+      error: 'clone_path_unreadable',
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+  const ws = String(workspacePath || '').trim()
+  if (normalizePathForCompare(ws) !== normalizePathForCompare(realDest)) {
+    return {
+      ok: false,
+      error: 'workspace_path_must_match_git_cache',
+      expectedWorkspacePath: realDest,
+    }
+  }
+  return { ok: true }
+}
+
+async function apiRegisterGithubWebhook(body, config, req) {
+  if (!webhookAdminAuthorized(req)) {
+    return { statusCode: 403, body: { ok: false, error: 'webhook_admin_unauthorized' } }
+  }
+  if (typeof config.persistence.registerRepoWebhook !== 'function') {
+    return { statusCode: 501, body: { ok: false, error: 'webhooks_not_supported' } }
+  }
+  const parsed = parseHostedGitHttpsUrl(body.repositoryUrl)
+  if (!parsed.ok) {
+    const errBody = { ok: false, error: parsed.error }
+    if (parsed.hint) errBody.hint = parsed.hint
+    return { statusCode: 400, body: errBody }
+  }
+  if (parsed.provider !== 'github') {
+    return {
+      statusCode: 400,
+      body: { ok: false, error: 'github_webhooks_only_in_phase1', hint: 'GitLab ingress can follow the same pattern later.' },
+    }
+  }
+  const validation = validateWorkspacePath(body.workspacePath, config)
+  if (!validation.ok) {
+    return {
+      statusCode: validation.statusCode,
+      body: {
+        ok: false,
+        error: validation.error,
+        workspacePath: validation.workspacePath,
+        allowedRepoRoots: validation.allowedRepoRoots,
+      },
+    }
+  }
+  const cacheCheck = assertWorkspaceMatchesGitCache(validation.workspacePath, parsed, config)
+  if (!cacheCheck.ok) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: cacheCheck.error,
+        ...(cacheCheck.hint ? { hint: cacheCheck.hint } : {}),
+        ...(cacheCheck.expectedWorkspacePath ? { expectedWorkspacePath: cacheCheck.expectedWorkspacePath } : {}),
+      },
+    }
+  }
+  const branch = normalizeWebhookBranch(body.branch)
+  const workspaceName =
+    String(body.workspaceName || '').trim() || path.basename(validation.workspacePath) || 'workspace'
+  const result = await config.persistence.registerRepoWebhook({
+    canonicalRepositoryUrl: parsed.canonicalRepoUrl,
+    workspacePath: validation.workspacePath,
+    workspaceName,
+    branch,
+    secret: body.secret ? String(body.secret).trim() : undefined,
+    provider: 'github',
+  })
+  if (!result.ok) {
+    return { statusCode: 400, body: { ok: false, error: result.error } }
+  }
+  const base = String(config.publicRuntimeUrl || '').replace(/\/$/, '')
+  const webhookUrl = base ? `${base}/api/webhooks/github` : '/api/webhooks/github'
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      secret: result.secret,
+      webhook: result.webhook,
+      webhookUrl,
+      events: ['push'],
+      contentType: 'application/json',
+      docs: 'Local dev: use an HTTPS tunnel to this URL — see docs/webhooks-development.md',
+    },
+  }
+}
+
+async function apiDeleteGithubWebhook(body, config, req) {
+  if (!webhookAdminAuthorized(req)) {
+    return { statusCode: 403, body: { ok: false, error: 'webhook_admin_unauthorized' } }
+  }
+  if (typeof config.persistence.deleteRepoWebhook !== 'function') {
+    return { statusCode: 501, body: { ok: false, error: 'webhooks_not_supported' } }
+  }
+  const parsed = parseHostedGitHttpsUrl(body.repositoryUrl)
+  if (!parsed.ok) {
+    const errBody = { ok: false, error: parsed.error }
+    if (parsed.hint) errBody.hint = parsed.hint
+    return { statusCode: 400, body: errBody }
+  }
+  const result = await config.persistence.deleteRepoWebhook(parsed.canonicalRepoUrl)
+  if (!result.ok) {
+    const code = result.error === 'webhook_not_found' ? 404 : 400
+    return { statusCode: code, body: { ok: false, error: result.error } }
+  }
+  return { statusCode: 200, body: { ok: true } }
+}
+
+async function apiGithubWebhookIngress(rawBody, req, config) {
+  if (
+    typeof config.persistence.getRepoWebhook !== 'function' ||
+    typeof config.persistence.tryClaimWebhookDelivery !== 'function'
+  ) {
+    return { statusCode: 501, body: { ok: false, error: 'webhooks_not_supported' } }
+  }
+  const event = String(req.headers['x-github-event'] || '').trim()
+  const sig = req.headers['x-hub-signature-256']
+  const deliveryId = String(req.headers['x-github-delivery'] || '').trim()
+
+  let payload
+  try {
+    payload = JSON.parse(rawBody.length ? rawBody.toString('utf8') : '{}')
+  } catch {
+    return { statusCode: 400, body: { ok: false, error: 'invalid_json' } }
+  }
+
+  const repo = payload.repository
+  const cloneUrl = repo && typeof repo.clone_url === 'string' ? repo.clone_url.trim() : ''
+  if (!cloneUrl) {
+    return { statusCode: 400, body: { ok: false, error: 'missing_repository_clone_url' } }
+  }
+  const parsed = parseHostedGitHttpsUrl(cloneUrl)
+  if (!parsed.ok) {
+    return { statusCode: 400, body: { ok: false, error: parsed.error } }
+  }
+  const hook = await config.persistence.getRepoWebhook(parsed.canonicalRepoUrl)
+  if (!hook) {
+    return { statusCode: 200, body: { ok: true, ignored: true, reason: 'no_registered_webhook' } }
+  }
+  if (!verifyGithubSignature256(rawBody, hook.secret, sig)) {
+    return { statusCode: 401, body: { ok: false, error: 'invalid_signature' } }
+  }
+
+  if (
+    !deliveryId ||
+    !(await config.persistence.tryClaimWebhookDelivery(deliveryId, {
+      provider: 'github',
+      canonicalRepositoryUrl: parsed.canonicalRepoUrl,
+    }))
+  ) {
+    return { statusCode: 200, body: { ok: true, duplicate: true } }
+  }
+
+  if (event !== 'push') {
+    if (typeof config.persistence.finishWebhookDelivery === 'function') {
+      await config.persistence.finishWebhookDelivery(deliveryId, 'ignored', `event:${event}`)
+    }
+    return { statusCode: 200, body: { ok: true, ignored: true, event } }
+  }
+
+  const ref = String(payload.ref || '').trim()
+  const wantRef = `refs/heads/${hook.branch}`
+  if (ref !== wantRef) {
+    if (typeof config.persistence.finishWebhookDelivery === 'function') {
+      await config.persistence.finishWebhookDelivery(deliveryId, 'ignored', `ref:${ref}`)
+    }
+    return { statusCode: 200, body: { ok: true, ignored: true, ref } }
+  }
+
+  const token = String(process.env.TRITON_GITHUB_TOKEN || '').trim()
+  const sync = await registerGithubWorkspace(
+    { repositoryUrl: parsed.cloneUrl, ref: hook.branch, workspaceName: hook.workspaceName },
+    config,
+    token,
+    'github-sync',
+  )
+
+  if (typeof config.persistence.finishWebhookDelivery === 'function') {
+    await config.persistence.finishWebhookDelivery(
+      deliveryId,
+      sync.statusCode === 200 ? 'synced' : 'sync_failed',
+      sync.statusCode === 200 ? null : JSON.stringify(sync.body).slice(0, 1800),
+    )
+  }
+
+  if (sync.statusCode !== 200) {
+    return { statusCode: 200, body: { ok: false, error: 'sync_failed', detail: sync.body } }
+  }
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      synced: true,
+      workspacePath: sync.body.workspacePath,
+      repositoryUrl: parsed.canonicalRepoUrl,
+      branch: hook.branch,
+    },
+  }
+}
+
 async function runtimeHomeHtml(config) {
   const home = await apiHomeModel(config)
   const allowedRoots = config.allowedRepoRoots.length
@@ -1486,7 +1755,7 @@ function createRuntimeServer(options = {}) {
       sendJson(res, 200, {
         ok: true,
         message:
-          'Routes: POST /api/analysis/github (register) and POST /api/workspace/github/sync (pull latest). Body: { "repositoryUrl": "https URL", "ref": "optional" }. Hosts: github.com, gitlab.com, or hostnames listed in TRITON_EXTRA_GIT_HOSTS (self-hosted GitLab). Tokens: Authorization Bearer, x-github-token / x-gitlab-token, JSON gitToken / githubToken / gitlabToken, or TRITON_GITHUB_TOKEN / TRITON_GITLAB_TOKEN.',
+          'Routes: POST /api/analysis/github (register) and POST /api/workspace/github/sync (pull latest). GitHub push webhooks: POST /api/webhooks/github (GitHub → runtime). Register: POST /api/webhooks/github/register with JSON { repositoryUrl, workspacePath, branch?, workspaceName? }; optional TRITON_WEBHOOK_ADMIN_TOKEN (Bearer) required when set. Body for analyze/sync: { "repositoryUrl": "https URL", "ref": "optional" }. Hosts: github.com, gitlab.com, or TRITON_EXTRA_GIT_HOSTS. Tokens: Authorization Bearer, x-github-token / x-gitlab-token, JSON git token fields, or TRITON_GITHUB_TOKEN / TRITON_GITLAB_TOKEN.',
         methodHint: 'POST',
         path: '/api/analysis/github',
         runtimeVersion: RUNTIME_VERSION,
@@ -1604,6 +1873,51 @@ function createRuntimeServer(options = {}) {
       return
     }
 
+    if (method === 'GET' && pathname === '/api/webhooks/github/repos') {
+      if (!webhookAdminAuthorized(req)) {
+        sendJson(res, 403, { ok: false, error: 'webhook_admin_unauthorized' })
+        return
+      }
+      if (typeof config.persistence.listRepoWebhooks !== 'function') {
+        sendJson(res, 501, { ok: false, error: 'webhooks_not_supported' })
+        return
+      }
+      const rows = await config.persistence.listRepoWebhooks()
+      sendJson(res, 200, { ok: true, repos: rows })
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/webhooks/github/register') {
+      const raw = await collectBody(req)
+      const body = safeJsonParse(raw)
+      if (!body) {
+        sendJson(res, 400, { ok: false, error: 'invalid_json' })
+        return
+      }
+      const result = await apiRegisterGithubWebhook(body, config, req)
+      sendJson(res, result.statusCode, result.body)
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/webhooks/github/delete') {
+      const raw = await collectBody(req)
+      const body = safeJsonParse(raw)
+      if (!body) {
+        sendJson(res, 400, { ok: false, error: 'invalid_json' })
+        return
+      }
+      const result = await apiDeleteGithubWebhook(body, config, req)
+      sendJson(res, result.statusCode, result.body)
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/webhooks/github') {
+      const rawBuf = await collectBodyRaw(req)
+      const result = await apiGithubWebhookIngress(rawBuf, req, config)
+      sendJson(res, result.statusCode, result.body)
+      return
+    }
+
     sendJson(res, 404, {
       ok: false,
       error: 'not_found',
@@ -1631,6 +1945,14 @@ async function startRuntimeServer(options = {}) {
       process.stderr.write(
         `[triton-runtime] listening http://${host}:${port} version=${RUNTIME_VERSION} persistence=${persistence.kind} TRITON_HTTP_PATH_PREFIX=${cfg.httpPathPrefix || '(unset)'}\n`,
       )
+      if (
+        typeof persistence.registerRepoWebhook === 'function' &&
+        !String(process.env.TRITON_WEBHOOK_ADMIN_TOKEN || '').trim()
+      ) {
+        process.stderr.write(
+          '[triton-runtime] webhooks: TRITON_WEBHOOK_ADMIN_TOKEN is unset — webhook admin routes are open; set the token in production.\n',
+        )
+      }
       resolve({
         server,
         host,

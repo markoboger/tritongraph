@@ -29,6 +29,26 @@ CREATE TABLE IF NOT EXISTS triton_course_workspaces (
   linked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (course_id, workspace_path)
 );
+
+CREATE TABLE IF NOT EXISTS triton_repo_webhooks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  canonical_repository_url TEXT NOT NULL UNIQUE,
+  workspace_path TEXT NOT NULL,
+  workspace_name TEXT NOT NULL,
+  branch TEXT NOT NULL DEFAULT 'main',
+  secret TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'github',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS triton_webhook_deliveries (
+  delivery_id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  canonical_repository_url TEXT,
+  status TEXT NOT NULL,
+  detail TEXT,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 `
 
 function isRemoteGitSource(value) {
@@ -57,6 +77,24 @@ function courseFromPg(r) {
     term: r.term || '',
     createdAt: r.created_at ? new Date(r.created_at).toISOString() : '',
   }
+}
+
+function repoWebhookFromPg(r) {
+  return {
+    canonicalRepositoryUrl: r.canonical_repository_url,
+    workspacePath: r.workspace_path,
+    workspaceName: r.workspace_name,
+    branch: r.branch || 'main',
+    secret: r.secret,
+    provider: r.provider || 'github',
+    createdAt: r.created_at ? new Date(r.created_at).toISOString() : '',
+  }
+}
+
+function repoWebhookPublicFromPg(r) {
+  const row = repoWebhookFromPg(r)
+  delete row.secret
+  return row
 }
 
 function createPostgresPersistence(config) {
@@ -211,6 +249,90 @@ function createPostgresPersistence(config) {
         [courseId, workspacePath, wn, repositoryUrl, gitRef, source],
       )
       return { ok: true }
+    },
+
+    async registerRepoWebhook({ canonicalRepositoryUrl, workspacePath, workspaceName, branch, secret: secretIn, provider }) {
+      const crypto = require('crypto')
+      const canonical = String(canonicalRepositoryUrl || '').trim()
+      const wp = String(workspacePath || '').trim()
+      const wn = String(workspaceName || '').trim()
+      const br = String(branch || 'main').trim() || 'main'
+      const prov = String(provider || 'github').trim() || 'github'
+      if (!canonical) return { ok: false, error: 'repository_url_required' }
+      if (!wp) return { ok: false, error: 'workspace_path_required' }
+      const secret = secretIn && String(secretIn).trim() ? String(secretIn).trim() : crypto.randomBytes(32).toString('hex')
+      const r = await pool.query(
+        `INSERT INTO triton_repo_webhooks (canonical_repository_url, workspace_path, workspace_name, branch, secret, provider)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (canonical_repository_url) DO UPDATE SET
+           workspace_path = EXCLUDED.workspace_path,
+           workspace_name = EXCLUDED.workspace_name,
+           branch = EXCLUDED.branch,
+           secret = EXCLUDED.secret,
+           provider = EXCLUDED.provider
+         RETURNING id, canonical_repository_url, workspace_path, workspace_name, branch, secret, provider, created_at`,
+        [canonical, wp, wn || wp, br, secret, prov],
+      )
+      const row = r.rows[0]
+      return {
+        ok: true,
+        secret,
+        webhook: repoWebhookPublicFromPg(row),
+      }
+    },
+
+    async getRepoWebhook(canonicalRepositoryUrl) {
+      const canonical = String(canonicalRepositoryUrl || '').trim()
+      if (!canonical) return null
+      const r = await pool.query(
+        `SELECT canonical_repository_url, workspace_path, workspace_name, branch, secret, provider, created_at
+         FROM triton_repo_webhooks WHERE canonical_repository_url = $1`,
+        [canonical],
+      )
+      return r.rows[0] ? repoWebhookFromPg(r.rows[0]) : null
+    },
+
+    async listRepoWebhooks() {
+      const r = await pool.query(
+        `SELECT canonical_repository_url, workspace_path, workspace_name, branch, provider, created_at
+         FROM triton_repo_webhooks ORDER BY canonical_repository_url ASC`,
+      )
+      return r.rows.map(repoWebhookPublicFromPg)
+    },
+
+    async deleteRepoWebhook(canonicalRepositoryUrl) {
+      const canonical = String(canonicalRepositoryUrl || '').trim()
+      if (!canonical) return { ok: false, error: 'repository_url_required' }
+      const res = await pool.query(`DELETE FROM triton_repo_webhooks WHERE canonical_repository_url = $1`, [canonical])
+      if (res.rowCount === 0) return { ok: false, error: 'webhook_not_found' }
+      return { ok: true }
+    },
+
+    /** @returns {Promise<boolean>} true if this delivery id was newly claimed (not a replay). */
+    async tryClaimWebhookDelivery(deliveryId, { provider, canonicalRepositoryUrl }) {
+      const id = String(deliveryId || '').trim()
+      if (!id) return false
+      const r = await pool.query(
+        `INSERT INTO triton_webhook_deliveries (delivery_id, provider, canonical_repository_url, status, detail)
+         VALUES ($1, $2, $3, 'received', NULL)
+         ON CONFLICT (delivery_id) DO NOTHING
+         RETURNING delivery_id`,
+        [
+          id,
+          String(provider || 'unknown').trim(),
+          canonicalRepositoryUrl ? String(canonicalRepositoryUrl).trim() : null,
+        ],
+      )
+      return r.rows.length > 0
+    },
+
+    async finishWebhookDelivery(deliveryId, status, detail) {
+      const id = String(deliveryId || '').trim()
+      if (!id) return
+      await pool.query(
+        `UPDATE triton_webhook_deliveries SET status = $2, detail = $3 WHERE delivery_id = $1`,
+        [id, String(status || 'ok').trim(), detail ? String(detail).slice(0, 2000) : null],
+      )
     },
   }
 }
