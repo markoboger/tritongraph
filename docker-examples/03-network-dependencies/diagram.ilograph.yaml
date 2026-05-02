@@ -49,11 +49,11 @@ perspectives:
     orientation: leftToRight
     color: royalblue
     relations:
-      - from: docker-examples-03-api:local
-        to: api
+      - from: api
+        to: docker-examples-03-api:local
         label: image
-      - from: docker-examples-03-worker:local
-        to: worker
+      - from: worker
+        to: docker-examples-03-worker:local
         label: image
       - from: worker
         to: api

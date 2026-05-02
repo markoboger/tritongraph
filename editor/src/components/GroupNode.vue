@@ -9,7 +9,6 @@
  * skip the animation, making "expand to fill the layer" feel like a discontinuous jump.
  */
 import { computed, inject, ref, type Ref } from 'vue'
-import folderIconUrl from '../assets/language-icons/folder.svg'
 import cubeIconUrl from '../assets/language-icons/cube.svg'
 import genericIconUrl from '../assets/language-icons/generic.svg'
 import stackedCubesIconUrl from '../assets/language-icons/stacked-cubes.svg'
@@ -37,7 +36,7 @@ const props = defineProps<{
     layerFlip?: LayerFlipPayload
     layerDrillFocus?: boolean
     anchorTops?: ModuleAnchorTops
-    /** Scala outer package scope: show folder + titles like {@link PackageBox}. */
+    /** Scala outer package scope (= module): cube icon + titles, aligned with module tabs. */
     packageScope?: boolean
     /**
      * Detected source language for the **topmost** package scope (e.g. `scala`, `java`, `ts`).
@@ -152,7 +151,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
             <div class="group-node__pkg-header">
               <img
                 class="group-node__folder-icon"
-                :src="folderIconUrl"
+                :src="cubeIconUrl"
                 alt=""
                 aria-hidden="true"
                 decoding="async"

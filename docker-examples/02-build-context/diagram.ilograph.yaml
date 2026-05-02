@@ -22,6 +22,6 @@ perspectives:
     orientation: leftToRight
     color: royalblue
     relations:
-      - from: "docker-examples-02-api:local"
-        to: api
+      - from: api
+        to: "docker-examples-02-api:local"
         label: image

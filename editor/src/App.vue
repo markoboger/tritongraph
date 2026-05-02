@@ -24,6 +24,7 @@ import sbtLogoUrl from './assets/language-icons/sbt.svg'
 import cubeIconUrl from './assets/language-icons/cube.svg'
 import stackedCubesIconUrl from './assets/language-icons/stacked-cubes.svg'
 import folderIconUrl from './assets/language-icons/folder.svg'
+import tritonIconUrl from './assets/language-icons/triton.svg'
 import { ilographDocumentToFlow } from './graph/ilographToFlow'
 import { flowToIlographDocument } from './graph/flowToIlograph'
 import { slimEdgesForExport, slimNodesForExport } from './graph/slimFlow'
@@ -816,7 +817,7 @@ function createRuntimeHomeDiagramTab(): DiagramTab {
     key: RUNTIME_HOME_TAB_KEY,
     title: 'Triton',
     kind: 'runtime',
-    iconUrl: folderIconUrl,
+    iconUrl: tritonIconUrl,
     sourcePath: '',
     fileName: '',
     perspectiveName: undefined,

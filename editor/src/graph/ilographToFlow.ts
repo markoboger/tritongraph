@@ -75,7 +75,9 @@ function resolveTritonIconUrl(raw: unknown): { url?: string; key?: string } {
   if (typeof raw !== 'string') return {}
   const s = raw.trim()
   if (!s) return {}
-  if (isDockerConceptIconKey(s)) return { url: dockerConceptIconUrl(s), key: s }
+  const dockerKey = s.toLowerCase()
+  if (isDockerConceptIconKey(dockerKey))
+    return { url: dockerConceptIconUrl(dockerKey), key: dockerKey }
   if (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('/')) return { url: s }
   return {}
 }

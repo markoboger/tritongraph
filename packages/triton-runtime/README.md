@@ -89,13 +89,7 @@ TRITON_LOCAL_REPOS=/Users/markoboger/workspace docker compose up --build
 
 Inside the container, host repos are mounted at `/repos`, so the `chess` example becomes `/repos/chess`.
 
-**Postgres (optional compose service only today):**
-
-```bash
-docker compose --profile postgres up -d postgres
-```
-
-Use Postgres persistence only when you opt in (see below).
+Root **`docker-compose.yml`** starts **Postgres** with **`triton-runtime`** using **`TRITON_PERSISTENCE_BACKEND=postgres`** by default. Use **`docker compose up`** from the repo root (see snippet above).
 
 ### Persistence (recent repositories): file vs Postgres
 
@@ -132,7 +126,9 @@ Optional JSON field **`courseId`** on **`POST /api/analysis/local`** and **`POST
 
 **File persistence:** `directory.json` holds `{ "courses": [...], "courseWorkspaces": [...] }` alongside `recent-repos.json`.
 
-**Docker example** (same compose network): set `DATABASE_URL=postgres://triton:triton@postgres:5432/triton` and `TRITON_PERSISTENCE_BACKEND=postgres` on the `triton-runtime` service after `docker compose --profile postgres up -d postgres`.
+**Docker (repo root):** root `docker-compose.yml` starts Postgres and sets `TRITON_PERSISTENCE_BACKEND=postgres` plus `DATABASE_URL` on `triton-runtime`, with `depends_on` waiting for a healthy DB. Schema (`triton_courses`, `triton_course_workspaces`, `triton_recent_repos`) is applied on startup.
+
+To use **file** persistence in Compose instead, comment those env lines and uncomment the file option in the same file (see comments there). For `npm start` without Docker, pass the same env vars manually if you want Postgres locally.
 
 Near-term next steps:
 

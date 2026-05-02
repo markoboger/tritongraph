@@ -37,9 +37,9 @@ perspectives:
     orientation: leftToRight
     color: royalblue
     relations:
-      - from: docker-examples-06-api:local
-        to: api
+      - from: api
+        to: docker-examples-06-api:local
         label: image
-      - from: docker-examples-06-worker:local
-        to: worker
+      - from: worker
+        to: docker-examples-06-worker:local
         label: image

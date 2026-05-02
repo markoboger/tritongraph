@@ -79,8 +79,11 @@ Then:
 
 Compose services:
 
-- `triton-runtime` on `4317`
+- `postgres` on `5432` (persistence for the runtime)
+- `triton-runtime` on `4317` (`TRITON_PERSISTENCE_BACKEND=postgres` by default in `docker-compose.yml`)
 - `triton-ui` on `8080`
+
+To use **file** persistence instead (JSON under the runtime state dir), edit `docker-compose.yml` on `triton-runtime`: comment `TRITON_PERSISTENCE_BACKEND: postgres` / `DATABASE_URL: …`, uncomment the file lines, and remove `depends_on: postgres` (and optionally drop the `postgres` service).
 
 ### IDE-managed startup
 

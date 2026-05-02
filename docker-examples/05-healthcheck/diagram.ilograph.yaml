@@ -25,6 +25,6 @@ perspectives:
     orientation: leftToRight
     color: royalblue
     relations:
-      - from: docker-examples-05-web:local
-        to: web
+      - from: web
+        to: docker-examples-05-web:local
         label: image

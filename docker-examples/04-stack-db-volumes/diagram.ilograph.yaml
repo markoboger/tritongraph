@@ -54,11 +54,11 @@ perspectives:
     orientation: leftToRight
     color: royalblue
     relations:
-      - from: docker-examples-04-app:local
-        to: app
+      - from: app
+        to: docker-examples-04-app:local
         label: image
-      - from: docker-examples-04-db:local
-        to: db
+      - from: db
+        to: docker-examples-04-db:local
         label: image
       - from: db
         to: db-data

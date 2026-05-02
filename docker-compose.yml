@@ -1,7 +1,6 @@
 services:
-  # Opt-in Postgres for upcoming course/project storage: `docker compose --profile postgres up -d postgres`
+  # Postgres backs courses, course–workspace links, and recent repos for triton-runtime (see TRITON_PERSISTENCE_BACKEND below).
   postgres:
-    profiles: ["postgres"]
     image: postgres:16-alpine
     container_name: triton-postgres
     environment:
@@ -12,17 +11,31 @@ services:
       - triton_pg_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U triton -d triton"]
+      interval: 3s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
   triton-runtime:
     build:
       context: ./packages/triton-runtime
     container_name: triton-runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       TRITON_RUNTIME_HOST: 0.0.0.0
       TRITON_RUNTIME_PORT: 4317
       TRITON_PUBLIC_RUNTIME_URL: http://127.0.0.1:4317
       TRITON_EDITOR_URL: http://127.0.0.1:8080
       TRITON_ALLOWED_REPO_ROOTS: /repos
+      TRITON_PERSISTENCE_BACKEND: postgres
+      DATABASE_URL: postgres://triton:triton@postgres:5432/triton
+      # File-backed persistence (no DB): comment the two lines above and uncomment:
+      # TRITON_PERSISTENCE_BACKEND: file
+      # DATABASE_URL:
     ports:
       - "4317:4317"
     volumes:

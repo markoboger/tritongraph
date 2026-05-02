@@ -18,6 +18,7 @@ import cubeIconUrl from '../assets/language-icons/cube.svg'
 import sbtIconUrl from '../assets/language-icons/sbt.svg'
 import typescriptIconUrl from '../assets/language-icons/typescript.svg'
 import genericIconUrl from '../assets/language-icons/generic.svg'
+import tritonIconUrl from '../assets/language-icons/triton.svg'
 
 export type RuntimeHomeRepo = {
   workspacePath: string
@@ -842,7 +843,18 @@ watch(
       </div>
 
       <header class="runtime-home__hero">
-        <h1>Triton Architecture Explorer</h1>
+        <div class="runtime-home__hero-heading">
+          <img
+            class="runtime-home__hero-logo"
+            :src="tritonIconUrl"
+            width="72"
+            height="72"
+            alt=""
+            decoding="async"
+            aria-hidden="true"
+          />
+          <h1>Triton Architecture Explorer</h1>
+        </div>
         <p>
           Use <strong>Add local repo</strong> (folder), <strong>Add new repo</strong> (GitHub / GitLab), and
           <strong>Add Course</strong> (below once the runtime is connected) to register
@@ -933,10 +945,14 @@ watch(
           <button
             v-if="showCoursesSection"
             type="button"
-            class="runtime-home__btn runtime-home__btn--primary"
+            class="runtime-home__btn runtime-home__btn--primary runtime-home__btn--repo-hosts"
+            aria-label="Add Course"
             @click="openCourseDialog"
           >
-            Add Course
+            <span>Add Course</span>
+            <span class="runtime-home__repo-host-icons" aria-hidden="true">
+              <img class="runtime-home__repo-host-icon" :src="courseIconUrl" alt="" width="20" height="20" />
+            </span>
           </button>
           <button type="button" class="runtime-home__btn" @click="void fetchHome()">Refresh lists</button>
         </div>
@@ -1466,10 +1482,26 @@ watch(
   color: #475569;
   word-break: break-word;
 }
-.runtime-home__hero h1 {
+.runtime-home__hero-heading {
+  display: flex;
+  align-items: center;
+  gap: clamp(12px, 2.5vw, 20px);
   margin: 0 0 8px;
-  font-size: 28px;
+}
+.runtime-home__hero-logo {
+  flex-shrink: 0;
+  width: clamp(52px, 14vmin, 88px);
+  height: auto;
+  aspect-ratio: 1;
+  object-fit: contain;
+  border-radius: clamp(12px, 2.5vmin, 18px);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+}
+.runtime-home__hero-heading h1 {
+  margin: 0;
+  font-size: clamp(22px, 4.2vw, 28px);
   letter-spacing: -0.02em;
+  line-height: 1.15;
 }
 .runtime-home__hero p {
   margin: 0;

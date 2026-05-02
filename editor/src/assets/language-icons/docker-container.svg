@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Running container  shipping-container silhouette (process + writable layer), not the Docker logo.
+  Running container — shipping-container silhouette (process + writable layer), not the Docker logo.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" aria-hidden="true">
   <g stroke="#0f172a" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">
