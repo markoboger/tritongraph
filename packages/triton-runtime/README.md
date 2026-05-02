@@ -45,7 +45,7 @@ npm start
 
 Then open `http://127.0.0.1:4317`, enter a repo path like `/Users/markoboger/workspace/chess`, and use the generated links to open the Triton browser UI against that workspace.
 
-**GitHub:** the host must have `git` on `PATH`. Optional env:
+**GitHub:** the host must have `git` on `PATH`. In Docker, the image installs **`ca-certificates`** so Git can verify `https://github.com` (without it you may see `CAfile: none` / certificate verification failed). Optional env:
 
 - `TRITON_GIT_CACHE_ROOT` — where clones are stored (default: `<state-dir>/github-cache`).
 - `TRITON_GIT_CLONE_TIMEOUT_MS` — clone timeout in ms (default `180000`).
