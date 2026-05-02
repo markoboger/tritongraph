@@ -997,6 +997,8 @@ const activeExample = computed<{ root: string; dir: string } | null>(() => {
  */
 provide('tritonActiveExample', activeExample)
 provide('tritonActiveRuntimeWorkspace', activeRuntimeWorkspace)
+/** Runtime URL + workspace path for disk reads (e.g. README preview in {@link ProjectBox}). */
+provide('tritonRuntimeWorkspaceSession', runtimeWorkspaceSession)
 provide('tritonNodeTypeVisibility', nodeTypeVisibility)
 provide('tritonRelationTypeVisibility', relationTypeVisibility)
 provide('tritonMetricTooltipsEnabled', metricTooltipsEnabled)

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch, type ComputedRef } from 'vue'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
 import cubeIconUrl from '../../assets/language-icons/cube.svg'
 import genericIconUrl from '../../assets/language-icons/generic.svg'
@@ -16,6 +16,12 @@ import { buildFocusedBoxCompartments } from '../common/focusedBoxCompartments'
 import { useEditableBox } from '../common/useEditableBox'
 import { useBoxMetrics } from '../common/useBoxMetrics'
 import { nextCompactLayout, nextFlatLayout, nextMetricsBreakLayout, nextSuperflatLayout, nextSuperslimLayout } from './boxChromeLayout'
+
+type TritonRuntimeWorkspaceSession = {
+  runtimeUrl: string
+  workspacePath: string
+  workspaceName: string
+} | null
 
 const props = defineProps<{
   boxId: string
@@ -38,6 +44,11 @@ const props = defineProps<{
   /** Layer-drill focused box only: show accent color picker. */
   showColorTool: boolean
 }>()
+
+const runtimeWorkspaceSession = inject<ComputedRef<TritonRuntimeWorkspaceSession>>(
+  'tritonRuntimeWorkspaceSession',
+  computed(() => null),
+)
 
 const emit = defineEmits<{
   'toggle-pin': [MouseEvent]
@@ -69,13 +80,128 @@ const displayNoun = computed(() =>
   projectKind.value === 'project' ? 'project' : projectKind.value === 'general' ? 'box' : 'module',
 )
 
-const focusedCompartments = computed<readonly BoxCompartment[]>(() =>
-  buildFocusedBoxCompartments({
+type ReadmeLoadStatus = 'idle' | 'loading' | 'loaded' | 'missing' | 'no_session' | 'error'
+
+const readmeStatus = ref<ReadmeLoadStatus>('idle')
+const readmeText = ref('')
+let readmeFetchGeneration = 0
+
+function formatReadmeExcerpt(source: string): string {
+  const lines = source.replace(/\r\n/g, '\n').split('\n')
+  const head = lines.slice(0, 20)
+  if (lines.length > 20) {
+    head.push('...')
+  }
+  return head.join('\n')
+}
+
+async function fetchReadmeFromRuntime(runtimeUrl: string, workspacePath: string): Promise<string | null> {
+  const base = runtimeUrl.replace(/\/$/, '')
+  for (const rel of ['README.md', 'readme.md']) {
+    const u = new URL(`${base}/api/workspace/source`)
+    u.searchParams.set('workspacePath', workspacePath)
+    u.searchParams.set('relPath', rel)
+    const res = await fetch(u.toString())
+    const body = (await res.json()) as { ok?: boolean; source?: string }
+    if (res.ok && body.ok === true && typeof body.source === 'string') {
+      return formatReadmeExcerpt(body.source)
+    }
+  }
+  return null
+}
+
+watch(
+  () => ({
+    focused: props.focused,
+    kind: projectKind.value,
+    session: runtimeWorkspaceSession.value,
+  }),
+  async ({ focused, kind, session }) => {
+    const gen = ++readmeFetchGeneration
+    if (!focused || kind !== 'project') {
+      readmeStatus.value = 'idle'
+      readmeText.value = ''
+      return
+    }
+    const rt = session?.runtimeUrl?.trim() ?? ''
+    const wp = session?.workspacePath?.trim() ?? ''
+    if (!rt || !wp) {
+      readmeStatus.value = 'no_session'
+      readmeText.value = ''
+      return
+    }
+    readmeStatus.value = 'loading'
+    readmeText.value = ''
+    try {
+      const excerpt = await fetchReadmeFromRuntime(rt, wp)
+      if (gen !== readmeFetchGeneration) return
+      if (excerpt !== null) {
+        readmeText.value = excerpt
+        readmeStatus.value = 'loaded'
+      } else {
+        readmeText.value = ''
+        readmeStatus.value = 'missing'
+      }
+    } catch {
+      if (gen !== readmeFetchGeneration) return
+      readmeStatus.value = 'error'
+      readmeText.value = ''
+    }
+  },
+  { immediate: true },
+)
+
+const projectReadmeCompartment = computed((): BoxCompartment | null => {
+  if (!props.focused || projectKind.value !== 'project') return null
+  switch (readmeStatus.value) {
+    case 'idle':
+    case 'loading':
+      return { id: 'readme', title: 'README', rows: [{ value: 'Loading…' }] }
+    case 'no_session':
+      return {
+        id: 'readme',
+        title: 'README',
+        rows: [],
+        emptyText: 'Open this diagram from a runtime workspace to load README.md from disk.',
+      }
+    case 'error':
+      return {
+        id: 'readme',
+        title: 'README',
+        rows: [],
+        emptyText: 'Could not load README.md from the runtime.',
+      }
+    case 'loaded':
+      if (readmeText.value.trim()) {
+        return { id: 'readme', title: 'README', rows: [{ value: readmeText.value }] }
+      }
+      return {
+        id: 'readme',
+        title: 'README',
+        rows: [],
+        emptyText: 'No README.md in project root.',
+      }
+    case 'missing':
+      return {
+        id: 'readme',
+        title: 'README',
+        rows: [],
+        emptyText: 'No README.md in project root.',
+      }
+    default:
+      return null
+  }
+})
+
+const focusedCompartments = computed<readonly BoxCompartment[]>(() => {
+  const base = buildFocusedBoxCompartments({
     description: props.description,
     notes: props.notes,
     extraCompartments: props.compartments,
-  }),
-)
+  })
+  const readme = projectReadmeCompartment.value
+  return readme ? [...base, readme] : base
+})
 
 const rootEl = ref<HTMLElement | null>(null)
 const bodyEl = ref<HTMLElement | null>(null)
@@ -249,6 +375,8 @@ watch(
     props.description,
     hasCoverage.value,
     simulatedMetrics.value.issueCount,
+    readmeStatus.value,
+    readmeText.value,
   ],
   () => void nextTick(measure),
 )
