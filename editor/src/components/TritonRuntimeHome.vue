@@ -99,6 +99,19 @@ const locallyAnalyzedPaths = ref<Set<string>>(new Set())
 
 const base = computed(() => props.runtimeBaseUrl.replace(/\/$/, ''))
 
+/** `/api/home` from builds without GitHub analysis omits `capabilities.analysis-github`. */
+const runtimeSupportsGithubAnalysis = computed(() => {
+  const caps = homeModel.value?.runtime?.capabilities
+  return Array.isArray(caps) && caps.includes('analysis-github')
+})
+
+const githubRuntimeStaleWarning = computed(
+  () =>
+    !!(homeModel.value?.ok !== false &&
+      homeModel.value?.runtime &&
+      !runtimeSupportsGithubAnalysis.value),
+)
+
 function markAnalyzed(path: string): void {
   const next = new Set(locallyAnalyzedPaths.value)
   next.add(path)
@@ -554,6 +567,27 @@ watch(
           <strong>GitHub clone cache</strong>
           <div class="runtime-home__mono">{{ homeModel.runtime.gitCacheRoot }}</div>
         </div>
+        <div v-if="homeModel.runtime.version">
+          <strong>Runtime version</strong>
+          <div class="runtime-home__mono">{{ homeModel.runtime.version }}</div>
+        </div>
+      </section>
+
+      <section
+        v-if="githubRuntimeStaleWarning"
+        class="runtime-home__card runtime-home__card--warn"
+        role="status"
+      >
+        <strong>GitHub import unavailable on this runtime</strong>
+        <p class="runtime-home__hint">
+          <code>/api/home</code> does not list <code>analysis-github</code> in <code>capabilities</code>, so this process
+          is an older triton-runtime (or not rebuilt). Restart from the branch that adds
+          <code>POST /api/analysis/github</code>, or run
+          <code>curl -sS -X POST {{ base }}/api/analysis/github -H 'content-type: application/json' -d '{}'</code>
+          — you want HTTP <strong>400</strong>
+          <code>missing_repository_url</code>, not <strong>404</strong>
+          <code>not_found</code>.
+        </p>
       </section>
 
       <section class="runtime-home__card runtime-home__card--add">
@@ -627,7 +661,11 @@ watch(
             placeholder="main"
           />
           <div class="runtime-home__actions">
-            <button type="submit" class="runtime-home__btn runtime-home__btn--primary" :disabled="githubFormBusy">
+            <button
+              type="submit"
+              class="runtime-home__btn runtime-home__btn--primary"
+              :disabled="githubFormBusy || githubRuntimeStaleWarning"
+            >
               {{ githubFormBusy ? 'Cloning…' : 'Clone & add' }}
             </button>
           </div>
@@ -871,6 +909,14 @@ watch(
   border-color: #fecaca;
   background: #fef2f2;
   color: #991b1b;
+}
+.runtime-home__card--warn {
+  border-color: #fcd34d;
+  background: #fffbeb;
+  color: #92400e;
+}
+.runtime-home__card--warn .runtime-home__hint {
+  color: #78350f;
 }
 .runtime-home__meta--compact {
   display: flex;

@@ -61,6 +61,11 @@ If `POST /api/analysis/github` returns JSON `{ "error": "not_found", ... }`:
 2. Read the **`pathnameRaw`** field on the 404 body (0.2.1+). If it looks like `/something/api/analysis/github` instead of `/api/analysis/github`, your reverse proxy forwards a **path prefix**. Set **`TRITON_HTTP_PATH_PREFIX`** to that prefix (e.g. `/something`) on the runtime process and restart, or reconfigure the proxy to strip the prefix before forwarding.
 3. **`path` ends with `/api/analysis/github/`** — trailing slash was fixed by normalizing paths; upgrade if you still see this on an older build.
 
+**Smoke test:** `curl -sS -X POST http://127.0.0.1:4317/api/analysis/github -H 'content-type: application/json' -d '{}'`
+
+- **HTTP 400** with `missing_repository_url` → the GitHub route exists; your clone URL/body was wrong.
+- **HTTP 404** with `not_found` → the running Node process does **not** include `POST /api/analysis/github` (wrong checkout, stale Docker image, or a second older binary bound to that port).
+
 If `TRITON_ALLOWED_REPO_ROOTS` points at a workspace root, the landing page also lists discovered repositories under that root and remembers recently opened repositories.
 When the browser UI is running against this runtime, source links from artefact panels can open a read-only source tab inside Triton instead of handing off to the IDE.
 
