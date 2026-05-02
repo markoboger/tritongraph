@@ -16,7 +16,7 @@ const IGNORED_DIRS = new Set([
 ])
 const RECENT_REPOS_LIMIT = 12
 const REPO_DISCOVERY_MAX_DEPTH = 3
-const RUNTIME_VERSION = '0.2.1'
+const RUNTIME_VERSION = '0.3.0'
 
 function applyCorsHeaders(res) {
   res.setHeader('access-control-allow-origin', '*')
@@ -372,7 +372,7 @@ function apiHomeModel(config) {
       allowedRepoRoots: config.allowedRepoRoots,
       gitCacheRoot: config.gitCacheRoot,
       httpPathPrefix: config.httpPathPrefix || undefined,
-      capabilities: ['analysis-local', 'analysis-github'],
+      capabilities: ['analysis-local', 'analysis-github', 'github-sync'],
       version: RUNTIME_VERSION,
     },
     recentRepos: readRecentRepos(config),
@@ -543,11 +543,21 @@ function readWorkspaceBundle(workspacePath) {
 
 const GIT_CLONE_TIMEOUT_MS = Number(process.env.TRITON_GIT_CLONE_TIMEOUT_MS || 180000)
 
+/** GitHub HTTPS PAT via Authorization Basic (avoids putting the token in the remote URL). */
+function gitAuthConfigArgs(token) {
+  const t = String(token || '').trim()
+  if (!t) return []
+  const basic = Buffer.from(`x-access-token:${t}`, 'utf8').toString('base64')
+  return ['-c', `http.extraHeader=Authorization: Basic ${basic}`]
+}
+
 function execGit(args, options = {}) {
+  const prefix = gitAuthConfigArgs(options.token)
+  const mergedArgs = [...prefix, ...args]
   return new Promise((resolve) => {
     cp.execFile(
       'git',
-      args,
+      mergedArgs,
       {
         cwd: options.cwd,
         timeout: options.timeoutMs ?? GIT_CLONE_TIMEOUT_MS,
@@ -563,6 +573,33 @@ function execGit(args, options = {}) {
       },
     )
   })
+}
+
+function githubTokenFromRequest(body, req) {
+  const auth = req.headers?.authorization
+  if (typeof auth === 'string' && /^Bearer\s+/i.test(auth)) {
+    const t = auth.replace(/^Bearer\s+/i, '').trim()
+    if (t) return t
+  }
+  const xt = req.headers?.['x-github-token']
+  if (typeof xt === 'string' && xt.trim()) return xt.trim()
+  if (Array.isArray(xt) && xt[0]) return String(xt[0]).trim()
+  const fromBody = String(body?.githubToken || '').trim()
+  if (fromBody) return fromBody
+  return String(process.env.TRITON_GITHUB_TOKEN || '').trim()
+}
+
+function gitMaterializeFailure(gitResult, errorCode = 'git_clone_failed') {
+  const tail = gitResult.stderr.trim() || gitResult.stdout.trim() || `exit ${gitResult.exitCode}`
+  return {
+    ok: false,
+    statusCode: 502,
+    body: {
+      ok: false,
+      error: errorCode,
+      detail: tail.slice(-4000),
+    },
+  }
 }
 
 function parseGithubHttpsUrl(input) {
@@ -615,47 +652,55 @@ function githubCloneDestPath(config, owner, repo) {
   return path.join(path.resolve(config.gitCacheRoot), 'github.com', owner, repo)
 }
 
-async function materializeGithubRepo(body, config) {
+async function materializeGithubRepo(body, config, token = '') {
   const parsed = parseGithubHttpsUrl(body.repositoryUrl)
   if (!parsed.ok) {
     return { ok: false, statusCode: 400, body: { ok: false, error: parsed.error } }
   }
   const refRequested = String(body.ref || '').trim()
   const dest = githubCloneDestPath(config, parsed.owner, parsed.repo)
+  const gitTok = { token, timeoutMs: GIT_CLONE_TIMEOUT_MS }
+  const gitMetaPath = path.join(dest, '.git')
+
   ensureDirSync(path.dirname(dest))
-  try {
-    if (fs.existsSync(dest)) {
-      fs.rmSync(dest, { recursive: true, force: true })
+
+  if (fileExists(gitMetaPath)) {
+    const setRemote = await execGit(['-C', dest, 'remote', 'set-url', 'origin', parsed.cloneUrl], gitTok)
+    if (!setRemote.ok) return gitMaterializeFailure(setRemote, 'git_remote_failed')
+    if (refRequested) {
+      const fetchRef = await execGit(['-C', dest, 'fetch', 'origin', refRequested, '--depth', '1'], gitTok)
+      if (!fetchRef.ok) return gitMaterializeFailure(fetchRef)
+      const checkout = await execGit(['-C', dest, 'checkout', '-f', 'FETCH_HEAD'], gitTok)
+      if (!checkout.ok) return gitMaterializeFailure(checkout)
+    } else {
+      const pull = await execGit(['-C', dest, 'pull', '--ff-only', '--depth', '1'], gitTok)
+      if (!pull.ok) return gitMaterializeFailure(pull)
     }
-  } catch (err) {
-    return {
-      ok: false,
-      statusCode: 500,
-      body: {
+  } else {
+    try {
+      if (fs.existsSync(dest)) {
+        fs.rmSync(dest, { recursive: true, force: true })
+      }
+    } catch (err) {
+      return {
         ok: false,
-        error: 'git_cache_remove_failed',
-        detail: err instanceof Error ? err.message : String(err),
-      },
+        statusCode: 500,
+        body: {
+          ok: false,
+          error: 'git_cache_remove_failed',
+          detail: err instanceof Error ? err.message : String(err),
+        },
+      }
     }
-  }
-  const cloneArgs = ['clone', '--depth', '1']
-  if (refRequested) {
-    cloneArgs.push('--branch', refRequested)
-  }
-  cloneArgs.push(parsed.cloneUrl, dest)
-  const gitResult = await execGit(cloneArgs, { timeoutMs: GIT_CLONE_TIMEOUT_MS })
-  if (!gitResult.ok) {
-    const tail = gitResult.stderr.trim() || gitResult.stdout.trim() || `exit ${gitResult.exitCode}`
-    return {
-      ok: false,
-      statusCode: 502,
-      body: {
-        ok: false,
-        error: 'git_clone_failed',
-        detail: tail.slice(-4000),
-      },
+    const cloneArgs = ['clone', '--depth', '1']
+    if (refRequested) {
+      cloneArgs.push('--branch', refRequested)
     }
+    cloneArgs.push(parsed.cloneUrl, dest)
+    const gitResult = await execGit(cloneArgs, gitTok)
+    if (!gitResult.ok) return gitMaterializeFailure(gitResult)
   }
+
   let realPath
   try {
     realPath = fs.realpathSync(dest)
@@ -738,8 +783,8 @@ function analyzeLocalWorkspace(body, config) {
   }
 }
 
-async function analyzeGithubWorkspace(body, config) {
-  const materialized = await materializeGithubRepo(body, config)
+async function registerGithubWorkspace(body, config, token, mode) {
+  const materialized = await materializeGithubRepo(body, config, token)
   if (!materialized.ok) {
     return { statusCode: materialized.statusCode, body: materialized.body }
   }
@@ -768,7 +813,7 @@ async function analyzeGithubWorkspace(body, config) {
   return {
     statusCode: 200,
     body: buildAnalysisSuccessBody(resolvedPath, workspaceName, probe, config, {
-      mode: 'github',
+      mode,
       repositoryUrl: materialized.canonicalRepoUrl,
       gitRef: materialized.refRequested || undefined,
     }),
@@ -1208,7 +1253,7 @@ function createRuntimeServer(options = {}) {
         ok: true,
         service: 'triton-runtime',
         version: RUNTIME_VERSION,
-        capabilities: ['analysis-local', 'analysis-github'],
+        capabilities: ['analysis-local', 'analysis-github', 'github-sync'],
         allowedRepoRoots: config.allowedRepoRoots,
         gitCacheRoot: config.gitCacheRoot,
         httpPathPrefix: config.httpPathPrefix || undefined,
@@ -1226,7 +1271,8 @@ function createRuntimeServer(options = {}) {
     if (method === 'GET' && pathname === '/api/analysis/github') {
       sendJson(res, 200, {
         ok: true,
-        message: 'Route is active. Clone with POST and JSON body { "repositoryUrl": "https://github.com/owner/repo" }.',
+        message:
+          'Routes: POST /api/analysis/github (register) and POST /api/workspace/github/sync (pull latest). Body: { "repositoryUrl": "https://github.com/owner/repo", "ref": "optional" }. PAT: Authorization Bearer, x-github-token header, githubToken in JSON, or TRITON_GITHUB_TOKEN.',
         methodHint: 'POST',
         path: '/api/analysis/github',
         runtimeVersion: RUNTIME_VERSION,
@@ -1255,7 +1301,21 @@ function createRuntimeServer(options = {}) {
         sendJson(res, 400, { ok: false, error: 'invalid_json' })
         return
       }
-      const result = await analyzeGithubWorkspace(body, config)
+      const token = githubTokenFromRequest(body, req)
+      const result = await registerGithubWorkspace(body, config, token, 'github')
+      sendJson(res, result.statusCode, result.body)
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/workspace/github/sync') {
+      const raw = await collectBody(req)
+      const body = safeJsonParse(raw)
+      if (!body) {
+        sendJson(res, 400, { ok: false, error: 'invalid_json' })
+        return
+      }
+      const token = githubTokenFromRequest(body, req)
+      const result = await registerGithubWorkspace(body, config, token, 'github-sync')
       sendJson(res, result.statusCode, result.body)
       return
     }

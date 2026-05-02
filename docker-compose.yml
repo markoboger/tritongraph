@@ -1,4 +1,18 @@
 services:
+  # Opt-in Postgres for upcoming course/project storage: `docker compose --profile postgres up -d postgres`
+  postgres:
+    profiles: ["postgres"]
+    image: postgres:16-alpine
+    container_name: triton-postgres
+    environment:
+      POSTGRES_USER: triton
+      POSTGRES_PASSWORD: triton
+      POSTGRES_DB: triton
+    volumes:
+      - triton_pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
   triton-runtime:
     build:
       context: ./packages/triton-runtime
@@ -25,3 +39,6 @@ services:
       - "8080:8080"
     depends_on:
       - triton-runtime
+
+volumes:
+  triton_pg_data:

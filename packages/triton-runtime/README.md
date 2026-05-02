@@ -18,7 +18,8 @@ Current MVP scaffold:
 - local repo validation via `TRITON_ALLOWED_REPO_ROOTS` (GitHub clones are stored under `TRITON_GIT_CACHE_ROOT` and are allowed when roots are configured; otherwise the same “no root list” rules apply as for local paths)
 - home data endpoint at `GET /api/home`
 - local analysis launch endpoint at `POST /api/analysis/local`
-- GitHub analysis endpoint at `POST /api/analysis/github` (shallow-clones `https://github.com/{owner}/{repo}` into `TRITON_GIT_CACHE_ROOT`, then registers like a local workspace)
+- GitHub registration at `POST /api/analysis/github` (shallow clone or **incremental fetch** if the repo already exists under `TRITON_GIT_CACHE_ROOT`)
+- GitHub sync at `POST /api/workspace/github/sync` (same body as registration; updates an existing cached clone via `git fetch` / `git pull`)
 - source-file endpoint at `GET /api/workspace/source`
 - workspace bundle endpoint that discovers live local inputs:
   - `build.sbt`
@@ -50,14 +51,13 @@ Then open `http://127.0.0.1:4317`, enter a repo path like `/Users/markoboger/wor
 - `TRITON_GIT_CACHE_ROOT` — where clones are stored (default: `<state-dir>/github-cache`).
 - `TRITON_GIT_CLONE_TIMEOUT_MS` — clone timeout in ms (default `180000`).
 - `TRITON_HTTP_PATH_PREFIX` — when the HTTP request path includes a gateway prefix (e.g. `/triton/api/...` instead of `/api/...`), set this to that prefix (e.g. `/triton`) so routing matches.
+- `TRITON_GITHUB_TOKEN` — optional default **PAT** for private repos (server-wide). Per-request overrides: `Authorization: Bearer <token>`, header `x-github-token`, or JSON field `githubToken` (UI uses the latter for ad-hoc PATs).
 
-`POST /api/analysis/github` JSON body: `{ "repositoryUrl": "https://github.com/org/repo", "ref": "main" }` — `ref` is optional (default branch). Re-adding the same repo removes the previous clone directory and clones again (prototype behaviour).
-
-Requires **public** repositories over HTTPS until auth is added.
+`POST /api/analysis/github` and `POST /api/workspace/github/sync` JSON body: `{ "repositoryUrl": "https://github.com/org/repo", "ref": "main", "githubToken": "optional" }` — `ref` is optional. If the clone directory already exists, the runtime **updates** it (no full wipe).
 
 If `POST /api/analysis/github` returns JSON `{ "error": "not_found", ... }`:
 
-1. **Upgrade** so `/health` reports `"version": "0.2.1"` (or newer) and `GET /api/analysis/github` returns JSON describing POST (not `not_found`). If GET also returns `not_found`, you are not hitting this codebase’s server on that port.
+1. **Upgrade** so `/health` reports `"version": "0.3.0"` (or newer), `capabilities` includes `github-sync`, and `GET /api/analysis/github` returns JSON describing POST (not `not_found`). If GET also returns `not_found`, you are not hitting this codebase’s server on that port.
 2. Read the **`pathnameRaw`** field on the 404 body (0.2.1+). If it looks like `/something/api/analysis/github` instead of `/api/analysis/github`, your reverse proxy forwards a **path prefix**. Set **`TRITON_HTTP_PATH_PREFIX`** to that prefix (e.g. `/something`) on the runtime process and restart, or reconfigure the proxy to strip the prefix before forwarding.
 3. **`path` ends with `/api/analysis/github/`** — trailing slash was fixed by normalizing paths; upgrade if you still see this on an older build.
 
@@ -79,6 +79,14 @@ TRITON_LOCAL_REPOS=/Users/markoboger/workspace docker compose up --build
 ```
 
 Inside the container, host repos are mounted at `/repos`, so the `chess` example becomes `/repos/chess`.
+
+**Postgres (optional, for upcoming DB-backed courses/projects):**
+
+```bash
+docker compose --profile postgres up -d postgres
+```
+
+Runtime does not connect to it yet; `DATABASE_URL` wiring comes in a later change.
 
 Near-term next steps:
 

@@ -83,6 +83,8 @@ const emit = defineEmits<{
 const workspacePathInput = ref('')
 const githubUrlInput = ref('')
 const githubRefInput = ref('')
+/** Optional PAT for private repos; cleared after successful import (never stored on cards). */
+const githubTokenInput = ref('')
 const homeModel = ref<RuntimeHomeModel | null>(null)
 const loadError = ref('')
 const submitError = ref('')
@@ -91,6 +93,7 @@ const cardError = ref('')
 const formBusy = ref(false)
 const githubFormBusy = ref(false)
 const analyzingPath = ref('')
+const syncingGithubPath = ref('')
 const lastResultJson = ref('')
 /** Repositories added from “Add new Repository” this session (shown first in the grid). */
 const sessionRepos = ref<RuntimeHomeRepo[]>([])
@@ -111,6 +114,11 @@ const githubRuntimeStaleWarning = computed(
       homeModel.value?.runtime &&
       !runtimeSupportsGithubAnalysis.value),
 )
+
+const runtimeSupportsGithubSync = computed(() => {
+  const caps = homeModel.value?.runtime?.capabilities
+  return Array.isArray(caps) && caps.includes('github-sync')
+})
 
 function markAnalyzed(path: string): void {
   const next = new Set(locallyAnalyzedPaths.value)
@@ -297,17 +305,20 @@ type AnalysisOk = {
 }
 type AnalysisFail = { ok: false; error: string; body?: Record<string, unknown> }
 
-async function postGithubAnalysis(repositoryUrl: string, ref: string): Promise<AnalysisOk | AnalysisFail> {
-  const url = repositoryUrl.trim()
+async function postGithubAnalysis(repoUrl: string, ref: string, githubToken?: string): Promise<AnalysisOk | AnalysisFail> {
+  const url = repoUrl.trim()
   lastResultJson.value = ''
   if (!url) {
     return { ok: false, error: 'Please enter a GitHub repository URL.' }
   }
   try {
+    const payload: Record<string, string> = { repositoryUrl: url, ref: ref.trim() }
+    const tok = String(githubToken || '').trim()
+    if (tok) payload.githubToken = tok
     const res = await fetch(`${base.value}/api/analysis/github`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ repositoryUrl: url, ref: ref.trim() }),
+      body: JSON.stringify(payload),
     })
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
     if (!res.ok || body.ok !== true) {
@@ -328,6 +339,47 @@ async function postGithubAnalysis(repositoryUrl: string, ref: string): Promise<A
       workspaceName,
       probe,
       repositoryUrl: repositoryUrl || undefined,
+      gitRef: gitRef || undefined,
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+async function postGithubSync(repoUrl: string, ref: string, githubToken?: string): Promise<AnalysisOk | AnalysisFail> {
+  const url = repoUrl.trim()
+  lastResultJson.value = ''
+  if (!url) {
+    return { ok: false, error: 'Missing GitHub repository URL for sync.' }
+  }
+  try {
+    const payload: Record<string, string> = { repositoryUrl: url, ref: ref.trim() }
+    const tok = String(githubToken || '').trim()
+    if (tok) payload.githubToken = tok
+    const res = await fetch(`${base.value}/api/workspace/github/sync`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok || body.ok !== true) {
+      return {
+        ok: false,
+        error: String(body.error || `Request failed (${res.status}).`),
+        body,
+      }
+    }
+    const workspaceName = String(body.workspaceName || '').trim() || 'workspace'
+    const wsPath = String(body.workspacePath || '').trim()
+    const probe = body.probe as { kind?: string } | undefined
+    const canonical = String(body.repositoryUrl || '').trim()
+    const gitRef = String(body.gitRef || '').trim()
+    return {
+      ok: true,
+      workspacePath: wsPath,
+      workspaceName,
+      probe,
+      repositoryUrl: canonical || undefined,
       gitRef: gitRef || undefined,
     }
   } catch (e) {
@@ -406,7 +458,7 @@ async function addRepositoryFromGithub(): Promise<void> {
   }
   githubFormBusy.value = true
   try {
-    const result = await postGithubAnalysis(repoUrl, githubRefInput.value)
+    const result = await postGithubAnalysis(repoUrl, githubRefInput.value, githubTokenInput.value)
     if (!result.ok) {
       githubSubmitError.value = result.error
       if (result.body) lastResultJson.value = JSON.stringify(result.body, null, 2)
@@ -425,8 +477,34 @@ async function addRepositoryFromGithub(): Promise<void> {
     githubSubmitError.value = ''
     githubUrlInput.value = ''
     githubRefInput.value = ''
+    githubTokenInput.value = ''
   } finally {
     githubFormBusy.value = false
+  }
+}
+
+async function syncGithubRepo(repo: RuntimeHomeRepo): Promise<void> {
+  cardError.value = ''
+  githubSubmitError.value = ''
+  lastResultJson.value = ''
+  const repoUrl = repo.repositoryUrl?.trim()
+  if (!repoUrl) {
+    cardError.value = 'This card has no GitHub URL stored; remove it and add the repository again from GitHub.'
+    return
+  }
+  syncingGithubPath.value = repo.workspacePath
+  try {
+    const tok = githubTokenInput.value.trim()
+    const result = await postGithubSync(repoUrl, repo.gitRef ?? '', tok || undefined)
+    if (!result.ok) {
+      cardError.value = result.error
+      if (result.body) lastResultJson.value = JSON.stringify(result.body, null, 2)
+      return
+    }
+    markAnalyzed(result.workspacePath)
+    await fetchHome()
+  } finally {
+    syncingGithubPath.value = ''
   }
 }
 
@@ -660,6 +738,19 @@ watch(
             autocomplete="off"
             placeholder="main"
           />
+          <label class="runtime-home__label" for="triton-github-token">GitHub token (optional)</label>
+          <input
+            id="triton-github-token"
+            v-model="githubTokenInput"
+            class="runtime-home__input"
+            type="password"
+            name="githubToken"
+            autocomplete="new-password"
+            placeholder="PAT for private repos — cleared after add"
+          />
+          <p class="runtime-home__hint runtime-home__hint--field">
+            Prefer headers or env on shared servers; this field is only sent with the request and not saved on the card.
+          </p>
           <div class="runtime-home__actions">
             <button
               type="submit"
@@ -713,7 +804,7 @@ watch(
                 <button
                   type="button"
                   class="repo-card__link"
-                  :disabled="!!analyzingPath"
+                  :disabled="!!analyzingPath || !!syncingGithubPath"
                   @click="void openSbtDiagram(repo)"
                 >
                   SBT diagram
@@ -722,11 +813,22 @@ watch(
                 <button
                   type="button"
                   class="repo-card__link"
-                  :disabled="!!analyzingPath"
+                  :disabled="!!analyzingPath || !!syncingGithubPath"
                   @click="void openPackageDiagram(repo)"
                 >
                   Package diagram
                 </button>
+                <template v-if="repo.source === 'github' && runtimeSupportsGithubSync">
+                  <span class="repo-card__sep" aria-hidden="true">·</span>
+                  <button
+                    type="button"
+                    class="repo-card__link"
+                    :disabled="!!analyzingPath || !!syncingGithubPath"
+                    @click="void syncGithubRepo(repo)"
+                  >
+                    {{ syncingGithubPath === repo.workspacePath ? 'Syncing…' : 'Sync from GitHub' }}
+                  </button>
+                </template>
                 <span v-if="analyzingPath === repo.workspacePath" class="repo-card__busy" aria-live="polite">
                   Preparing…
                 </span>
@@ -1024,6 +1126,10 @@ watch(
   font-size: 13px;
   color: #475569;
   line-height: 1.5;
+}
+.runtime-home__hint--field {
+  margin: -4px 0 8px;
+  font-size: 12px;
 }
 .runtime-home__muted {
   color: #64748b;
