@@ -140,11 +140,15 @@ function runtimeConfig(options = {}) {
   const stateDir = path.resolve(
     String(options.stateDir || process.env.TRITON_RUNTIME_STATE_DIR || path.join(os.homedir(), '.triton-runtime')).trim(),
   )
+  const gitCacheRoot = path.resolve(
+    String(options.gitCacheRoot || process.env.TRITON_GIT_CACHE_ROOT || path.join(stateDir, 'github-cache')).trim(),
+  )
   return {
     allowedRepoRoots,
     publicRuntimeUrl,
     editorUrl,
     stateDir,
+    gitCacheRoot,
   }
 }
 
@@ -171,13 +175,18 @@ function validateWorkspacePath(workspacePath, config) {
   if (!stat.isDirectory()) {
     return { ok: false, statusCode: 400, error: 'workspace_path_not_directory', workspacePath: realPath }
   }
-  if (config.allowedRepoRoots.length && !config.allowedRepoRoots.some((root) => pathIsInsideRoot(realPath, root))) {
-    return {
-      ok: false,
-      statusCode: 403,
-      error: 'workspace_path_not_allowed',
-      workspacePath: realPath,
-      allowedRepoRoots: config.allowedRepoRoots,
+  if (config.allowedRepoRoots.length) {
+    const insideConfiguredRoots = config.allowedRepoRoots.some((root) => pathIsInsideRoot(realPath, root))
+    const insideGitCache =
+      config.gitCacheRoot && pathIsInsideRoot(realPath, path.resolve(config.gitCacheRoot))
+    if (!insideConfiguredRoots && !insideGitCache) {
+      return {
+        ok: false,
+        statusCode: 403,
+        error: 'workspace_path_not_allowed',
+        workspacePath: realPath,
+        allowedRepoRoots: config.allowedRepoRoots,
+      }
     }
   }
   return { ok: true, workspacePath: realPath }
@@ -251,24 +260,38 @@ function readRecentRepos(config) {
     .map((entry) => {
       const repoPath = String(entry && entry.workspacePath ? entry.workspacePath : '').trim()
       if (!repoPath || !fileExists(repoPath)) return null
-      return {
+      const base = {
         workspacePath: repoPath,
         workspaceName: String(entry.workspaceName || repoDisplayName(repoPath)).trim() || repoDisplayName(repoPath),
         lastOpenedAt: String(entry.lastOpenedAt || '').trim(),
         probe: probeWorkspace(repoPath),
       }
+      if (entry.source === 'github') {
+        base.source = 'github'
+        const ru = String(entry.repositoryUrl || '').trim()
+        if (ru) base.repositoryUrl = ru
+        const gr = String(entry.gitRef || '').trim()
+        if (gr) base.gitRef = gr
+      }
+      return base
     })
     .filter(Boolean)
 }
 
-function rememberRecentRepo(config, workspacePath, workspaceName) {
+function rememberRecentRepo(config, workspacePath, workspaceName, extras = {}) {
   const recent = readRecentRepos(config).filter((entry) => entry.workspacePath !== workspacePath)
-  recent.unshift({
+  const row = {
     workspacePath,
     workspaceName: workspaceName || repoDisplayName(workspacePath),
     lastOpenedAt: new Date().toISOString(),
     probe: probeWorkspace(workspacePath),
-  })
+  }
+  if (extras.source === 'github') {
+    row.source = 'github'
+    if (extras.repositoryUrl) row.repositoryUrl = String(extras.repositoryUrl).trim()
+    if (extras.gitRef) row.gitRef = String(extras.gitRef).trim()
+  }
+  recent.unshift(row)
   writeJsonFile(recentReposFilePath(config), recent.slice(0, RECENT_REPOS_LIMIT))
 }
 
@@ -344,6 +367,7 @@ function apiHomeModel(config) {
       publicRuntimeUrl: config.publicRuntimeUrl,
       editorUrl: config.editorUrl,
       allowedRepoRoots: config.allowedRepoRoots,
+      gitCacheRoot: config.gitCacheRoot,
     },
     recentRepos: readRecentRepos(config),
     discoveredRepos: discoverAllowedRepos(config),
@@ -511,6 +535,151 @@ function readWorkspaceBundle(workspacePath) {
   }
 }
 
+const GIT_CLONE_TIMEOUT_MS = Number(process.env.TRITON_GIT_CLONE_TIMEOUT_MS || 180000)
+
+function execGit(args, options = {}) {
+  return new Promise((resolve) => {
+    cp.execFile(
+      'git',
+      args,
+      {
+        cwd: options.cwd,
+        timeout: options.timeoutMs ?? GIT_CLONE_TIMEOUT_MS,
+        maxBuffer: 20 * 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        resolve({
+          ok: !error,
+          exitCode: error && typeof error.code === 'number' ? error.code : 0,
+          stdout: String(stdout || ''),
+          stderr: String(stderr || ''),
+        })
+      },
+    )
+  })
+}
+
+function parseGithubHttpsUrl(input) {
+  const trimmed = String(input || '').trim()
+  if (!trimmed) {
+    return { ok: false, error: 'missing_repository_url' }
+  }
+  let urlString = trimmed
+  if (!/^https?:\/\//i.test(urlString)) {
+    urlString = `https://${urlString.replace(/^\/+/, '')}`
+  }
+  let u
+  try {
+    u = new URL(urlString)
+  } catch {
+    return { ok: false, error: 'invalid_repository_url' }
+  }
+  if (u.protocol !== 'https:') {
+    return { ok: false, error: 'only_https_github_urls_supported' }
+  }
+  const host = u.hostname.toLowerCase()
+  if (host !== 'github.com') {
+    return { ok: false, error: 'only_github_com_supported' }
+  }
+  const parts = u.pathname
+    .replace(/\/+$/, '')
+    .split('/')
+    .filter(Boolean)
+  if (parts.length < 2) {
+    return { ok: false, error: 'github_url_need_owner_repo' }
+  }
+  const owner = parts[0]
+  const repo = parts[1].replace(/\.git$/i, '')
+  if (!/^[a-zA-Z0-9_.-]+$/.test(owner) || !/^[a-zA-Z0-9_.-]+$/.test(repo)) {
+    return { ok: false, error: 'invalid_owner_or_repo' }
+  }
+  const cloneUrl = `https://github.com/${owner}/${repo}.git`
+  const canonicalRepoUrl = `https://github.com/${owner}/${repo}`
+  return { ok: true, owner, repo, cloneUrl, canonicalRepoUrl }
+}
+
+function githubCloneDestPath(config, owner, repo) {
+  return path.join(path.resolve(config.gitCacheRoot), 'github.com', owner, repo)
+}
+
+async function materializeGithubRepo(body, config) {
+  const parsed = parseGithubHttpsUrl(body.repositoryUrl)
+  if (!parsed.ok) {
+    return { ok: false, statusCode: 400, body: { ok: false, error: parsed.error } }
+  }
+  const refRequested = String(body.ref || '').trim()
+  const dest = githubCloneDestPath(config, parsed.owner, parsed.repo)
+  ensureDirSync(path.dirname(dest))
+  try {
+    if (fs.existsSync(dest)) {
+      fs.rmSync(dest, { recursive: true, force: true })
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      statusCode: 500,
+      body: {
+        ok: false,
+        error: 'git_cache_remove_failed',
+        detail: err instanceof Error ? err.message : String(err),
+      },
+    }
+  }
+  const cloneArgs = ['clone', '--depth', '1']
+  if (refRequested) {
+    cloneArgs.push('--branch', refRequested)
+  }
+  cloneArgs.push(parsed.cloneUrl, dest)
+  const gitResult = await execGit(cloneArgs, { timeoutMs: GIT_CLONE_TIMEOUT_MS })
+  if (!gitResult.ok) {
+    const tail = gitResult.stderr.trim() || gitResult.stdout.trim() || `exit ${gitResult.exitCode}`
+    return {
+      ok: false,
+      statusCode: 502,
+      body: {
+        ok: false,
+        error: 'git_clone_failed',
+        detail: tail.slice(-4000),
+      },
+    }
+  }
+  let realPath
+  try {
+    realPath = fs.realpathSync(dest)
+  } catch (err) {
+    return {
+      ok: false,
+      statusCode: 500,
+      body: {
+        ok: false,
+        error: 'clone_path_unreadable',
+        detail: err instanceof Error ? err.message : String(err),
+      },
+    }
+  }
+  return {
+    ok: true,
+    workspacePath: realPath,
+    workspaceName: parsed.repo,
+    canonicalRepoUrl: parsed.canonicalRepoUrl,
+    refRequested,
+  }
+}
+
+function buildAnalysisSuccessBody(workspacePath, workspaceName, probe, config, extras = {}) {
+  const analysisId = `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  return {
+    ok: true,
+    analysisId,
+    workspacePath,
+    workspaceName,
+    probe,
+    bundleUrl: `${config.publicRuntimeUrl || ''}/api/workspace/bundle?workspacePath=${encodeURIComponent(workspacePath)}`,
+    launch: runtimeWorkspaceLaunchUrls(workspacePath, workspaceName, config),
+    ...extras,
+  }
+}
+
 function runtimeWorkspaceLaunchUrls(workspacePath, workspaceName, config) {
   const runtimeUrl = config.publicRuntimeUrl || ''
   const editorUrl = config.editorUrl || ''
@@ -550,20 +719,46 @@ function analyzeLocalWorkspace(body, config) {
   const workspaceName =
     String(body.workspaceName || '').trim() || path.basename(workspacePath) || path.basename(path.dirname(workspacePath)) || 'workspace'
   rememberRecentRepo(config, workspacePath, workspaceName)
-  const launch = runtimeWorkspaceLaunchUrls(workspacePath, workspaceName, config)
-  const analysisId = `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   return {
     statusCode: 200,
-    body: {
-      ok: true,
-      analysisId,
-      mode: 'local-path',
-      workspacePath,
-      workspaceName,
-      probe,
-      bundleUrl: `${config.publicRuntimeUrl || ''}/api/workspace/bundle?workspacePath=${encodeURIComponent(workspacePath)}`,
-      launch,
-    },
+    body: buildAnalysisSuccessBody(workspacePath, workspaceName, probe, config, { mode: 'local-path' }),
+  }
+}
+
+async function analyzeGithubWorkspace(body, config) {
+  const materialized = await materializeGithubRepo(body, config)
+  if (!materialized.ok) {
+    return { statusCode: materialized.statusCode, body: materialized.body }
+  }
+  const workspacePath = materialized.workspacePath
+  const workspaceName =
+    String(body.workspaceName || '').trim() || materialized.workspaceName || path.basename(workspacePath) || 'workspace'
+  const validation = validateWorkspacePath(workspacePath, config)
+  if (!validation.ok) {
+    return {
+      statusCode: validation.statusCode,
+      body: {
+        ok: false,
+        error: validation.error,
+        workspacePath: validation.workspacePath,
+        allowedRepoRoots: validation.allowedRepoRoots,
+      },
+    }
+  }
+  const resolvedPath = validation.workspacePath
+  rememberRecentRepo(config, resolvedPath, workspaceName, {
+    source: 'github',
+    repositoryUrl: materialized.canonicalRepoUrl,
+    gitRef: materialized.refRequested || undefined,
+  })
+  const probe = probeWorkspace(resolvedPath)
+  return {
+    statusCode: 200,
+    body: buildAnalysisSuccessBody(resolvedPath, workspaceName, probe, config, {
+      mode: 'github',
+      repositoryUrl: materialized.canonicalRepoUrl,
+      gitRef: materialized.refRequested || undefined,
+    }),
   }
 }
 
@@ -644,6 +839,19 @@ function runtimeHomeHtml(config) {
             <button id="refresh-repos" class="button-secondary" type="button">Refresh Repository List</button>
           </div>
         </form>
+        <form id="github-analysis-form">
+          <div>
+            <label for="repositoryUrl">GitHub repository (HTTPS)</label>
+            <input id="repositoryUrl" name="repositoryUrl" type="text" placeholder="https://github.com/scala/scala" autocomplete="off" />
+          </div>
+          <div>
+            <label for="gitRef">Branch or tag (optional)</label>
+            <input id="gitRef" name="gitRef" type="text" placeholder="main" autocomplete="off" />
+          </div>
+          <div class="button-row">
+            <button type="submit">Clone &amp; Analyze from GitHub</button>
+          </div>
+        </form>
         <div class="meta">
           <div>
             <strong>Public runtime URL</strong>
@@ -690,7 +898,10 @@ function runtimeHomeHtml(config) {
   <script>
     const bootstrap = JSON.parse(document.getElementById('runtime-home-bootstrap').textContent);
     const form = document.getElementById('analysis-form');
+    const githubForm = document.getElementById('github-analysis-form');
     const workspacePathInput = document.getElementById('workspacePath');
+    const repositoryUrlInput = document.getElementById('repositoryUrl');
+    const gitRefInput = document.getElementById('gitRef');
     const refreshReposButton = document.getElementById('refresh-repos');
     const recentRepos = document.getElementById('recent-repos');
     const discoveredRepos = document.getElementById('discovered-repos');
@@ -788,6 +999,50 @@ function runtimeHomeHtml(config) {
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       await submitWorkspacePath(workspacePathInput.value.trim());
+    });
+    githubForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      error.textContent = '';
+      result.classList.remove('visible');
+      const repositoryUrl = repositoryUrlInput.value.trim();
+      const ref = gitRefInput.value.trim();
+      if (!repositoryUrl) {
+        error.textContent = 'Please enter a GitHub repository URL.';
+        return;
+      }
+      try {
+        const response = await fetch('/api/analysis/github', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ repositoryUrl, ref }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || !body.ok) {
+          error.textContent = body.error || ('Request failed (' + response.status + ').');
+          resultJson.textContent = JSON.stringify(body, null, 2);
+          result.classList.add('visible');
+          return;
+        }
+        resultSummary.textContent = 'Ready (GitHub): ' + body.workspaceName + ' (' + body.probe.kind + ')';
+        resultJson.textContent = JSON.stringify(body, null, 2);
+        if (body.launch && body.launch.sbtDiagramUrl) {
+          sbtLink.href = body.launch.sbtDiagramUrl;
+          sbtLink.style.display = '';
+        } else {
+          sbtLink.style.display = 'none';
+        }
+        if (body.launch && body.launch.packagesDiagramUrl) {
+          packagesLink.href = body.launch.packagesDiagramUrl;
+          packagesLink.style.display = '';
+        } else {
+          packagesLink.style.display = 'none';
+        }
+        result.classList.add('visible');
+        workspacePathInput.value = body.workspacePath || '';
+        refreshRepoLists().catch(() => {});
+      } catch (err) {
+        error.textContent = err && err.message ? err.message : String(err);
+      }
     });
     refreshReposButton.addEventListener('click', () => {
       refreshRepoLists().catch((err) => {
@@ -915,6 +1170,7 @@ function createRuntimeServer(options = {}) {
         service: 'triton-runtime',
         version: '0.1.0',
         allowedRepoRoots: config.allowedRepoRoots,
+        gitCacheRoot: config.gitCacheRoot,
         editorUrl: config.editorUrl,
         publicRuntimeUrl: config.publicRuntimeUrl,
       })
@@ -934,6 +1190,18 @@ function createRuntimeServer(options = {}) {
         return
       }
       const result = analyzeLocalWorkspace(body, config)
+      sendJson(res, result.statusCode, result.body)
+      return
+    }
+
+    if (method === 'POST' && url.pathname === '/api/analysis/github') {
+      const raw = await collectBody(req)
+      const body = safeJsonParse(raw)
+      if (!body) {
+        sendJson(res, 400, { ok: false, error: 'invalid_json' })
+        return
+      }
+      const result = await analyzeGithubWorkspace(body, config)
       sendJson(res, result.statusCode, result.body)
       return
     }

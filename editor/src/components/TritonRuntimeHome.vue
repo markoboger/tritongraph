@@ -20,6 +20,10 @@ export type RuntimeHomeRepo = {
   workspaceName: string
   probe?: { kind?: string }
   lastOpenedAt?: string
+  /** Present when registered via `POST /api/analysis/github`. */
+  source?: 'github'
+  repositoryUrl?: string
+  gitRef?: string
 }
 
 export type RuntimeHomeModel = {
@@ -29,6 +33,7 @@ export type RuntimeHomeModel = {
     publicRuntimeUrl?: string
     editorUrl?: string
     allowedRepoRoots?: string[]
+    gitCacheRoot?: string
   }
   recentRepos?: RuntimeHomeRepo[]
 }
@@ -73,11 +78,15 @@ const emit = defineEmits<{
 }>()
 
 const workspacePathInput = ref('')
+const githubUrlInput = ref('')
+const githubRefInput = ref('')
 const homeModel = ref<RuntimeHomeModel | null>(null)
 const loadError = ref('')
 const submitError = ref('')
+const githubSubmitError = ref('')
 const cardError = ref('')
 const formBusy = ref(false)
+const githubFormBusy = ref(false)
 const analyzingPath = ref('')
 const lastResultJson = ref('')
 /** Repositories added from “Add new Repository” this session (shown first in the grid). */
@@ -107,7 +116,16 @@ function pushSessionRepo(repo: RuntimeHomeRepo): void {
 
 function mergeFromHome(r: RuntimeHomeRepo): RuntimeHomeRepo {
   const fr = homeModel.value?.recentRepos?.find((x) => x.workspacePath === r.workspacePath)
-  return { ...fr, ...r }
+  if (!fr) return r
+  return {
+    workspacePath: r.workspacePath,
+    workspaceName: r.workspaceName || fr.workspaceName,
+    lastOpenedAt: fr.lastOpenedAt || r.lastOpenedAt,
+    probe: r.probe || fr.probe,
+    source: fr.source ?? r.source,
+    repositoryUrl: fr.repositoryUrl ?? r.repositoryUrl,
+    gitRef: fr.gitRef ?? r.gitRef,
+  }
 }
 
 const repositoryCards = computed(() => {
@@ -258,8 +276,48 @@ type AnalysisOk = {
   workspacePath: string
   workspaceName: string
   probe?: { kind?: string }
+  repositoryUrl?: string
+  gitRef?: string
 }
 type AnalysisFail = { ok: false; error: string; body?: Record<string, unknown> }
+
+async function postGithubAnalysis(repositoryUrl: string, ref: string): Promise<AnalysisOk | AnalysisFail> {
+  const url = repositoryUrl.trim()
+  lastResultJson.value = ''
+  if (!url) {
+    return { ok: false, error: 'Please enter a GitHub repository URL.' }
+  }
+  try {
+    const res = await fetch(`${base.value}/api/analysis/github`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repositoryUrl: url, ref: ref.trim() }),
+    })
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok || body.ok !== true) {
+      return {
+        ok: false,
+        error: String(body.error || `Request failed (${res.status}).`),
+        body,
+      }
+    }
+    const workspaceName = String(body.workspaceName || '').trim() || 'workspace'
+    const wsPath = String(body.workspacePath || '').trim()
+    const probe = body.probe as { kind?: string } | undefined
+    const repositoryUrl = String(body.repositoryUrl || '').trim()
+    const gitRef = String(body.gitRef || '').trim()
+    return {
+      ok: true,
+      workspacePath: wsPath,
+      workspaceName,
+      probe,
+      repositoryUrl: repositoryUrl || undefined,
+      gitRef: gitRef || undefined,
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
 
 async function postLocalAnalysis(workspacePath: string): Promise<AnalysisOk | AnalysisFail> {
   const path = workspacePath.trim()
@@ -292,6 +350,7 @@ async function postLocalAnalysis(workspacePath: string): Promise<AnalysisOk | An
 
 async function addRepositoryFromForm(): Promise<void> {
   submitError.value = ''
+  githubSubmitError.value = ''
   lastResultJson.value = ''
   const path = workspacePathInput.value.trim()
   if (!path) {
@@ -317,6 +376,41 @@ async function addRepositoryFromForm(): Promise<void> {
     workspacePathInput.value = ''
   } finally {
     formBusy.value = false
+  }
+}
+
+async function addRepositoryFromGithub(): Promise<void> {
+  githubSubmitError.value = ''
+  submitError.value = ''
+  lastResultJson.value = ''
+  const repoUrl = githubUrlInput.value.trim()
+  if (!repoUrl) {
+    githubSubmitError.value = 'Please enter a GitHub repository URL (HTTPS).'
+    return
+  }
+  githubFormBusy.value = true
+  try {
+    const result = await postGithubAnalysis(repoUrl, githubRefInput.value)
+    if (!result.ok) {
+      githubSubmitError.value = result.error
+      if (result.body) lastResultJson.value = JSON.stringify(result.body, null, 2)
+      return
+    }
+    markAnalyzed(result.workspacePath)
+    pushSessionRepo({
+      workspacePath: result.workspacePath,
+      workspaceName: result.workspaceName,
+      probe: result.probe,
+      source: 'github',
+      repositoryUrl: result.repositoryUrl,
+      gitRef: result.gitRef,
+    })
+    await fetchHome()
+    githubSubmitError.value = ''
+    githubUrlInput.value = ''
+    githubRefInput.value = ''
+  } finally {
+    githubFormBusy.value = false
   }
 }
 
@@ -430,8 +524,8 @@ watch(
       <header class="runtime-home__hero">
         <h1>Triton Architecture Explorer</h1>
         <p>
-          Add a repository by absolute path, then open the SBT or package diagram from its card. Recent workspaces
-          from the runtime appear below; bundled examples and dojos open in new tabs.
+          Add a repository by absolute path or clone a public GitHub URL, then open the SBT or package diagram from
+          its card. Recent workspaces from the runtime appear below; bundled examples and dojos open in new tabs.
         </p>
       </header>
 
@@ -452,6 +546,10 @@ watch(
               <code>{{ r }}</code>
             </li>
           </ul>
+        </div>
+        <div v-if="homeModel.runtime.gitCacheRoot">
+          <strong>GitHub clone cache</strong>
+          <div class="runtime-home__mono">{{ homeModel.runtime.gitCacheRoot }}</div>
         </div>
       </section>
 
@@ -493,6 +591,51 @@ watch(
         </details>
       </section>
 
+      <section class="runtime-home__card runtime-home__card--add">
+        <div class="runtime-home__add-head">
+          <img class="runtime-home__add-icon" :src="stackedCubesIconUrl" width="32" height="32" alt="" />
+          <div>
+            <h2>Add from GitHub</h2>
+            <p class="runtime-home__add-lead">
+              Clones a public repository into the runtime cache and registers it like a local workspace. Re-adding the
+              same repo refreshes the clone (prototype).
+            </p>
+          </div>
+        </div>
+        <form class="runtime-home__form" @submit.prevent="void addRepositoryFromGithub()">
+          <label class="runtime-home__label" for="triton-github-url">Repository URL</label>
+          <input
+            id="triton-github-url"
+            v-model="githubUrlInput"
+            class="runtime-home__input"
+            type="url"
+            name="repositoryUrl"
+            autocomplete="off"
+            placeholder="https://github.com/scala/hello-world.g8"
+          />
+          <label class="runtime-home__label" for="triton-github-ref">Branch or tag (optional)</label>
+          <input
+            id="triton-github-ref"
+            v-model="githubRefInput"
+            class="runtime-home__input"
+            type="text"
+            name="gitRef"
+            autocomplete="off"
+            placeholder="main"
+          />
+          <div class="runtime-home__actions">
+            <button type="submit" class="runtime-home__btn runtime-home__btn--primary" :disabled="githubFormBusy">
+              {{ githubFormBusy ? 'Cloning…' : 'Clone & add' }}
+            </button>
+          </div>
+        </form>
+        <p v-if="githubSubmitError" class="runtime-home__error">{{ githubSubmitError }}</p>
+        <details v-if="lastResultJson && githubSubmitError" class="runtime-home__details">
+          <summary>Response details</summary>
+          <pre class="runtime-home__pre">{{ lastResultJson }}</pre>
+        </details>
+      </section>
+
       <section class="runtime-home__deck">
         <div class="runtime-home__deck-head">
           <h2>Repositories</h2>
@@ -514,6 +657,7 @@ watch(
             <div class="repo-card__body">
               <div class="repo-card__title-row">
                 <h3 class="repo-card__title">{{ repo.workspaceName }}</h3>
+                <span v-if="repo.source === 'github'" class="repo-card__pill repo-card__pill--github">GitHub</span>
                 <span v-if="isSessionListed(repo)" class="repo-card__pill">Added</span>
               </div>
               <p class="repo-card__path"><code>{{ repo.workspacePath }}</code></p>
@@ -914,6 +1058,10 @@ watch(
   border-radius: 999px;
   background: #ccfbf1;
   color: #0f766e;
+}
+.repo-card__pill--github {
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 .repo-card__path {
   margin: 6px 0 0;

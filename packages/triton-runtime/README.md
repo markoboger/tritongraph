@@ -15,9 +15,10 @@ Current MVP scaffold:
   - direct path entry
   - discovered repositories under configured workspace roots
   - recent repositories that can be reopened with one click
-- local repo validation via `TRITON_ALLOWED_REPO_ROOTS`
+- local repo validation via `TRITON_ALLOWED_REPO_ROOTS` (GitHub clones are stored under `TRITON_GIT_CACHE_ROOT` and are allowed when roots are configured; otherwise the same “no root list” rules apply as for local paths)
 - home data endpoint at `GET /api/home`
 - local analysis launch endpoint at `POST /api/analysis/local`
+- GitHub analysis endpoint at `POST /api/analysis/github` (shallow-clones `https://github.com/{owner}/{repo}` into `TRITON_GIT_CACHE_ROOT`, then registers like a local workspace)
 - source-file endpoint at `GET /api/workspace/source`
 - workspace bundle endpoint that discovers live local inputs:
   - `build.sbt`
@@ -43,6 +44,15 @@ npm start
 ```
 
 Then open `http://127.0.0.1:4317`, enter a repo path like `/Users/markoboger/workspace/chess`, and use the generated links to open the Triton browser UI against that workspace.
+
+**GitHub:** the host must have `git` on `PATH`. Optional env:
+
+- `TRITON_GIT_CACHE_ROOT` — where clones are stored (default: `<state-dir>/github-cache`).
+- `TRITON_GIT_CLONE_TIMEOUT_MS` — clone timeout in ms (default `180000`).
+
+`POST /api/analysis/github` JSON body: `{ "repositoryUrl": "https://github.com/org/repo", "ref": "main" }` — `ref` is optional (default branch). Re-adding the same repo removes the previous clone directory and clones again (prototype behaviour).
+
+Requires **public** repositories over HTTPS until auth is added.
 
 If `TRITON_ALLOWED_REPO_ROOTS` points at a workspace root, the landing page also lists discovered repositories under that root and remembers recently opened repositories.
 When the browser UI is running against this runtime, source links from artefact panels can open a read-only source tab inside Triton instead of handing off to the IDE.
