@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { StarterCard, StarterCardKind } from '../triton/tritonStarterCard'
 
 type StarterFoldSection = {
@@ -20,15 +20,27 @@ import typescriptIconUrl from '../assets/language-icons/typescript.svg'
 import genericIconUrl from '../assets/language-icons/generic.svg'
 import tritonIconUrl from '../assets/language-icons/triton.svg'
 
+/** Derived on GET /api/home when runtime supports `workspace-test-ci` (webhook post-sync tests, logs). */
+export type WorkspaceTestCiStatus = 'none' | 'idle' | 'running' | 'failed' | 'passed'
+
+export type RuntimeHomeRepoWorkspaceTest = {
+  status: WorkspaceTestCiStatus
+  updatedAt?: string
+  exitCode?: number | null
+  /** True when `sbt-test.log` exists and can be fetched from the runtime. */
+  logAvailable?: boolean
+}
+
 export type RuntimeHomeRepo = {
   workspacePath: string
   workspaceName: string
-  probe?: { kind?: string }
+  probe?: { kind?: string; hasBuildSbt?: boolean; hasProjectDir?: boolean }
   lastOpenedAt?: string
   /** Present when registered via hosted Git clone (`POST /api/analysis/github`). */
   source?: 'github' | 'gitlab'
   repositoryUrl?: string
   gitRef?: string
+  workspaceTest?: RuntimeHomeRepoWorkspaceTest
 }
 
 export type RuntimeCourse = {
@@ -84,18 +96,12 @@ const props = withDefaults(
     starterCards?: StarterCard[]
     /** Present when opened from an IDE with `ideOpenUrl` (and related) query params. */
     ideSession?: TritonIdeSession | null
-    /** True when a workspace path is bound (URL or runtime tab) so runtime actions can run. */
-    runtimeWorkspaceActive?: boolean
-    /** Which runtime action is in flight (`''` when idle). */
-    runtimeActionBusy?: string
-    /** App status line (runtime actions, errors, hints). */
+    /** App status line (errors, hints). */
     statusMessage?: string
   }>(),
   {
     starterCards: () => [],
     ideSession: null,
-    runtimeWorkspaceActive: false,
-    runtimeActionBusy: '',
     statusMessage: '',
   },
 )
@@ -104,7 +110,7 @@ const emit = defineEmits<{
   openSbt: [payload: { workspacePath: string; workspaceName: string }]
   openPackages: [payload: { workspacePath: string; workspaceName: string }]
   selectExample: [selectionId: string]
-  runtimeWorkspaceAction: [payload: { action: 'refresh' | 'sbt-test' | 'sbt-coverage'; label: string }]
+  openWorkspaceTestLog: [payload: { workspacePath: string; workspaceName: string }]
 }>()
 
 const workspacePathInput = ref('')
@@ -132,6 +138,9 @@ const webhookCopyHint = ref('')
 const registeredGithubWebhooks = ref<RegisteredGithubWebhook[]>([])
 const webhookListError = ref('')
 const deletingWebhookKey = ref('')
+/** When true, show destructive Remove controls (courses, repos, webhooks). */
+const editMode = ref(false)
+const removingRepoKey = ref('')
 const selectedCourseId = ref('')
 const newCourseSlug = ref('')
 const newCourseTitle = ref('')
@@ -381,13 +390,7 @@ const starterCardTotal = computed(() => starterFoldSections.value.reduce((n, s) 
 
 const trimmedStatus = computed(() => (props.statusMessage ?? '').trim())
 
-const showContextBar = computed(
-  () => !!(props.ideSession || props.runtimeWorkspaceActive || trimmedStatus.value),
-)
-
-function onRuntimeWorkspaceAction(action: 'refresh' | 'sbt-test' | 'sbt-coverage', label: string): void {
-  emit('runtimeWorkspaceAction', { action, label })
-}
+const showContextBar = computed(() => !!(props.ideSession || trimmedStatus.value))
 
 function starterIconUrl(card: StarterCard): string {
   switch (card.kind) {
@@ -771,6 +774,76 @@ async function createCourseFromForm(): Promise<void> {
   }
 }
 
+function detachRepoKey(courseId: string, workspacePath: string): string {
+  return `course:${courseId}:${workspacePath}`
+}
+
+function recentRepoRemoveKey(workspacePath: string): string {
+  return `recent:${workspacePath}`
+}
+
+async function detachRepoFromCourse(course: RuntimeCourse, repo: RuntimeHomeRepo): Promise<void> {
+  cardError.value = ''
+  const key = detachRepoKey(course.id, repo.workspacePath)
+  removingRepoKey.value = key
+  try {
+    if (
+      !confirm(
+        `Remove «${repo.workspaceName}» from course «${course.title}»? Workspace folders are not deleted; only the course link on this runtime is removed.`,
+      )
+    ) {
+      return
+    }
+    const res = await fetch(`${base.value}/api/courses/detach-workspace`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ courseId: course.id, workspacePath: repo.workspacePath }),
+    })
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+    if (!res.ok || body.ok !== true) {
+      cardError.value = String(body.error || `Detach failed (${res.status}).`)
+      return
+    }
+    await fetchHome()
+  } catch (e) {
+    cardError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    removingRepoKey.value = ''
+  }
+}
+
+async function removeRepoFromRecentList(repo: RuntimeHomeRepo): Promise<void> {
+  cardError.value = ''
+  const key = recentRepoRemoveKey(repo.workspacePath)
+  removingRepoKey.value = key
+  try {
+    if (
+      !confirm(
+        `Remove «${repo.workspaceName}» from this list? Workspace folders are not deleted; only the runtime recent entry is removed.`,
+      )
+    ) {
+      return
+    }
+    const u = new URL(`${base.value}/api/home/recent-repo`)
+    u.searchParams.set('workspacePath', repo.workspacePath)
+    const res = await fetch(u.toString(), { method: 'DELETE' })
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+    if (!res.ok || body.ok !== true) {
+      cardError.value = String(body.error || `Remove failed (${res.status}).`)
+      return
+    }
+    sessionRepos.value = sessionRepos.value.filter((r) => r.workspacePath !== repo.workspacePath)
+    locallyAnalyzedPaths.value = new Set(
+      [...locallyAnalyzedPaths.value].filter((p) => p !== repo.workspacePath),
+    )
+    await fetchHome()
+  } catch (e) {
+    cardError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    removingRepoKey.value = ''
+  }
+}
+
 async function removeCourse(course: RuntimeCourse): Promise<void> {
   courseSubmitError.value = ''
   if (
@@ -963,6 +1036,67 @@ function repoCardIconUrl(repo: RuntimeHomeRepo): string {
   return stackedCubesIconUrl
 }
 
+function collectReposForHomePoll(model: RuntimeHomeModel | null): RuntimeHomeRepo[] {
+  if (!model) return []
+  const out: RuntimeHomeRepo[] = [...(model.recentRepos ?? [])]
+  for (const c of model.courses ?? []) {
+    out.push(...(c.workspaces ?? []))
+  }
+  return out
+}
+
+const homeCiPollTimer = ref<ReturnType<typeof setInterval> | null>(null)
+
+function stopHomeCiPoll(): void {
+  if (homeCiPollTimer.value != null) {
+    clearInterval(homeCiPollTimer.value)
+    homeCiPollTimer.value = null
+  }
+}
+
+function syncHomeCiPoll(): void {
+  const needs = collectReposForHomePoll(homeModel.value).some((r) => r.workspaceTest?.status === 'running')
+  if (!needs) {
+    stopHomeCiPoll()
+    return
+  }
+  if (homeCiPollTimer.value != null) return
+  homeCiPollTimer.value = setInterval(() => {
+    void fetchHome()
+  }, 4000)
+}
+
+function ciDotTitle(repo: RuntimeHomeRepo): string {
+  const wt = repo.workspaceTest
+  if (!wt) return 'Test status'
+  switch (wt.status) {
+    case 'none':
+      return 'No automated sbt tests (no build.sbt / project)'
+    case 'idle':
+      return wt.logAvailable ? 'Tests not run yet — click to open last log if present' : 'Tests not run yet'
+    case 'running':
+      return 'Tests running on server…'
+    case 'failed':
+      return 'Last test run failed — click to open log'
+    case 'passed':
+      return 'Last test run succeeded — click to open log'
+    default:
+      return 'Test status'
+  }
+}
+
+function ciDotClickable(repo: RuntimeHomeRepo): boolean {
+  const wt = repo.workspaceTest
+  if (!wt) return false
+  if (wt.status === 'running') return false
+  return wt.logAvailable === true
+}
+
+function onCiDotClick(repo: RuntimeHomeRepo): void {
+  if (!ciDotClickable(repo)) return
+  emit('openWorkspaceTestLog', { workspacePath: repo.workspacePath, workspaceName: repo.workspaceName })
+}
+
 /** Infer persisted source for the session card before `/api/home` returns stored metadata. */
 function remoteSourceFromRepositoryUrl(url: string | undefined): 'github' | 'gitlab' {
   const u = String(url || '').trim()
@@ -986,52 +1120,51 @@ onMounted(() => {
   void fetchHome()
 })
 
+onUnmounted(() => {
+  stopHomeCiPoll()
+})
+
 watch(
   () => props.runtimeBaseUrl,
   () => {
     void fetchHome()
   },
 )
+
+watch(
+  homeModel,
+  () => {
+    syncHomeCiPoll()
+  },
+  { deep: true },
+)
 </script>
 
 <template>
   <div class="runtime-home">
     <div class="runtime-home__inner">
+      <div class="runtime-home__top-tools">
+        <label class="runtime-home__edit-switch" for="runtime-home-edit-toggle">
+          <span class="runtime-home__edit-switch-text">Edit</span>
+          <input
+            id="runtime-home-edit-toggle"
+            v-model="editMode"
+            type="checkbox"
+            class="runtime-home__edit-switch-input"
+            role="switch"
+            :aria-checked="editMode"
+          />
+          <span class="runtime-home__edit-switch-track" aria-hidden="true" />
+        </label>
+      </div>
+
       <div v-if="showContextBar" class="runtime-home__context-bar">
-        <div class="runtime-home__context-row">
-          <div v-if="ideSession" class="runtime-home__ide-chip" :title="ideSession.ideOpenUrl">
-            <div class="runtime-home__ide-chip-main">
-              <span class="runtime-home__ide-chip-label">Connected to {{ ideSession.ideName }}</span>
-              <span v-if="ideSession.workspaceName" class="runtime-home__ide-chip-meta">{{ ideSession.workspaceName }}</span>
-            </div>
-            <div v-if="ideSession.activeFile" class="runtime-home__ide-chip-file">{{ ideSession.activeFile }}</div>
+        <div v-if="ideSession" class="runtime-home__ide-chip" :title="ideSession.ideOpenUrl">
+          <div class="runtime-home__ide-chip-main">
+            <span class="runtime-home__ide-chip-label">Connected to {{ ideSession.ideName }}</span>
+            <span v-if="ideSession.workspaceName" class="runtime-home__ide-chip-meta">{{ ideSession.workspaceName }}</span>
           </div>
-          <div v-if="runtimeWorkspaceActive" class="runtime-home__ctx-actions">
-            <button
-              type="button"
-              class="runtime-home__ctx-btn"
-              :disabled="!!runtimeActionBusy"
-              @click="onRuntimeWorkspaceAction('refresh', 'Refreshing workspace')"
-            >
-              {{ runtimeActionBusy === 'refresh' ? 'Refreshing…' : 'Refresh workspace' }}
-            </button>
-            <button
-              type="button"
-              class="runtime-home__ctx-btn"
-              :disabled="!!runtimeActionBusy"
-              @click="onRuntimeWorkspaceAction('sbt-test', 'Running sbt test')"
-            >
-              {{ runtimeActionBusy === 'sbt-test' ? 'Running tests…' : 'Run sbt test' }}
-            </button>
-            <button
-              type="button"
-              class="runtime-home__ctx-btn"
-              :disabled="!!runtimeActionBusy"
-              @click="onRuntimeWorkspaceAction('sbt-coverage', 'Running coverage')"
-            >
-              {{ runtimeActionBusy === 'sbt-coverage' ? 'Running coverage…' : 'Run coverage' }}
-            </button>
-          </div>
+          <div v-if="ideSession.activeFile" class="runtime-home__ide-chip-file">{{ ideSession.activeFile }}</div>
         </div>
         <p v-if="trimmedStatus" class="runtime-home__status-line">{{ trimmedStatus }}</p>
       </div>
@@ -1087,53 +1220,6 @@ watch(
           <strong>Persistence</strong>
           <div class="runtime-home__mono">{{ homeModel.runtime.persistenceBackend }}</div>
         </div>
-      </section>
-
-      <section v-if="runtimeSupportsWebhooks && homeModel?.runtime" class="runtime-home__card">
-        <h2 class="runtime-home__actions-title">GitHub push webhooks</h2>
-        <p class="runtime-home__add-lead runtime-home__hint-block">
-          After you clone a repo with <strong>Add new repo</strong>, register it here so pushes trigger a pull on this runtime.
-          Use your tunnel URL in <code>TRITON_PUBLIC_RUNTIME_URL</code> so the payload URL is correct. GitHub → repo → Settings → Webhooks:
-          paste <strong>Payload URL</strong> and <strong>Secret</strong> from the dialog below.
-        </p>
-        <label class="runtime-home__label" for="runtime-webhook-admin-bearer">Webhook admin token (optional)</label>
-        <input
-          id="runtime-webhook-admin-bearer"
-          v-model="webhookAdminBearerInput"
-          class="runtime-home__input"
-          type="password"
-          autocomplete="off"
-          placeholder="Bearer value — only if TRITON_WEBHOOK_ADMIN_TOKEN is set on the runtime"
-        />
-        <p class="runtime-home__hint runtime-home__hint--field">
-          Leave empty for typical local Docker (admin routes open). Required on servers that set the env var.
-        </p>
-        <div class="runtime-home__webhook-toolbar">
-          <button type="button" class="runtime-home__btn runtime-home__btn--primary" @click="openGithubWebhookDialog()">
-            Register repository…
-          </button>
-          <button type="button" class="runtime-home__btn" @click="void fetchWebhookRegistrations()">Refresh webhook list</button>
-        </div>
-        <p v-if="webhookListError" class="runtime-home__error">{{ webhookListError }}</p>
-        <p v-if="!registeredGithubWebhooks.length && !webhookListError" class="runtime-home__hint">
-          No repositories registered for webhooks yet.
-        </p>
-        <ul v-else-if="registeredGithubWebhooks.length" class="runtime-home__webhook-list">
-          <li v-for="row in registeredGithubWebhooks" :key="row.canonicalRepositoryUrl" class="runtime-home__webhook-li">
-            <div class="runtime-home__webhook-li-main">
-              <code class="runtime-home__webhook-repo">{{ row.canonicalRepositoryUrl }}</code>
-              <span class="runtime-home__muted">branch {{ row.branch }} · {{ row.workspaceName }}</span>
-            </div>
-            <button
-              type="button"
-              class="runtime-home__btn runtime-home__btn--small"
-              :disabled="!!deletingWebhookKey"
-              @click="void deleteRegisteredGithubWebhook(row)"
-            >
-              {{ deletingWebhookKey === row.canonicalRepositoryUrl ? 'Removing…' : 'Remove' }}
-            </button>
-          </li>
-        </ul>
       </section>
 
       <section
@@ -1199,6 +1285,67 @@ watch(
         </div>
       </section>
 
+      <details
+        v-if="runtimeSupportsWebhooks && homeModel?.runtime"
+        class="runtime-home__card runtime-home__fold--webhooks"
+      >
+        <summary class="runtime-home__fold-summary">
+          <span class="runtime-home__fold-title">GitHub push webhooks</span>
+          <span class="runtime-home__fold-count">{{ registeredGithubWebhooks.length }}</span>
+        </summary>
+        <div class="runtime-home__fold-body">
+          <p class="runtime-home__hint runtime-home__hint-block">
+            After each successful sync, the server runs <code>sbt</code> (<code>coverage;test;coverageReport</code> by default),
+            writes <code>sbt-test.log</code>, and shows status on each repo card (coloured dot). Set
+            <code>TRITON_WEBHOOK_POST_SYNC_TESTS=0</code> on the runtime to disable.
+          </p>
+          <p class="runtime-home__add-lead runtime-home__hint-block">
+            After you clone a repo with <strong>Add new repo</strong>, register it here so pushes trigger a pull on this runtime.
+            Use your tunnel URL in <code>TRITON_PUBLIC_RUNTIME_URL</code> so the payload URL is correct. GitHub → repo → Settings → Webhooks:
+            paste <strong>Payload URL</strong> and <strong>Secret</strong> from the dialog below.
+          </p>
+          <label class="runtime-home__label" for="runtime-webhook-admin-bearer">Webhook admin token (optional)</label>
+          <input
+            id="runtime-webhook-admin-bearer"
+            v-model="webhookAdminBearerInput"
+            class="runtime-home__input"
+            type="password"
+            autocomplete="off"
+            placeholder="Bearer value — only if TRITON_WEBHOOK_ADMIN_TOKEN is set on the runtime"
+          />
+          <p class="runtime-home__hint runtime-home__hint--field">
+            Leave empty for typical local Docker (admin routes open). Required on servers that set the env var.
+          </p>
+          <div class="runtime-home__webhook-toolbar">
+            <button type="button" class="runtime-home__btn runtime-home__btn--primary" @click="openGithubWebhookDialog()">
+              Register repository…
+            </button>
+            <button type="button" class="runtime-home__btn" @click="void fetchWebhookRegistrations()">Refresh webhook list</button>
+          </div>
+          <p v-if="webhookListError" class="runtime-home__error">{{ webhookListError }}</p>
+          <p v-if="!registeredGithubWebhooks.length && !webhookListError" class="runtime-home__hint">
+            No repositories registered for webhooks yet.
+          </p>
+          <ul v-else-if="registeredGithubWebhooks.length" class="runtime-home__webhook-list">
+            <li v-for="row in registeredGithubWebhooks" :key="row.canonicalRepositoryUrl" class="runtime-home__webhook-li">
+              <div class="runtime-home__webhook-li-main">
+                <code class="runtime-home__webhook-repo">{{ row.canonicalRepositoryUrl }}</code>
+                <span class="runtime-home__muted">branch {{ row.branch }} · {{ row.workspaceName }}</span>
+              </div>
+              <button
+                v-if="editMode"
+                type="button"
+                class="runtime-home__btn runtime-home__btn--small"
+                :disabled="!!deletingWebhookKey"
+                @click="void deleteRegisteredGithubWebhook(row)"
+              >
+                {{ deletingWebhookKey === row.canonicalRepositoryUrl ? 'Removing…' : 'Remove' }}
+              </button>
+            </li>
+          </ul>
+        </div>
+      </details>
+
       <section v-if="showCoursesSection" class="runtime-home__card">
         <div
           v-if="!runtimeSupportsCourses"
@@ -1239,9 +1386,10 @@ watch(
               <span class="runtime-home__fold-count">{{ course.workspaces?.length ?? 0 }}</span>
             </span>
             <button
+              v-if="editMode && runtimeSupportsCourses"
               type="button"
               class="runtime-home__course-del"
-              :disabled="!runtimeSupportsCourses || !!deletingCourseId || courseFormBusy"
+              :disabled="!!deletingCourseId || courseFormBusy"
               @click.prevent.stop="void removeCourse(course)"
             >
               {{ deletingCourseId === course.id ? 'Removing…' : 'Remove' }}
@@ -1256,6 +1404,16 @@ watch(
                 </div>
                 <div class="repo-card__body">
                   <div class="repo-card__title-row">
+                    <button
+                      v-if="repo.workspaceTest"
+                      type="button"
+                      class="repo-card__ci-dot"
+                      :class="`repo-card__ci-dot--${repo.workspaceTest.status}`"
+                      :disabled="!ciDotClickable(repo)"
+                      :title="ciDotTitle(repo)"
+                      :aria-label="ciDotTitle(repo)"
+                      @click.prevent.stop="onCiDotClick(repo)"
+                    />
                     <h3 class="repo-card__title">{{ repo.workspaceName }}</h3>
                     <span v-if="repo.source === 'github'" class="repo-card__pill repo-card__pill--github">GitHub</span>
                     <span v-if="repo.source === 'gitlab'" class="repo-card__pill repo-card__pill--gitlab">GitLab</span>
@@ -1312,6 +1470,19 @@ watch(
                         "
                       >
                         Webhook…
+                      </button>
+                    </template>
+                    <template v-if="editMode && runtimeSupportsCourses">
+                      <span class="repo-card__sep" aria-hidden="true">·</span>
+                      <button
+                        type="button"
+                        class="repo-card__link repo-card__link--danger"
+                        :disabled="!!removingRepoKey || !!analyzingPath || !!syncingGithubPath"
+                        @click.prevent.stop="void detachRepoFromCourse(course, repo)"
+                      >
+                        {{
+                          removingRepoKey === detachRepoKey(course.id, repo.workspacePath) ? 'Removing…' : 'Remove'
+                        }}
                       </button>
                     </template>
                     <span v-if="analyzingPath === repo.workspacePath" class="repo-card__busy" aria-live="polite">
@@ -1634,6 +1805,16 @@ watch(
             </div>
             <div class="repo-card__body">
               <div class="repo-card__title-row">
+                <button
+                  v-if="repo.workspaceTest"
+                  type="button"
+                  class="repo-card__ci-dot"
+                  :class="`repo-card__ci-dot--${repo.workspaceTest.status}`"
+                  :disabled="!ciDotClickable(repo)"
+                  :title="ciDotTitle(repo)"
+                  :aria-label="ciDotTitle(repo)"
+                  @click.prevent.stop="onCiDotClick(repo)"
+                />
                 <h3 class="repo-card__title">{{ repo.workspaceName }}</h3>
                 <span v-if="repo.source === 'github'" class="repo-card__pill repo-card__pill--github">GitHub</span>
                 <span v-if="repo.source === 'gitlab'" class="repo-card__pill repo-card__pill--gitlab">GitLab</span>
@@ -1691,6 +1872,19 @@ watch(
                     "
                   >
                     Webhook…
+                  </button>
+                </template>
+                <template v-if="editMode">
+                  <span class="repo-card__sep" aria-hidden="true">·</span>
+                  <button
+                    type="button"
+                    class="repo-card__link repo-card__link--danger"
+                    :disabled="!!removingRepoKey || !!analyzingPath || !!syncingGithubPath"
+                    @click.prevent.stop="void removeRepoFromRecentList(repo)"
+                  >
+                    {{
+                      removingRepoKey === recentRepoRemoveKey(repo.workspacePath) ? 'Removing…' : 'Remove'
+                    }}
                   </button>
                 </template>
                 <span v-if="analyzingPath === repo.workspacePath" class="repo-card__busy" aria-live="polite">
@@ -1764,18 +1958,69 @@ watch(
   display: grid;
   gap: 22px;
 }
+.runtime-home__top-tools {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 28px;
+}
+.runtime-home__edit-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+.runtime-home__edit-switch-text {
+  line-height: 1;
+}
+.runtime-home__edit-switch-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.runtime-home__edit-switch-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: background 0.15s ease;
+}
+.runtime-home__edit-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
+  transition: transform 0.15s ease;
+}
+.runtime-home__edit-switch-input:checked + .runtime-home__edit-switch-track {
+  background: #0d9488;
+}
+.runtime-home__edit-switch-input:checked + .runtime-home__edit-switch-track::after {
+  transform: translateX(18px);
+}
+.runtime-home__edit-switch-input:focus-visible + .runtime-home__edit-switch-track {
+  outline: 2px solid #0ea5e9;
+  outline-offset: 2px;
+}
 .runtime-home__context-bar {
   border: 1px solid #e2e8f0;
   border-radius: 12px;
   padding: 12px 14px;
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 2px 12px rgba(15, 23, 42, 0.04);
-}
-.runtime-home__context-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 14px;
 }
 .runtime-home__ide-chip {
   display: flex;
@@ -1811,39 +2056,17 @@ watch(
   color: #475569;
   font-weight: 500;
 }
-.runtime-home__ctx-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-}
-.runtime-home__ctx-btn {
-  border: 1px solid #cbd5e1;
-  background: #fff;
-  border-radius: 8px;
-  padding: 7px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #0f172a;
-  cursor: pointer;
-  font-family: inherit;
-}
-.runtime-home__ctx-btn:hover:not(:disabled) {
-  background: #f1f5f9;
-}
-.runtime-home__ctx-btn:disabled {
-  cursor: wait;
-  opacity: 0.65;
-}
 .runtime-home__status-line {
-  margin: 10px 0 0;
-  padding-top: 8px;
-  border-top: 1px solid #f1f5f9;
+  margin: 0;
   font-size: 13px;
   line-height: 1.45;
   color: #475569;
   word-break: break-word;
+}
+.runtime-home__context-bar > .runtime-home__status-line:not(:first-child) {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #f1f5f9;
 }
 .runtime-home__hero-heading {
   display: flex;
@@ -2087,6 +2310,20 @@ watch(
 .runtime-home__fold--course {
   margin-top: 12px;
 }
+/** Card-style `<details>` for webhooks (single border; fold summary/body padding). */
+.runtime-home__fold--webhooks {
+  padding: 0;
+}
+.runtime-home__fold--webhooks > .runtime-home__fold-summary {
+  padding: 18px 22px;
+}
+.runtime-home__fold--webhooks > .runtime-home__fold-body {
+  padding: 0 22px 20px;
+  border-top: 1px solid #f1f5f9;
+}
+.runtime-home__fold--webhooks > .runtime-home__fold-body > :first-child {
+  margin-top: 0;
+}
 .runtime-home__course-summary {
   align-items: center;
 }
@@ -2241,6 +2478,41 @@ watch(
   gap: 8px;
   flex-wrap: wrap;
 }
+
+.repo-card__ci-dot {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  align-self: center;
+}
+
+.repo-card__ci-dot:disabled {
+  cursor: default;
+  opacity: 0.88;
+}
+
+.repo-card__ci-dot--none,
+.repo-card__ci-dot--idle {
+  background: #9ca3af;
+}
+
+.repo-card__ci-dot--running {
+  background: #ca8a04;
+  box-shadow: 0 0 0 2px rgba(234, 179, 8, 0.35);
+}
+
+.repo-card__ci-dot--failed {
+  background: #dc2626;
+}
+
+.repo-card__ci-dot--passed {
+  background: #16a34a;
+}
+
 .repo-card__title {
   margin: 0;
   font-size: 16px;
@@ -2328,6 +2600,14 @@ watch(
 .repo-card__link:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+.repo-card__link--danger {
+  color: #b91c1c;
+  font-weight: 700;
+}
+.repo-card__link--danger:hover:not(:disabled) {
+  color: #991b1b;
+  text-decoration: underline;
 }
 .repo-card__sep {
   color: #cbd5e1;

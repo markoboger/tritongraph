@@ -26,10 +26,21 @@ const PRESET_TEMPLATES: Record<string, string> = {
   cursor: 'cursor://file/{absPath}:{line}:{col}',
   vscode: 'vscode://file/{absPath}:{line}:{col}',
   'vscode-insiders': 'vscode-insiders://file/{absPath}:{line}:{col}',
+  windsurf: 'windsurf://file/{absPath}:{line}:{col}',
   // IntelliJ family uses a query-string scheme (JetBrains Toolbox / IDE built-in handler).
   idea: 'idea://open?file={absPath}&line={line}&column={col}',
   zed: 'zed://file/{absPath}:{line}:{col}',
 }
+
+/** Presets exposed for saved user preference ({@link editor/src/store/editorLinkPreference.ts}). */
+export const EXTERNAL_EDITOR_SCHEME_TEMPLATES = {
+  cursor: PRESET_TEMPLATES.cursor,
+  vscode: PRESET_TEMPLATES.vscode,
+  'vscode-insiders': PRESET_TEMPLATES['vscode-insiders'],
+  windsurf: PRESET_TEMPLATES.windsurf,
+} as const
+
+export type ExternalEditorSchemeId = keyof typeof EXTERNAL_EDITOR_SCHEME_TEMPLATES
 
 /** Fallback when neither `urlTemplate` nor a recognised `name` is present in the YAML. */
 const FALLBACK_TEMPLATE = PRESET_TEMPLATES.cursor
@@ -99,20 +110,26 @@ function interpolate(
 }
 
 /**
+ * Open using an explicit URL template (e.g. saved user preference). Same interpolation tokens as
+ * {@link openInEditor}.
+ */
+export function openInEditorWithTemplate(target: OpenInEditorTarget, template: string): string {
+  const line = Math.max(1, target.line ?? 1)
+  const col = Math.max(1, target.col ?? 1)
+  const absPath = buildAbsPath(target)
+  const url = interpolate(template, target, absPath, line, col)
+  if (typeof window !== 'undefined') {
+    window.location.href = url
+  }
+  return url
+}
+
+/**
  * Open {@link OpenInEditorTarget} in the configured external editor.
  * Returns the URL that was dispatched, for logging / test assertions.
  */
 export function openInEditor(target: OpenInEditorTarget): string {
-  const line = Math.max(1, target.line ?? 1)
-  const col = Math.max(1, target.col ?? 1)
-  const absPath = buildAbsPath(target)
-  const url = interpolate(resolveTemplate(), target, absPath, line, col)
-  if (typeof window !== 'undefined') {
-    // Using `location.href` (not `window.open`) so the protocol handler fires without
-    // triggering popup-blocker heuristics that some browsers apply to non-http schemes.
-    window.location.href = url
-  }
-  return url
+  return openInEditorWithTemplate(target, resolveTemplate())
 }
 
 /** Human-readable name for tooltips (`Open in Cursor`). Falls back to 'external editor'. */
@@ -123,6 +140,7 @@ export function editorDisplayName(): string {
     cursor: 'Cursor',
     vscode: 'VS Code',
     'vscode-insiders': 'VS Code Insiders',
+    windsurf: 'Windsurf',
     idea: 'IntelliJ IDEA',
     zed: 'Zed',
   }

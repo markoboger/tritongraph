@@ -14,7 +14,7 @@ import {
   setInnerArtefactPinnedMap,
 } from '../../store/overlayStore'
 import { TRITON_WORKSPACE_FLOW_ID } from '../../graph/tritonVueFlowId'
-import { openInEditor } from '../../openInEditor'
+import { openInEditor, type OpenInEditorTarget } from '../../openInEditor'
 import type { Ref } from 'vue'
 import DiagramFlowNode from './DiagramFlowNode.vue'
 import PackageBox, {
@@ -183,6 +183,8 @@ const emitLinkAction = inject<((nodeId: string, href: string) => void) | undefin
   undefined,
 )
 
+const requestEditorOpen = inject<(t: OpenInEditorTarget) => void>('tritonRequestEditorOpen', (t) => openInEditor(t))
+
 function onLinkAction(href: string) {
   emitLinkAction?.(props.id, href)
 }
@@ -208,7 +210,7 @@ function triggerOpenInEditor(line?: number): void {
   const effectiveRow = line !== undefined ? line : (props.data.sourceRow ?? 0)
   const ex = activeExampleRef?.value
   const rt = activeRuntimeWorkspaceRef?.value
-  openInEditor(
+  requestEditorOpen(
     ex
       ? {
           root: ex.root,

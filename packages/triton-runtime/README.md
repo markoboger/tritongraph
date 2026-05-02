@@ -16,11 +16,12 @@ Current MVP scaffold:
   - discovered repositories under configured workspace roots
   - recent repositories that can be reopened with one click
 - local repo validation via `TRITON_ALLOWED_REPO_ROOTS` (hosted Git clones are stored under `TRITON_GIT_CACHE_ROOT` and are allowed when roots are configured; otherwise the same “no root list” rules apply as for local paths)
-- home data endpoint at `GET /api/home`
+- home data endpoint at `GET /api/home` (and `DELETE /api/home/recent-repo` to forget one recent path)
 - local analysis launch endpoint at `POST /api/analysis/local`
 - Hosted Git registration at `POST /api/analysis/github` (**GitHub** or **GitLab** HTTPS URLs — shallow clone or **incremental fetch** if the repo already exists under `TRITON_GIT_CACHE_ROOT`; route name unchanged for compatibility)
 - Sync at `POST /api/workspace/github/sync` (same body as registration; updates an existing cached clone via `git fetch` / `git pull`)
 - source-file endpoint at `GET /api/workspace/source`
+- test log endpoint at `GET /api/workspace/test-log` (newest `sbt-test.log`, same discovery as the bundle)
 - workspace bundle endpoint that discovers live local inputs:
   - `build.sbt`
   - Scala source files
@@ -121,6 +122,8 @@ Goal: **courses / projects / webhooks** need durable storage on the server witho
 | `GET` | `/api/courses` | `{ "ok": true, "courses": [...] }` — lightweight list (no workspaces). |
 | `POST` | `/api/courses` | JSON `{ "slug", "title", "term?" }` → `{ "ok": true, "course": { id, slug, title, ... } }`. Errors: `course_slug_required`, `course_title_required`, `course_slug_exists`. |
 | `DELETE` | `/api/courses/:id` | Removes the course and its workspace links (not the repo folders). |
+| `POST` | `/api/courses/detach-workspace` | JSON `{ "courseId", "workspacePath" }` — removes that workspace from the course only (`course_workspace_not_found` if no link). |
+| `DELETE` | `/api/home/recent-repo?workspacePath=…` | Drops one row from the runtime recent-repo list (does not delete files). |
 
 Optional JSON field **`courseId`** on **`POST /api/analysis/local`** and **`POST /api/analysis/github`** (and accepted on **`POST /api/workspace/github/sync`** before clone/sync): must reference an existing course or the handler returns **`course_not_found`**. After a successful registration, the workspace is linked to that course.
 
@@ -140,6 +143,15 @@ To use **file** persistence in Compose instead, comment those env lines and unco
 | `GET` | `/api/webhooks/github/repos` | Lists registrations (no secrets). |
 
 When **`TRITON_WEBHOOK_ADMIN_TOKEN`** is set, register/delete/repos require **`Authorization: Bearer …`**. Local HTTPS tunnels: [docs/webhooks-development.md](../../docs/webhooks-development.md).
+
+**Post-sync CI tests:** After a **`push`** webhook finishes **`git fetch`/sync** successfully, the runtime schedules a background **`sbt`** run (same mechanism as the workspace action). Defaults:
+
+- **`TRITON_WEBHOOK_POST_SYNC_TESTS`** — `1` (set to `0` / `false` / `no` to disable).
+- **`TRITON_WEBHOOK_POST_SYNC_SBT`** — `coverage;test;coverageReport` (instrumented tests + HTML/XML coverage for Triton).
+- **`TRITON_WEBHOOK_SBT_EXECUTABLE`** — `sbt`.
+- **`TRITON_WEBHOOK_TEST_STALE_MS`** — after this duration a row still marked **`running`** is reconciled to **failed** (default **45 minutes**).
+
+Logs are written to **`sbt-test.log`** at the workspace root. **`GET /api/workspace/test-log?workspacePath=…`** returns the newest log (same discovery as the workspace bundle). Status per workspace is stored in **`workspace-test-status.json`** under **`TRITON_RUNTIME_STATE_DIR`**. **`GET /api/home`** annotates each repo with **`workspaceTest`** (`none` \| `idle` \| `running` \| `failed` \| `passed`) for the editor home cards.
 
 Near-term next steps:
 

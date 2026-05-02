@@ -166,6 +166,13 @@ function createPostgresPersistence(config) {
       )
     },
 
+    async removeRecentRepository(workspacePath) {
+      const wp = String(workspacePath || '').trim()
+      if (!wp) return { ok: false, error: 'missing_workspace_path' }
+      await pool.query(`DELETE FROM triton_recent_repos WHERE workspace_path = $1`, [wp])
+      return { ok: true }
+    },
+
     async listCourses() {
       const r = await pool.query(
         `SELECT id, slug, title, term, created_at FROM triton_courses ORDER BY title ASC`,
@@ -248,6 +255,18 @@ function createPostgresPersistence(config) {
            linked_at = NOW()`,
         [courseId, workspacePath, wn, repositoryUrl, gitRef, source],
       )
+      return { ok: true }
+    },
+
+    async detachWorkspaceFromCourse(row) {
+      const courseId = String(row.courseId || '').trim()
+      const workspacePath = String(row.workspacePath || '').trim()
+      if (!courseId || !workspacePath) return { ok: false, error: 'course_and_path_required' }
+      const r = await pool.query(
+        `DELETE FROM triton_course_workspaces WHERE course_id = $1 AND workspace_path = $2`,
+        [courseId, workspacePath],
+      )
+      if (r.rowCount === 0) return { ok: false, error: 'course_workspace_not_found' }
       return { ok: true }
     },
 

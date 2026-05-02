@@ -127,6 +127,31 @@ function createFilePersistence(config) {
       writeJsonFile(fp(), filtered.slice(0, RECENT_LIMIT))
     },
 
+    async removeRecentRepository(workspacePath) {
+      const wp = String(workspacePath || '').trim()
+      if (!wp) return { ok: false, error: 'missing_workspace_path' }
+      const raw = readJsonFile(fp(), [])
+      if (!Array.isArray(raw)) return { ok: true }
+      const next = raw.filter((e) => String(e && e.workspacePath).trim() !== wp)
+      writeJsonFile(fp(), next)
+      return { ok: true }
+    },
+
+    async detachWorkspaceFromCourse(row) {
+      const courseId = String(row.courseId || '').trim()
+      const workspacePath = String(row.workspacePath || '').trim()
+      if (!courseId || !workspacePath) return { ok: false, error: 'course_and_path_required' }
+      const state = readDirectoryState(config)
+      const nextLinks = state.courseWorkspaces.filter(
+        (l) => !(String(l.courseId) === courseId && String(l.workspacePath).trim() === workspacePath),
+      )
+      if (nextLinks.length === state.courseWorkspaces.length) {
+        return { ok: false, error: 'course_workspace_not_found' }
+      }
+      writeDirectoryState(config, { courses: state.courses, courseWorkspaces: nextLinks })
+      return { ok: true }
+    },
+
     async listCourses() {
       const { courses } = readDirectoryState(config)
       return [...courses].sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')))

@@ -1,7 +1,7 @@
 import { computed, inject, onScopeDispose, ref, type Ref } from 'vue'
 import type { TritonInnerArtefactSpec } from '../../ilograph/types'
 import { boxColorForId, nextNamedBoxColor } from '../../graph/boxColors'
-import { openInEditor } from '../../openInEditor'
+import { openInEditor, type OpenInEditorTarget } from '../../openInEditor'
 import { getScalaCoverage, onScalaCoverageChanged } from '../../store/overlayStore'
 import { simulatedMetricsForBox } from '../common/boxMetricDemo'
 
@@ -25,6 +25,10 @@ export function useInnerArtefactState(options: InnerArtefactStateOptions) {
   )
   const workspaceKeyRef = inject<Ref<string>>('tritonWorkspaceKey', ref(''))
 
+  const requestEditorOpen = inject<(t: OpenInEditorTarget) => void>('tritonRequestEditorOpen', (t) =>
+    openInEditor(t),
+  )
+
   const innerCoverageVersion = ref(0)
   const offInnerCoverage = onScalaCoverageChanged(() => {
     innerCoverageVersion.value += 1
@@ -47,7 +51,7 @@ export function useInnerArtefactState(options: InnerArtefactStateOptions) {
     const effectiveRow = line !== undefined ? line : (cell.sourceRow ?? 0)
     const ex = activeExampleRef?.value
     const rt = activeRuntimeWorkspaceRef?.value
-    openInEditor(
+    requestEditorOpen(
       ex
         ? {
             root: ex.root,

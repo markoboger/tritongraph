@@ -17,7 +17,7 @@ const IGNORED_DIRS = new Set([
   'out',
 ])
 const REPO_DISCOVERY_MAX_DEPTH = 3
-const RUNTIME_VERSION = '0.7.1'
+const RUNTIME_VERSION = '0.7.3'
 
 function applyCorsHeaders(res) {
   res.setHeader('access-control-allow-origin', '*')
@@ -26,7 +26,7 @@ function applyCorsHeaders(res) {
 }
 
 function runtimeCapabilities(config) {
-  const caps = ['analysis-local', 'analysis-github', 'github-sync']
+  const caps = ['analysis-local', 'analysis-github', 'github-sync', 'workspace-test-ci']
   if (typeof config.persistence.listCourses === 'function') caps.push('courses-api')
   if (
     typeof config.persistence.registerRepoWebhook === 'function' &&
@@ -343,6 +343,136 @@ function filterOrphanRecentRepos(recentList, coursesPayload) {
   return recentList.filter((r) => !assigned.has(String(r.workspacePath || '').trim()))
 }
 
+/** Prevents overlapping sbt runs per workspace after GitHub push webhooks. */
+const WEBHOOK_TEST_RUN_LOCKS = new Set()
+
+function webhookTestStaleRunningMs() {
+  const raw = String(process.env.TRITON_WEBHOOK_TEST_STALE_MS || '').trim()
+  const n = raw ? Number(raw) : NaN
+  if (Number.isFinite(n) && n > 0) return n
+  return 45 * 60 * 1000
+}
+
+function workspaceTestStatusFile(config) {
+  return path.join(config.stateDir, 'workspace-test-status.json')
+}
+
+function readWorkspaceTestStatusMap(config) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(workspaceTestStatusFile(config), 'utf8'))
+    return raw && typeof raw === 'object' && raw.byPath && typeof raw.byPath === 'object' ? { ...raw.byPath } : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeWorkspaceTestStatusMap(config, byPath) {
+  ensureDirSync(config.stateDir)
+  fs.writeFileSync(workspaceTestStatusFile(config), JSON.stringify({ byPath }, null, 2))
+}
+
+function updateWorkspaceTestEntry(config, workspacePath, patch) {
+  const key = String(workspacePath || '').trim()
+  if (!key) return
+  const map = readWorkspaceTestStatusMap(config)
+  const prev = map[key] || {}
+  map[key] = {
+    ...prev,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  }
+  writeWorkspaceTestStatusMap(config, map)
+}
+
+function reconcileStaleRunningTests(config) {
+  const threshold = webhookTestStaleRunningMs()
+  const map = readWorkspaceTestStatusMap(config)
+  let dirty = false
+  for (const [p, row] of Object.entries(map)) {
+    if (!row || row.status !== 'running') continue
+    const started = row.startedAt ? new Date(row.startedAt).getTime() : 0
+    if (started && Date.now - started > threshold) {
+      map[p] = {
+        ...row,
+        status: 'failed',
+        exitCode: row.exitCode ?? null,
+        startedAt: undefined,
+        failedReason: 'stale_running_timeout',
+        updatedAt: new Date().toISOString(),
+      }
+      WEBHOOK_TEST_RUN_LOCKS.delete(p)
+      dirty = true
+    }
+  }
+  if (dirty) writeWorkspaceTestStatusMap(config, map)
+}
+
+function workspaceRootHasSbtTestLog(workspacePath) {
+  const root = String(workspacePath || '').trim()
+  if (!root) return false
+  try {
+    return fs.statSync(path.join(root, 'sbt-test.log')).isFile()
+  } catch {
+    return false
+  }
+}
+
+function workspaceTestsCanRun(probe) {
+  return !!(probe && (probe.hasBuildSbt || probe.hasProjectDir))
+}
+
+function deriveWorkspaceTestFields(workspacePath, stored, probe) {
+  const hasLog = workspaceRootHasSbtTestLog(workspacePath)
+  const canRun = workspaceTestsCanRun(probe)
+  if (!canRun) {
+    return {
+      status: 'none',
+      updatedAt: stored?.updatedAt,
+      exitCode: stored?.exitCode ?? null,
+      logAvailable: false,
+    }
+  }
+  if (!stored || !stored.status) {
+    return {
+      status: 'idle',
+      updatedAt: undefined,
+      exitCode: null,
+      logAvailable: hasLog,
+    }
+  }
+  if (stored.status === 'running') {
+    const started = stored.startedAt ? new Date(stored.startedAt).getTime() : 0
+    if (started && Date.now - started > webhookTestStaleRunningMs()) {
+      return {
+        status: 'failed',
+        updatedAt: stored.updatedAt,
+        exitCode: stored.exitCode ?? null,
+        logAvailable: hasLog,
+      }
+    }
+    return {
+      status: 'running',
+      updatedAt: stored.updatedAt,
+      exitCode: null,
+      logAvailable: false,
+    }
+  }
+  return {
+    status: stored.status,
+    updatedAt: stored.updatedAt,
+    exitCode: stored.exitCode ?? null,
+    logAvailable: hasLog && stored.status !== 'running',
+  }
+}
+
+function augmentRepoRowWithWorkspaceTest(repo, config) {
+  const probe = repo.probe || probeWorkspace(repo.workspacePath)
+  const map = readWorkspaceTestStatusMap(config)
+  const stored = map[repo.workspacePath]
+  const workspaceTest = deriveWorkspaceTestFields(repo.workspacePath, stored, probe)
+  return { ...repo, probe, workspaceTest }
+}
+
 async function rememberRecentRepo(config, workspacePath, workspaceName, extras = {}) {
   const row = {
     workspacePath,
@@ -423,7 +553,12 @@ function discoverAllowedRepos(config) {
 }
 
 async function apiHomeModel(config) {
-  const courses = await loadCoursesForHome(config)
+  reconcileStaleRunningTests(config)
+  const coursesRaw = await loadCoursesForHome(config)
+  const courses = coursesRaw.map((c) => ({
+    ...c,
+    workspaces: (c.workspaces || []).map((w) => augmentRepoRowWithWorkspaceTest(w, config)),
+  }))
   const recentAll = await loadRecentReposForHome(config)
   return {
     ok: true,
@@ -438,8 +573,8 @@ async function apiHomeModel(config) {
       version: RUNTIME_VERSION,
     },
     courses,
-    recentRepos: filterOrphanRecentRepos(recentAll, courses),
-    discoveredRepos: discoverAllowedRepos(config),
+    recentRepos: filterOrphanRecentRepos(recentAll, courses).map((r) => augmentRepoRowWithWorkspaceTest(r, config)),
+    discoveredRepos: discoverAllowedRepos(config).map((r) => augmentRepoRowWithWorkspaceTest(r, config)),
   }
 }
 
@@ -1350,6 +1485,9 @@ async function apiGithubWebhookIngress(rawBody, req, config) {
   if (sync.statusCode !== 200) {
     return { statusCode: 200, body: { ok: false, error: 'sync_failed', detail: sync.body } }
   }
+  if (sync.body && sync.body.workspacePath) {
+    scheduleWebhookWorkspaceTests(sync.body.workspacePath, config)
+  }
   return {
     statusCode: 200,
     body: {
@@ -1696,6 +1834,65 @@ function runShellCommand(command, cwd) {
   })
 }
 
+function webhookPostSyncTestsEnabled() {
+  const v = String(process.env.TRITON_WEBHOOK_POST_SYNC_TESTS ?? '1').trim().toLowerCase()
+  return v !== '0' && v !== 'false' && v !== 'no'
+}
+
+/**
+ * After a successful GitHub push webhook sync, run sbt tests (+ scoverage report) in the background.
+ * Writes `sbt-test.log` at the workspace root and updates `workspace-test-status.json`.
+ */
+function scheduleWebhookWorkspaceTests(workspacePath, config) {
+  if (!webhookPostSyncTestsEnabled()) return
+  const validation = validateWorkspacePath(workspacePath, config)
+  if (!validation.ok) return
+  const root = validation.workspacePath
+  if (WEBHOOK_TEST_RUN_LOCKS.has(root)) return
+
+  const probe = probeWorkspace(root)
+  if (!workspaceTestsCanRun(probe)) {
+    updateWorkspaceTestEntry(config, root, {
+      status: 'none',
+      exitCode: null,
+      startedAt: undefined,
+    })
+    return
+  }
+
+  WEBHOOK_TEST_RUN_LOCKS.add(root)
+  updateWorkspaceTestEntry(config, root, {
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    exitCode: null,
+  })
+
+  const executable = String(process.env.TRITON_WEBHOOK_SBT_EXECUTABLE || 'sbt').trim() || 'sbt'
+  const commandText =
+    String(process.env.TRITON_WEBHOOK_POST_SYNC_SBT || 'coverage;test;coverageReport').trim() ||
+    'coverage;test;coverageReport'
+  const command = `${executable} "${commandText.replaceAll('"', '\\"')}"`
+
+  setImmediate(() => {
+    runShellCommand(command, root).then((result) => {
+      const banner = `=== Triton CI (post-sync) ${new Date().toISOString()} ===\nCommand: ${command}\nExit code: ${result.exitCode}\n\n`
+      const logBody = `${banner}${result.stdout || ''}${result.stderr ? `\n--- stderr ---\n${result.stderr}` : ''}`
+      try {
+        fs.writeFileSync(path.join(root, 'sbt-test.log'), logBody, 'utf8')
+      } catch {
+        // ignore
+      }
+      updateWorkspaceTestEntry(config, root, {
+        status: result.ok ? 'passed' : 'failed',
+        exitCode: result.exitCode,
+        startedAt: undefined,
+        lastCommand: command,
+      })
+      WEBHOOK_TEST_RUN_LOCKS.delete(root)
+    })
+  })
+}
+
 async function handleWorkspaceAction(body) {
   const action = String(body.action || '').trim()
   const workspacePath = String(body.workspacePath || '').trim()
@@ -1864,6 +2061,49 @@ function createRuntimeServer(options = {}) {
       return
     }
 
+    if (method === 'POST' && pathname === '/api/courses/detach-workspace') {
+      if (typeof config.persistence.detachWorkspaceFromCourse !== 'function') {
+        sendJson(res, 501, { ok: false, error: 'courses_not_supported' })
+        return
+      }
+      const raw = await collectBody(req)
+      const body = safeJsonParse(raw)
+      if (!body) {
+        sendJson(res, 400, { ok: false, error: 'invalid_json' })
+        return
+      }
+      const result = await config.persistence.detachWorkspaceFromCourse({
+        courseId: body.courseId,
+        workspacePath: body.workspacePath,
+      })
+      if (!result.ok) {
+        const code = result.error === 'course_workspace_not_found' ? 404 : 400
+        sendJson(res, code, { ok: false, error: result.error })
+        return
+      }
+      sendJson(res, 200, { ok: true })
+      return
+    }
+
+    if (method === 'DELETE' && pathname === '/api/home/recent-repo') {
+      if (typeof config.persistence.removeRecentRepository !== 'function') {
+        sendJson(res, 501, { ok: false, error: 'recent_repo_remove_not_supported' })
+        return
+      }
+      const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
+      if (!workspacePath) {
+        sendJson(res, 400, { ok: false, error: 'missing_workspace_path' })
+        return
+      }
+      const result = await config.persistence.removeRecentRepository(workspacePath)
+      if (!result.ok) {
+        sendJson(res, 400, { ok: false, error: result.error })
+        return
+      }
+      sendJson(res, 200, { ok: true })
+      return
+    }
+
     if (method === 'GET' && pathname === '/api/home') {
       sendJson(res, 200, await apiHomeModel(config))
       return
@@ -1934,6 +2174,36 @@ function createRuntimeServer(options = {}) {
         return
       }
       sendJson(res, 200, readWorkspaceBundle(validation.workspacePath))
+      return
+    }
+
+    if (method === 'GET' && pathname === '/api/workspace/test-log') {
+      const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
+      const validation = validateWorkspacePath(workspacePath, config)
+      if (!validation.ok) {
+        sendJson(res, validation.statusCode, {
+          ok: false,
+          error: validation.error,
+          workspacePath: validation.workspacePath,
+          allowedRepoRoots: validation.allowedRepoRoots,
+        })
+        return
+      }
+      const hit = findSbtTestLog(validation.workspacePath)
+      if (!hit || !hit.text) {
+        sendJson(res, 404, {
+          ok: false,
+          error: 'test_log_not_found',
+          workspacePath: validation.workspacePath,
+        })
+        return
+      }
+      sendJson(res, 200, {
+        ok: true,
+        workspacePath: validation.workspacePath,
+        relPath: hit.relPath,
+        text: hit.text,
+      })
       return
     }
 

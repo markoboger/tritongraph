@@ -12,6 +12,7 @@ import { dockerDiagramExamples } from './triton/dockerDiagramExamples'
 import { dockerBrandIconUrl, isDockerConceptIconKey } from './triton/dockerConceptIcons'
 import YamlDiffEditor from './components/YamlDiffEditor.vue'
 import SourceCodeViewer from './components/SourceCodeViewer.vue'
+import EditorLinkPreferenceDialog from './components/EditorLinkPreferenceDialog.vue'
 import { parseIlographYaml, stringifyIlographYaml } from './ilograph/parse'
 import type {
   IlographDocument,
@@ -54,6 +55,19 @@ import { parseSbtTestLog } from './sbt/parseSbtTestLog'
 import { getScoverageReportsFor, mergeParsedScoverageXml, scoverageReportsVersion } from './sbt/scoverageReportLoader'
 import { parseScoverageXml } from './sbt/parseScoverageXml'
 import { listScalaSourcesIn } from './scala/scalaSourceLoader'
+import {
+  openInEditor,
+  openInEditorWithTemplate,
+  EXTERNAL_EDITOR_SCHEME_TEMPLATES,
+  type OpenInEditorTarget,
+} from './openInEditor'
+import { repoRoot } from 'virtual:triton-config'
+import {
+  getStoredEditorLinkPreference,
+  setStoredEditorLinkPreference,
+  type StoredEditorLinkPreference,
+  type StoredExternalEditorId,
+} from './store/editorLinkPreference'
 import {
   buildScalaPackageGraph,
   scalaPackageGraphToIlographDocument,
@@ -793,14 +807,6 @@ interface RuntimeWorkspaceBundle {
   coverageReport: { relPath: string; xml: string } | null
 }
 
-interface RuntimeWorkspaceActionResult {
-  ok: boolean
-  action?: string
-  stdout?: string
-  stderr?: string
-  note?: string
-}
-
 interface ProjectScope {
   id: string
   baseDir?: string
@@ -929,7 +935,10 @@ const runtimeWorkspaceSession = computed(() => {
 const activeSourceTab = computed<DiagramTab | null>(() => (
   activeTab.value?.kind === 'source' ? activeTab.value : null
 ))
-const runtimeActionBusy = ref<string>('')
+const editorLinkPreferenceDialogOpen = ref(false)
+const editorLinkSuggestedRepoRoot = ref('')
+const pendingEditorOpenTarget = ref<OpenInEditorTarget | null>(null)
+
 const runtimeEmptyStateMessage = computed(() => {
   if (activeTab.value?.kind === 'runtime') return ''
   if (!activeRuntimeWorkspace.value || nodes.value.length) return ''
@@ -939,10 +948,7 @@ const runtimeEmptyStateMessage = computed(() => {
     text.startsWith('Failed to load runtime') ||
     text.startsWith('No build.sbt found') ||
     text.startsWith('No .scala files found') ||
-    text.startsWith('Loading ') ||
-    text.startsWith('Refreshing workspace') ||
-    text.startsWith('Running sbt test') ||
-    text.startsWith('Running coverage')
+    text.startsWith('Loading ')
   ) {
     return text
   }
@@ -1171,6 +1177,65 @@ async function openDockerExampleTab(slug: string): Promise<void> {
   await openOrActivateTab({ key: `docker:${slug}`, title: `${label} · Docker` }, () => loadDockerExample(slug))
 }
 
+async function openRuntimeWorkspaceTestLogTab(workspacePath: string, workspaceName: string): Promise<void> {
+  const runtimeUrl = effectiveRuntimeUrl.value
+  if (!runtimeUrl) {
+    status.value = 'Configure the Triton runtime URL (?runtimeUrl= or VITE_TRITON_RUNTIME_URL) to open test logs.'
+    return
+  }
+  status.value = `Loading test log for ${workspaceName}…`
+  try {
+    const u = new URL(`${runtimeUrl}/api/workspace/test-log`)
+    u.searchParams.set('workspacePath', workspacePath)
+    const res = await fetch(u.toString())
+    const body = (await res.json()) as {
+      ok?: boolean
+      text?: string
+      relPath?: string
+      error?: string
+    }
+    if (!res.ok || body.ok !== true) {
+      status.value = `Test log unavailable${body.error ? `: ${body.error}` : ` (${res.status})`}.`
+      return
+    }
+    const text = String(body.text ?? '')
+    const relPath = String(body.relPath ?? 'sbt-test.log')
+    const tabKey = `test-log:${workspacePath}`
+    const fileLabel = relPath.split('/').pop() || relPath
+    const existing = tabs.value.find((t) => t.key === tabKey)
+    if (existing) {
+      existing.sourceContent = text
+      existing.sourcePath = `${workspacePath}/${relPath}`
+      existing.fileName = fileLabel
+      existing.kind = 'source'
+      existing.sourceLanguage = 'plaintext'
+      existing.sourceLine = 1
+      await activateTabById(existing.id)
+    } else {
+      const newTab: DiagramTab = {
+        id: uid(),
+        key: tabKey,
+        title: `${workspaceName} · test log`,
+        kind: 'source',
+        sourcePath: `${workspacePath}/${relPath}`,
+        fileName: fileLabel,
+        perspectiveName: undefined,
+        yamlBaseline: '',
+        nodes: [],
+        edges: [],
+        sourceContent: text,
+        sourceLanguage: 'plaintext',
+        sourceLine: 1,
+      }
+      tabs.value.push(newTab)
+      await activateTabById(newTab.id)
+    }
+    status.value = `Opened test log for ${workspaceName}.`
+  } catch (err) {
+    status.value = `Failed to load test log: ${err instanceof Error ? err.message : String(err)}`
+  }
+}
+
 function exampleOptionLabel(dir: string): string {
   return dir.replace(/-/g, ' ')
 }
@@ -1221,33 +1286,6 @@ async function fetchRuntimeWorkspaceBundle(
             xml: String(body.coverageReport.xml ?? ''),
           }
         : null,
-  }
-}
-
-async function postRuntimeWorkspaceAction(
-  workspacePath: string,
-  action: 'refresh' | 'sbt-test' | 'sbt-coverage',
-): Promise<RuntimeWorkspaceActionResult> {
-  const runtimeUrl = effectiveRuntimeUrl.value
-  if (!runtimeUrl) {
-    throw new Error('No Triton runtime URL is configured (set ?runtimeUrl= or VITE_TRITON_RUNTIME_URL).')
-  }
-  const url = `${runtimeUrl}/api/workspace/action`
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action, workspacePath }),
-  })
-  const body = (await res.json().catch(() => ({}))) as Partial<RuntimeWorkspaceActionResult>
-  if (!res.ok) {
-    throw new Error(String(body.stderr || body.note || `Runtime action failed (${res.status}).`))
-  }
-  return {
-    ok: body.ok === true,
-    action: typeof body.action === 'string' ? body.action : action,
-    stdout: typeof body.stdout === 'string' ? body.stdout : '',
-    stderr: typeof body.stderr === 'string' ? body.stderr : '',
-    note: typeof body.note === 'string' ? body.note : '',
   }
 }
 
@@ -1376,6 +1414,163 @@ async function closeTab(id: string): Promise<void> {
   const next = tabs.value[Math.min(idx, tabs.value.length - 1)]
   await activateTabById(next.id)
 }
+
+function inferSourceLanguageFromRelPath(relPath: string): string {
+  const lower = relPath.trim().toLowerCase()
+  if (lower.endsWith('.scala') || lower.endsWith('.sbt')) return 'scala'
+  if (lower.endsWith('.java')) return 'java'
+  if (lower.endsWith('.kt')) return 'kotlin'
+  if (lower.endsWith('.ts')) return 'typescript'
+  if (lower.endsWith('.tsx')) return 'typescript'
+  if (lower.endsWith('.js')) return 'javascript'
+  if (lower.endsWith('.jsx')) return 'javascript'
+  if (lower.endsWith('.json')) return 'json'
+  if (lower.endsWith('.yml') || lower.endsWith('.yaml')) return 'yaml'
+  if (lower.endsWith('.xml')) return 'xml'
+  if (lower.endsWith('.md')) return 'markdown'
+  return 'plaintext'
+}
+
+function computeSuggestedRepoRootForEditor(target: OpenInEditorTarget): string {
+  if (target.absBaseDir?.trim()) return target.absBaseDir.trim()
+  const parts = [repoRoot, target.root, target.exampleDir].filter(Boolean)
+  return parts.join('/').replace(/\/+/g, '/')
+}
+
+function dispatchExternalWithStoredPreference(target: OpenInEditorTarget, pref: StoredEditorLinkPreference): void {
+  if (pref.mode !== 'external' || !pref.externalEditor) {
+    openInEditor(target)
+    return
+  }
+  const tpl = EXTERNAL_EDITOR_SCHEME_TEMPLATES[pref.externalEditor]
+  const root = pref.externalRepoRoot?.trim()
+  const t = root
+    ? { ...target, absBaseDir: root, root: '', exampleDir: '' }
+    : { ...target }
+  openInEditorWithTemplate(t, tpl)
+}
+
+async function openInternalSourceTabFromTarget(target: OpenInEditorTarget): Promise<void> {
+  const line = Math.max(1, target.line ?? 1)
+  const relPath = target.relPath
+  if (!relPath.trim()) return
+  let content = ''
+  const language = inferSourceLanguageFromRelPath(relPath)
+
+  const rt = runtimeWorkspaceSession.value
+  const workspacePathForFetch = target.absBaseDir?.trim() || rt?.workspacePath
+
+  if (workspacePathForFetch && effectiveRuntimeUrl.value) {
+    try {
+      const u = new URL(`${effectiveRuntimeUrl.value}/api/workspace/source`)
+      u.searchParams.set('workspacePath', workspacePathForFetch)
+      u.searchParams.set('relPath', relPath)
+      const res = await fetch(u.toString())
+      const body = (await res.json()) as { ok?: boolean; source?: string }
+      if (res.ok && body.ok === true && typeof body.source === 'string') {
+        content = body.source
+      } else {
+        status.value = `Could not load ${relPath} from the runtime.`
+        return
+      }
+    } catch (e) {
+      status.value = `Could not load source: ${e instanceof Error ? e.message : String(e)}`
+      return
+    }
+  } else if (target.root && target.exampleDir) {
+    const files = listScalaSourcesIn(target.root, target.exampleDir)
+    const norm = relPath.replace(/\\/g, '/')
+    const hit = files.find((f) => f.relPath === norm || f.relPath.replace(/\\/g, '/') === norm)
+    if (!hit) {
+      status.value = `Example does not include ${relPath}.`
+      return
+    }
+    content = hit.source
+  } else {
+    status.value = 'Cannot open the internal viewer without a runtime workspace or bundled example context.'
+    return
+  }
+
+  const parentKey = activeTab.value?.key ?? 'adhoc'
+  const tabKey = `source-view:${parentKey}:${relPath}`
+  const existing = tabs.value.find((t) => t.key === tabKey)
+  if (existing) {
+    existing.sourceContent = content
+    existing.sourceLine = line
+    existing.kind = 'source'
+    existing.sourceLanguage = language
+    await activateTabById(existing.id)
+    return
+  }
+  const newTab: DiagramTab = {
+    id: uid(),
+    key: tabKey,
+    title: relPath.split('/').pop() || relPath,
+    kind: 'source',
+    sourcePath: relPath,
+    fileName: relPath.split('/').pop() || relPath,
+    perspectiveName: undefined,
+    yamlBaseline: '',
+    nodes: [],
+    edges: [],
+    sourceContent: content,
+    sourceLanguage: language,
+    sourceLine: line,
+  }
+  tabs.value.push(newTab)
+  await activateTabById(newTab.id)
+}
+
+function requestEditorOpen(target: OpenInEditorTarget): void {
+  const wsKey = activeWorkspaceKey.value
+  if (!wsKey) {
+    openInEditor(target)
+    return
+  }
+  const pref = getStoredEditorLinkPreference(wsKey)
+  if (pref?.mode === 'internal') {
+    void openInternalSourceTabFromTarget(target)
+    return
+  }
+  if (pref?.mode === 'external' && pref.externalEditor) {
+    dispatchExternalWithStoredPreference(target, pref)
+    return
+  }
+  pendingEditorOpenTarget.value = target
+  editorLinkSuggestedRepoRoot.value = computeSuggestedRepoRootForEditor(target)
+  editorLinkPreferenceDialogOpen.value = true
+}
+
+function onEditorLinkDialogInternal(): void {
+  const wsKey = activeWorkspaceKey.value
+  const target = pendingEditorOpenTarget.value
+  pendingEditorOpenTarget.value = null
+  if (!wsKey || !target) return
+  setStoredEditorLinkPreference(wsKey, { mode: 'internal' })
+  void openInternalSourceTabFromTarget(target)
+}
+
+function onEditorLinkDialogExternal(payload: { editor: StoredExternalEditorId; repoRoot: string }): void {
+  const wsKey = activeWorkspaceKey.value
+  const target = pendingEditorOpenTarget.value
+  pendingEditorOpenTarget.value = null
+  if (!wsKey || !target) return
+  const root = payload.repoRoot.trim()
+  if (!root) return
+  setStoredEditorLinkPreference(wsKey, {
+    mode: 'external',
+    externalEditor: payload.editor,
+    externalRepoRoot: root,
+  })
+  const tpl = EXTERNAL_EDITOR_SCHEME_TEMPLATES[payload.editor]
+  openInEditorWithTemplate({ ...target, absBaseDir: root, root: '', exampleDir: '' }, tpl)
+}
+
+provide('tritonRequestEditorOpen', requestEditorOpen)
+
+watch(editorLinkPreferenceDialogOpen, (open) => {
+  if (!open) pendingEditorOpenTarget.value = null
+})
 
 async function openOrActivateTab(
   spec: { key: string; title: string; iconUrl?: string; kind?: 'diagram' | 'source' },
@@ -3264,37 +3459,6 @@ async function loadScalaPackagesForRuntimeWorkspace(workspacePath: string, works
   }
 }
 
-async function runRuntimeWorkspaceAction(
-  action: 'refresh' | 'sbt-test' | 'sbt-coverage',
-  label: string,
-): Promise<void> {
-  const session = runtimeWorkspaceSession.value
-  const fromActive = activeRuntimeWorkspace.value
-  const runtimeWs =
-    fromActive ??
-    (session ? { workspacePath: session.workspacePath, workspaceName: session.workspaceName } : null)
-  if (!runtimeWs) {
-    status.value = `Cannot ${label.toLowerCase()} — open a runtime-backed repo or add one on the Triton tab first.`
-    return
-  }
-  runtimeActionBusy.value = action
-  status.value = `${label} for ${runtimeWs.workspaceName}…`
-  try {
-    const result = await postRuntimeWorkspaceAction(runtimeWs.workspacePath, action)
-    if (!result.ok) {
-      throw new Error(result.stderr || result.note || `${label} failed.`)
-    }
-    await reloadActiveRuntimeTab()
-    status.value = result.note?.trim()
-      ? `${label} completed — ${result.note.trim()}`
-      : `${label} completed for ${runtimeWs.workspaceName}.`
-  } catch (err) {
-    status.value = `${label} failed: ${(err as Error).message}`
-  } finally {
-    runtimeActionBusy.value = ''
-  }
-}
-
 /**
  * Runtime workspace auto-refresh:
  * After the user runs tests/coverage outside the UI (terminal, IDE task), the runtime server can
@@ -3342,7 +3506,6 @@ function startRuntimeAutoRefresh(): void {
     const ws = activeRuntimeWorkspace.value
     // Only run while a runtime tab is actually active.
     if (!ws || !activeTab.value || !activeTab.value.key.startsWith('runtime-')) return
-    if (runtimeActionBusy.value) return
     if (runtimeAutoRefreshBusy) return
     runtimeAutoRefreshBusy = true
     try {
@@ -3384,8 +3547,6 @@ watch(
     // Only bundled examples rely on the Vite virtual module.
     if (!activeTab.value) return
     if (activeTab.value.key.startsWith('runtime-')) return
-    // Avoid spamming reload while another loader is in-flight.
-    if (runtimeActionBusy.value) return
     await reloadActiveExampleTab()
   },
   { flush: 'post' },
@@ -4095,7 +4256,7 @@ onUnmounted(() => {
           <div class="runtime-empty-state__title">Runtime Workspace Not Loaded</div>
           <div class="runtime-empty-state__body">{{ runtimeEmptyStateMessage }}</div>
           <div class="runtime-empty-state__hint">
-            Check that `triton-runtime` is running for this workspace, then use Refresh workspace on the Triton tab.
+            Check that `triton-runtime` is running for this workspace, then reopen the repo from the Triton tab or refresh the diagram tab.
           </div>
         </div>
         <SourceCodeViewer
@@ -4110,13 +4271,11 @@ onUnmounted(() => {
             :runtime-base-url="effectiveRuntimeUrl"
             :starter-cards="tritonStarterCards"
             :ide-session="ideSession"
-            :runtime-workspace-active="!!runtimeWorkspaceSession"
-            :runtime-action-busy="runtimeActionBusy"
             :status-message="status"
             @open-sbt="(p) => void openRuntimeSbtTab(p.workspacePath, p.workspaceName)"
             @open-packages="(p) => void openRuntimePackagesTab(p.workspacePath, p.workspaceName)"
             @select-example="(id) => void selectExample(id)"
-            @runtime-workspace-action="(p) => void runRuntimeWorkspaceAction(p.action, p.label)"
+            @open-workspace-test-log="(p) => void openRuntimeWorkspaceTestLogTab(p.workspacePath, p.workspaceName)"
           />
         </div>
         <div v-else class="diagram-with-yaml-toggle">
@@ -4491,6 +4650,13 @@ onUnmounted(() => {
         </div>
       </aside>
     </div>
+    <EditorLinkPreferenceDialog
+      v-model:open="editorLinkPreferenceDialogOpen"
+      :workspace-key="activeWorkspaceKey"
+      :suggested-repo-root="editorLinkSuggestedRepoRoot"
+      @internal="onEditorLinkDialogInternal"
+      @external="onEditorLinkDialogExternal"
+    />
   </div>
 </template>
 

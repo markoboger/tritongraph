@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch, type Ref } from 'vue'
-import { openInEditor } from '../../openInEditor'
+import { openInEditor, type OpenInEditorTarget } from '../../openInEditor'
 import { useScalaDoc, useScalaSpecs, useScalaTestBlock } from '../../store/useOverlay'
 import ShikiCodeBlock from '../ShikiCodeBlock.vue'
 import TestChecklistBlock from '../TestChecklistBlock.vue'
@@ -118,6 +118,8 @@ const activeRuntimeWorkspaceRef = inject<Ref<{ workspacePath: string; workspaceN
   undefined,
 )
 
+const requestEditorOpen = inject<(t: OpenInEditorTarget) => void>('tritonRequestEditorOpen', (t) => openInEditor(t))
+
 type SpecLink = { name: string; declaration: string; file: string; startRow: number }
 
 const specLinks = computed<SpecLink[]>(() => {
@@ -206,7 +208,7 @@ function onSpecLineClick(ev: { index: number }): void {
   const rt = activeRuntimeWorkspaceRef?.value
   const spec = specLinks.value[ev.index]
   if (!spec) return
-  openInEditor(
+  requestEditorOpen(
     ex
       ? {
           root: ex.root,
