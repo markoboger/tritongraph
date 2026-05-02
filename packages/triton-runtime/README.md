@@ -135,7 +135,7 @@ To use **file** persistence in Compose instead, comment those env lines and unco
 | Method | Path | Notes |
 |--------|------|--------|
 | `POST` | `/api/webhooks/github` | **Ingress** for GitHub (`push` on configured branch). Validates `X-Hub-Signature-256`; dedupes `X-GitHub-Delivery`. |
-| `POST` | `/api/webhooks/github/register` | Body: `{ "repositoryUrl", "workspacePath", "branch?" }` (default branch `main`). Requires clone to exist; **`workspacePath`** must equal git-cache realpath. Returns **`secret`** + **`webhookUrl`**. |
+| `POST` | `/api/webhooks/github/register` | Body: `{ "repositoryUrl", "workspacePath?", "branch?" }` (default branch `main`). Requires clone to exist. Omit **`workspacePath`** to use the runtime git-cache path for that URL. Returns **`secret`** + **`webhookUrl`**. |
 | `POST` | `/api/webhooks/github/delete` | Body: `{ "repositoryUrl" }` — removes registration. |
 | `GET` | `/api/webhooks/github/repos` | Lists registrations (no secrets). |
 

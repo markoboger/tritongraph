@@ -1058,6 +1058,91 @@ function assertWorkspaceMatchesGitCache(workspacePath, parsed, config) {
   return { ok: true }
 }
 
+/**
+ * When workspacePath is omitted, uses the runtime git-cache path for this repo (after clone/analyze).
+ */
+function resolveGithubWebhookWorkspace(bodyWorkspacePath, parsed, config) {
+  const wsInput = String(bodyWorkspacePath || '').trim()
+  if (wsInput) {
+    const validation = validateWorkspacePath(wsInput, config)
+    if (!validation.ok) {
+      return {
+        ok: false,
+        statusCode: validation.statusCode,
+        body: {
+          ok: false,
+          error: validation.error,
+          workspacePath: validation.workspacePath,
+          allowedRepoRoots: validation.allowedRepoRoots,
+        },
+      }
+    }
+    const cacheCheck = assertWorkspaceMatchesGitCache(validation.workspacePath, parsed, config)
+    if (!cacheCheck.ok) {
+      return {
+        ok: false,
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: cacheCheck.error,
+          ...(cacheCheck.hint ? { hint: cacheCheck.hint } : {}),
+          ...(cacheCheck.expectedWorkspacePath ? { expectedWorkspacePath: cacheCheck.expectedWorkspacePath } : {}),
+        },
+      }
+    }
+    return { ok: true, workspacePath: validation.workspacePath }
+  }
+
+  const dest = hostedGitCloneDestPath(config, parsed.host, parsed.segments)
+  if (!dest) {
+    return {
+      ok: false,
+      statusCode: 400,
+      body: { ok: false, error: 'invalid_repository_path' },
+    }
+  }
+  const gitMeta = path.join(dest, '.git')
+  if (!fileExists(gitMeta)) {
+    return {
+      ok: false,
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: 'clone_not_found',
+        hint: 'Clone the repository once via the runtime UI or POST /api/analysis/github before registering a webhook.',
+      },
+    }
+  }
+  let realDest
+  try {
+    realDest = fs.realpathSync(dest)
+  } catch (err) {
+    return {
+      ok: false,
+      statusCode: 500,
+      body: {
+        ok: false,
+        error: 'clone_path_unreadable',
+        detail: err instanceof Error ? err.message : String(err),
+      },
+    }
+  }
+  const validation = validateWorkspacePath(realDest, config)
+  if (!validation.ok) {
+    return {
+      ok: false,
+      statusCode: validation.statusCode,
+      body: {
+        ok: false,
+        error: validation.error,
+        workspacePath: validation.workspacePath,
+        allowedRepoRoots: validation.allowedRepoRoots,
+      },
+    }
+  }
+  return { ok: true, workspacePath: validation.workspacePath }
+}
+
 async function apiRegisterGithubWebhook(body, config, req) {
   if (!webhookAdminAuthorized(req)) {
     return { statusCode: 403, body: { ok: false, error: 'webhook_admin_unauthorized' } }
@@ -1077,36 +1162,17 @@ async function apiRegisterGithubWebhook(body, config, req) {
       body: { ok: false, error: 'github_webhooks_only_in_phase1', hint: 'GitLab ingress can follow the same pattern later.' },
     }
   }
-  const validation = validateWorkspacePath(body.workspacePath, config)
-  if (!validation.ok) {
-    return {
-      statusCode: validation.statusCode,
-      body: {
-        ok: false,
-        error: validation.error,
-        workspacePath: validation.workspacePath,
-        allowedRepoRoots: validation.allowedRepoRoots,
-      },
-    }
+  const resolved = resolveGithubWebhookWorkspace(body.workspacePath, parsed, config)
+  if (!resolved.ok) {
+    return { statusCode: resolved.statusCode, body: resolved.body }
   }
-  const cacheCheck = assertWorkspaceMatchesGitCache(validation.workspacePath, parsed, config)
-  if (!cacheCheck.ok) {
-    return {
-      statusCode: 400,
-      body: {
-        ok: false,
-        error: cacheCheck.error,
-        ...(cacheCheck.hint ? { hint: cacheCheck.hint } : {}),
-        ...(cacheCheck.expectedWorkspacePath ? { expectedWorkspacePath: cacheCheck.expectedWorkspacePath } : {}),
-      },
-    }
-  }
+  const validationWorkspacePath = resolved.workspacePath
   const branch = normalizeWebhookBranch(body.branch)
   const workspaceName =
-    String(body.workspaceName || '').trim() || path.basename(validation.workspacePath) || 'workspace'
+    String(body.workspaceName || '').trim() || path.basename(validationWorkspacePath) || 'workspace'
   const result = await config.persistence.registerRepoWebhook({
     canonicalRepositoryUrl: parsed.canonicalRepoUrl,
-    workspacePath: validation.workspacePath,
+    workspacePath: validationWorkspacePath,
     workspaceName,
     branch,
     secret: body.secret ? String(body.secret).trim() : undefined,
@@ -1755,7 +1821,7 @@ function createRuntimeServer(options = {}) {
       sendJson(res, 200, {
         ok: true,
         message:
-          'Routes: POST /api/analysis/github (register) and POST /api/workspace/github/sync (pull latest). GitHub push webhooks: POST /api/webhooks/github (GitHub → runtime). Register: POST /api/webhooks/github/register with JSON { repositoryUrl, workspacePath, branch?, workspaceName? }; optional TRITON_WEBHOOK_ADMIN_TOKEN (Bearer) required when set. Body for analyze/sync: { "repositoryUrl": "https URL", "ref": "optional" }. Hosts: github.com, gitlab.com, or TRITON_EXTRA_GIT_HOSTS. Tokens: Authorization Bearer, x-github-token / x-gitlab-token, JSON git token fields, or TRITON_GITHUB_TOKEN / TRITON_GITLAB_TOKEN.',
+          'Routes: POST /api/analysis/github (register) and POST /api/workspace/github/sync (pull latest). GitHub push webhooks: POST /api/webhooks/github (GitHub → runtime). Register: POST /api/webhooks/github/register with JSON { repositoryUrl, workspacePath?, branch?, workspaceName? } — omit workspacePath after cloning via analyze/sync so the runtime uses the git-cache path; optional TRITON_WEBHOOK_ADMIN_TOKEN (Bearer) required when set. Body for analyze/sync: { "repositoryUrl": "https URL", "ref": "optional" }. Hosts: github.com, gitlab.com, or TRITON_EXTRA_GIT_HOSTS. Tokens: Authorization Bearer, x-github-token / x-gitlab-token, JSON git token fields, or TRITON_GITHUB_TOKEN / TRITON_GITLAB_TOKEN.',
         methodHint: 'POST',
         path: '/api/analysis/github',
         runtimeVersion: RUNTIME_VERSION,

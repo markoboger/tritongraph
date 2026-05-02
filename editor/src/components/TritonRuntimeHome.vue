@@ -40,6 +40,16 @@ export type RuntimeCourse = {
   workspaces?: RuntimeHomeRepo[]
 }
 
+/** Row from GET /api/webhooks/github/repos (secret omitted). */
+export type RegisteredGithubWebhook = {
+  canonicalRepositoryUrl: string
+  workspacePath: string
+  workspaceName: string
+  branch: string
+  provider?: string
+  createdAt?: string
+}
+
 export type RuntimeHomeModel = {
   ok?: boolean
   error?: string
@@ -102,6 +112,26 @@ const githubUrlInput = ref('')
 const githubRefInput = ref('')
 /** Optional PAT for private repos; cleared after successful import (never stored on cards). */
 const githubTokenInput = ref('')
+/** Sent as Bearer for webhook admin routes when the runtime sets TRITON_WEBHOOK_ADMIN_TOKEN. */
+const webhookAdminBearerInput = ref('')
+const webhookDialogRef = ref<HTMLDialogElement | null>(null)
+const webhookDialogOpen = ref(false)
+const webhookFormRepoUrl = ref('')
+const webhookFormBranch = ref('main')
+/** Leave blank to use the runtime git-cache path (normal after “Add new repo”). */
+const webhookFormWorkspacePath = ref('')
+const webhookFormBusy = ref(false)
+const webhookFormError = ref('')
+const webhookRegisterResult = ref<{
+  webhookUrl: string
+  secret: string
+  contentType: string
+  events: string[]
+} | null>(null)
+const webhookCopyHint = ref('')
+const registeredGithubWebhooks = ref<RegisteredGithubWebhook[]>([])
+const webhookListError = ref('')
+const deletingWebhookKey = ref('')
 const selectedCourseId = ref('')
 const newCourseSlug = ref('')
 const newCourseTitle = ref('')
@@ -187,6 +217,11 @@ const runtimeSupportsGithubSync = computed(() => {
 const runtimeSupportsCourses = computed(() => {
   const caps = homeModel.value?.runtime?.capabilities
   return Array.isArray(caps) && caps.includes('courses-api')
+})
+
+const runtimeSupportsWebhooks = computed(() => {
+  const caps = homeModel.value?.runtime?.capabilities
+  return Array.isArray(caps) && caps.includes('webhooks-github')
 })
 
 /** Show the Courses block whenever we have a successful home payload (not gated on capability — older runtimes get an upgrade hint instead). */
@@ -401,10 +436,169 @@ async function fetchHome(): Promise<void> {
       throw new Error(body.error || `Failed to load runtime home (${res.status}).`)
     }
     homeModel.value = body
+    if (
+      body.runtime &&
+      Array.isArray(body.runtime.capabilities) &&
+      body.runtime.capabilities.includes('webhooks-github')
+    ) {
+      void fetchWebhookRegistrations()
+    } else {
+      registeredGithubWebhooks.value = []
+      webhookListError.value = ''
+    }
   } catch (e) {
     homeModel.value = null
     loadError.value = e instanceof Error ? e.message : String(e)
   }
+}
+
+function webhookAdminHeaders(contentJson = false): Record<string, string> {
+  const h: Record<string, string> = {}
+  if (contentJson) {
+    h['content-type'] = 'application/json'
+  }
+  const t = webhookAdminBearerInput.value.trim()
+  if (t) {
+    h.authorization = `Bearer ${t}`
+  }
+  return h
+}
+
+async function fetchWebhookRegistrations(): Promise<void> {
+  webhookListError.value = ''
+  try {
+    const res = await fetch(`${base.value}/api/webhooks/github/repos`, {
+      headers: webhookAdminHeaders(false),
+    })
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean
+      error?: string
+      repos?: RegisteredGithubWebhook[]
+    }
+    if (!res.ok || body.ok !== true) {
+      webhookListError.value = String(body.error || `Failed to list webhooks (${res.status}).`)
+      registeredGithubWebhooks.value = []
+      return
+    }
+    registeredGithubWebhooks.value = Array.isArray(body.repos) ? body.repos : []
+  } catch (e) {
+    webhookListError.value = e instanceof Error ? e.message : String(e)
+    registeredGithubWebhooks.value = []
+  }
+}
+
+function openGithubWebhookDialog(prefill?: {
+  repositoryUrl?: string
+  branch?: string
+  workspacePath?: string
+}): void {
+  webhookFormError.value = ''
+  webhookRegisterResult.value = null
+  webhookCopyHint.value = ''
+  webhookFormRepoUrl.value = String(prefill?.repositoryUrl || '').trim()
+  webhookFormBranch.value = String(prefill?.branch || 'main').trim() || 'main'
+  webhookFormWorkspacePath.value = String(prefill?.workspacePath || '').trim()
+  webhookDialogOpen.value = true
+  void nextTick(() => webhookDialogRef.value?.showModal())
+}
+
+function closeGithubWebhookDialog(): void {
+  webhookDialogRef.value?.close()
+}
+
+function onGithubWebhookDialogClose(): void {
+  webhookDialogOpen.value = false
+}
+
+async function submitGithubWebhookRegister(): Promise<void> {
+  webhookFormError.value = ''
+  webhookRegisterResult.value = null
+  webhookCopyHint.value = ''
+  const repositoryUrl = webhookFormRepoUrl.value.trim()
+  if (!repositoryUrl) {
+    webhookFormError.value = 'Enter the GitHub repository HTTPS URL.'
+    return
+  }
+  webhookFormBusy.value = true
+  try {
+    const payload: Record<string, string> = {
+      repositoryUrl,
+      branch: webhookFormBranch.value.trim() || 'main',
+    }
+    const ws = webhookFormWorkspacePath.value.trim()
+    if (ws) {
+      payload.workspacePath = ws
+    }
+    const res = await fetch(`${base.value}/api/webhooks/github/register`, {
+      method: 'POST',
+      headers: webhookAdminHeaders(true),
+      body: JSON.stringify(payload),
+    })
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok || body.ok !== true) {
+      webhookFormError.value = String(body.error || `Register failed (${res.status}).`)
+      return
+    }
+    webhookRegisterResult.value = {
+      webhookUrl: String(body.webhookUrl || ''),
+      secret: String(body.secret || ''),
+      contentType: String(body.contentType || 'application/json'),
+      events: Array.isArray(body.events) ? (body.events as string[]) : ['push'],
+    }
+    await fetchWebhookRegistrations()
+  } catch (e) {
+    webhookFormError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    webhookFormBusy.value = false
+  }
+}
+
+async function deleteRegisteredGithubWebhook(row: RegisteredGithubWebhook): Promise<void> {
+  webhookListError.value = ''
+  if (
+    !confirm(
+      `Remove webhook registration for ${row.canonicalRepositoryUrl}? This does not delete the webhook on GitHub — remove it in repo Settings if needed.`,
+    )
+  ) {
+    return
+  }
+  const key = row.canonicalRepositoryUrl
+  deletingWebhookKey.value = key
+  try {
+    const res = await fetch(`${base.value}/api/webhooks/github/delete`, {
+      method: 'POST',
+      headers: webhookAdminHeaders(true),
+      body: JSON.stringify({ repositoryUrl: row.canonicalRepositoryUrl }),
+    })
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+    if (!res.ok || body.ok !== true) {
+      webhookListError.value = String(body.error || `Remove failed (${res.status}).`)
+      return
+    }
+    await fetchWebhookRegistrations()
+  } catch (e) {
+    webhookListError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    deletingWebhookKey.value = ''
+  }
+}
+
+async function copyWebhookSetupField(label: string, text: string): Promise<void> {
+  const v = String(text || '').trim()
+  if (!v) {
+    webhookCopyHint.value = 'Nothing to copy.'
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(v)
+    webhookCopyHint.value = `${label} copied to clipboard.`
+  } catch {
+    webhookCopyHint.value = `Could not copy automatically. Copy manually: ${label}`
+  }
+}
+
+function githubRepoCard(repo: RuntimeHomeRepo): boolean {
+  return repo.source === 'github' && !!repo.repositoryUrl?.trim()
 }
 
 type AnalysisOk = {
@@ -895,6 +1089,53 @@ watch(
         </div>
       </section>
 
+      <section v-if="runtimeSupportsWebhooks && homeModel?.runtime" class="runtime-home__card">
+        <h2 class="runtime-home__actions-title">GitHub push webhooks</h2>
+        <p class="runtime-home__add-lead runtime-home__hint-block">
+          After you clone a repo with <strong>Add new repo</strong>, register it here so pushes trigger a pull on this runtime.
+          Use your tunnel URL in <code>TRITON_PUBLIC_RUNTIME_URL</code> so the payload URL is correct. GitHub → repo → Settings → Webhooks:
+          paste <strong>Payload URL</strong> and <strong>Secret</strong> from the dialog below.
+        </p>
+        <label class="runtime-home__label" for="runtime-webhook-admin-bearer">Webhook admin token (optional)</label>
+        <input
+          id="runtime-webhook-admin-bearer"
+          v-model="webhookAdminBearerInput"
+          class="runtime-home__input"
+          type="password"
+          autocomplete="off"
+          placeholder="Bearer value — only if TRITON_WEBHOOK_ADMIN_TOKEN is set on the runtime"
+        />
+        <p class="runtime-home__hint runtime-home__hint--field">
+          Leave empty for typical local Docker (admin routes open). Required on servers that set the env var.
+        </p>
+        <div class="runtime-home__webhook-toolbar">
+          <button type="button" class="runtime-home__btn runtime-home__btn--primary" @click="openGithubWebhookDialog()">
+            Register repository…
+          </button>
+          <button type="button" class="runtime-home__btn" @click="void fetchWebhookRegistrations()">Refresh webhook list</button>
+        </div>
+        <p v-if="webhookListError" class="runtime-home__error">{{ webhookListError }}</p>
+        <p v-if="!registeredGithubWebhooks.length && !webhookListError" class="runtime-home__hint">
+          No repositories registered for webhooks yet.
+        </p>
+        <ul v-else-if="registeredGithubWebhooks.length" class="runtime-home__webhook-list">
+          <li v-for="row in registeredGithubWebhooks" :key="row.canonicalRepositoryUrl" class="runtime-home__webhook-li">
+            <div class="runtime-home__webhook-li-main">
+              <code class="runtime-home__webhook-repo">{{ row.canonicalRepositoryUrl }}</code>
+              <span class="runtime-home__muted">branch {{ row.branch }} · {{ row.workspaceName }}</span>
+            </div>
+            <button
+              type="button"
+              class="runtime-home__btn runtime-home__btn--small"
+              :disabled="!!deletingWebhookKey"
+              @click="void deleteRegisteredGithubWebhook(row)"
+            >
+              {{ deletingWebhookKey === row.canonicalRepositoryUrl ? 'Removing…' : 'Remove' }}
+            </button>
+          </li>
+        </ul>
+      </section>
+
       <section
         v-if="githubRuntimeStaleWarning"
         class="runtime-home__card runtime-home__card--warn"
@@ -1056,6 +1297,23 @@ watch(
                         {{ syncingGithubPath === repo.workspacePath ? 'Syncing…' : 'Pull latest' }}
                       </button>
                     </template>
+                    <template v-if="githubRepoCard(repo) && runtimeSupportsWebhooks">
+                      <span class="repo-card__sep" aria-hidden="true">·</span>
+                      <button
+                        type="button"
+                        class="repo-card__link"
+                        :disabled="!!analyzingPath || !!syncingGithubPath"
+                        @click="
+                          openGithubWebhookDialog({
+                            repositoryUrl: repo.repositoryUrl,
+                            branch: repo.gitRef || 'main',
+                            workspacePath: '',
+                          })
+                        "
+                      >
+                        Webhook…
+                      </button>
+                    </template>
                     <span v-if="analyzingPath === repo.workspacePath" class="repo-card__busy" aria-live="polite">
                       Preparing…
                     </span>
@@ -1067,6 +1325,94 @@ watch(
         </details>
         </div>
       </section>
+
+      <dialog
+        ref="webhookDialogRef"
+        class="runtime-home__dialog"
+        aria-labelledby="runtime-dialog-webhook-title"
+        @close="onGithubWebhookDialogClose"
+      >
+        <div class="runtime-home__dialog-panel">
+          <header class="runtime-home__dialog-head">
+            <h2 id="runtime-dialog-webhook-title">Register GitHub webhook</h2>
+            <button type="button" class="runtime-home__dialog-close" aria-label="Close" @click="closeGithubWebhookDialog">
+              ×
+            </button>
+          </header>
+          <p class="runtime-home__dialog-lead">
+            The repository must already be cloned on this runtime (<strong>Add new repo</strong>). The server matches your URL to the
+            git cache — you usually leave “Workspace path” empty.
+          </p>
+          <form class="runtime-home__form" @submit.prevent="void submitGithubWebhookRegister()">
+            <label class="runtime-home__label" for="runtime-dialog-webhook-url">Repository URL (HTTPS)</label>
+            <input
+              id="runtime-dialog-webhook-url"
+              v-model="webhookFormRepoUrl"
+              class="runtime-home__input"
+              type="url"
+              required
+              autocomplete="off"
+              placeholder="https://github.com/you/repo.git"
+            />
+            <label class="runtime-home__label" for="runtime-dialog-webhook-branch">Branch to sync</label>
+            <input
+              id="runtime-dialog-webhook-branch"
+              v-model="webhookFormBranch"
+              class="runtime-home__input"
+              type="text"
+              autocomplete="off"
+              placeholder="main"
+            />
+            <label class="runtime-home__label" for="runtime-dialog-webhook-workspace">Workspace path (optional)</label>
+            <input
+              id="runtime-dialog-webhook-workspace"
+              v-model="webhookFormWorkspacePath"
+              class="runtime-home__input"
+              type="text"
+              autocomplete="off"
+              placeholder="Leave empty — uses runtime git cache path"
+            />
+            <p v-if="webhookFormError" class="runtime-home__error">{{ webhookFormError }}</p>
+            <div v-if="webhookRegisterResult" class="runtime-home__webhook-result">
+              <p class="runtime-home__webhook-result-lead">
+                Add this in GitHub → <strong>Settings → Webhooks → Add webhook</strong>. Content type
+                <code>{{ webhookRegisterResult.contentType }}</code>, events: {{ webhookRegisterResult.events.join(', ') }}.
+              </p>
+              <div class="runtime-home__webhook-result-row">
+                <span class="runtime-home__label-inline">Payload URL</span>
+                <code class="runtime-home__webhook-secret-code">{{ webhookRegisterResult.webhookUrl }}</code>
+                <button
+                  type="button"
+                  class="runtime-home__btn runtime-home__btn--small"
+                  @click="void copyWebhookSetupField('Payload URL', webhookRegisterResult.webhookUrl)"
+                >
+                  Copy
+                </button>
+              </div>
+              <div class="runtime-home__webhook-result-row">
+                <span class="runtime-home__label-inline">Secret</span>
+                <code class="runtime-home__webhook-secret-code">{{ webhookRegisterResult.secret }}</code>
+                <button
+                  type="button"
+                  class="runtime-home__btn runtime-home__btn--small"
+                  @click="void copyWebhookSetupField('Secret', webhookRegisterResult.secret)"
+                >
+                  Copy
+                </button>
+              </div>
+              <p v-if="webhookCopyHint" class="runtime-home__hint">{{ webhookCopyHint }}</p>
+            </div>
+            <div class="runtime-home__dialog-actions">
+              <button type="button" class="runtime-home__btn" :disabled="webhookFormBusy" @click="closeGithubWebhookDialog">
+                Close
+              </button>
+              <button type="submit" class="runtime-home__btn runtime-home__btn--primary" :disabled="webhookFormBusy">
+                {{ webhookFormBusy ? 'Registering…' : webhookRegisterResult ? 'Register again' : 'Register' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </dialog>
 
       <dialog
         ref="courseDialogRef"
@@ -1328,6 +1674,23 @@ watch(
                     @click="void syncGithubRepo(repo)"
                   >
                     {{ syncingGithubPath === repo.workspacePath ? 'Syncing…' : 'Pull latest' }}
+                  </button>
+                </template>
+                <template v-if="githubRepoCard(repo) && runtimeSupportsWebhooks">
+                  <span class="repo-card__sep" aria-hidden="true">·</span>
+                  <button
+                    type="button"
+                    class="repo-card__link"
+                    :disabled="!!analyzingPath || !!syncingGithubPath"
+                    @click="
+                      openGithubWebhookDialog({
+                        repositoryUrl: repo.repositoryUrl,
+                        branch: repo.gitRef || 'main',
+                        workspacePath: '',
+                      })
+                    "
+                  >
+                    Webhook…
                   </button>
                 </template>
                 <span v-if="analyzingPath === repo.workspacePath" class="repo-card__busy" aria-live="polite">
@@ -2176,5 +2539,84 @@ watch(
 .starter-card__open:hover {
   background: #f1f5f9;
   border-color: #94a3b8;
+}
+.runtime-home__hint-block {
+  margin-bottom: 12px;
+}
+.runtime-home__webhook-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.runtime-home__btn--small {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.runtime-home__webhook-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.runtime-home__webhook-li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.runtime-home__webhook-li-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.runtime-home__webhook-repo {
+  font-size: 12px;
+  word-break: break-all;
+}
+.runtime-home__webhook-result {
+  margin: 14px 0;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #ccfbf1;
+  background: #f0fdfa;
+}
+.runtime-home__webhook-result-lead {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #134e4a;
+}
+.runtime-home__webhook-result-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.runtime-home__label-inline {
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+  min-width: 88px;
+}
+.runtime-home__webhook-secret-code {
+  flex: 1;
+  min-width: 120px;
+  font-size: 11px;
+  padding: 6px 8px;
+  background: #fff;
+  border: 1px solid #99f6e4;
+  border-radius: 6px;
+  word-break: break-all;
 }
 </style>

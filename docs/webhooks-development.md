@@ -35,16 +35,18 @@ Use Quick Tunnels or a named tunnel to publish `localhost:4317` over HTTPS. Poin
 
 - **`TRITON_WEBHOOK_ADMIN_TOKEN`** — When set, **`POST /api/webhooks/github/register`**, **`POST /api/webhooks/github/delete`**, and **`GET /api/webhooks/github/repos`** require header **`Authorization: Bearer <token>`**. When unset, those routes are open (convenient for local dev only).
 
-Example register:
+Example register (**`workspacePath` optional** after you clone — the runtime resolves the git-cache path from **`repositoryUrl`**):
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:4317/api/webhooks/github/register" \
   -H "content-type: application/json" \
   -H "authorization: Bearer $TRITON_WEBHOOK_ADMIN_TOKEN" \
-  -d '{"repositoryUrl":"https://github.com/org/repo","workspacePath":"/abs/path/to/cache/worktree","branch":"main"}'
+  -d '{"repositoryUrl":"https://github.com/org/repo.git","branch":"main"}'
 ```
 
-The **`workspacePath`** must match the **realpath** of the runtime git cache directory for that repo (clone once via the UI or **`POST /api/analysis/github`** first).
+If you pass **`workspacePath`**, it must be the **realpath** of that clone (same as the git-cache directory). In Docker with default settings, a repo like `github.com/you/chess` is typically under **`.../github-cache/github.com/you/chess`** inside the container (see **`GET /api/home`** → **`gitCacheRoot`**).
+
+Use the **Triton home UI** → **GitHub push webhooks** → **Register repository** when you prefer not to use curl.
 
 ## Behaviour
 
