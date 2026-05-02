@@ -368,6 +368,8 @@ function apiHomeModel(config) {
       editorUrl: config.editorUrl,
       allowedRepoRoots: config.allowedRepoRoots,
       gitCacheRoot: config.gitCacheRoot,
+      capabilities: ['analysis-local', 'analysis-github'],
+      version: '0.2.0',
     },
     recentRepos: readRecentRepos(config),
     discoveredRepos: discoverAllowedRepos(config),
@@ -1175,7 +1177,8 @@ function createRuntimeServer(options = {}) {
       sendJson(res, 200, {
         ok: true,
         service: 'triton-runtime',
-        version: '0.1.0',
+        version: '0.2.0',
+        capabilities: ['analysis-local', 'analysis-github'],
         allowedRepoRoots: config.allowedRepoRoots,
         gitCacheRoot: config.gitCacheRoot,
         editorUrl: config.editorUrl,
