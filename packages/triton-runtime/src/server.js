@@ -3,6 +3,7 @@ const fs = require('fs')
 const path = require('path')
 const cp = require('child_process')
 const os = require('os')
+const { createPersistence } = require('./persistence')
 
 const IGNORED_DIRS = new Set([
   '.git',
@@ -14,9 +15,8 @@ const IGNORED_DIRS = new Set([
   'dist',
   'out',
 ])
-const RECENT_REPOS_LIMIT = 12
 const REPO_DISCOVERY_MAX_DEPTH = 3
-const RUNTIME_VERSION = '0.3.0'
+const RUNTIME_VERSION = '0.4.0'
 
 function applyCorsHeaders(res) {
   res.setHeader('access-control-allow-origin', '*')
@@ -145,6 +145,13 @@ function runtimeConfig(options = {}) {
     String(options.gitCacheRoot || process.env.TRITON_GIT_CACHE_ROOT || path.join(stateDir, 'github-cache')).trim(),
   )
   const httpPathPrefix = String(options.httpPathPrefix ?? process.env.TRITON_HTTP_PATH_PREFIX ?? '').trim()
+  const persistenceBackendRaw = String(
+    options.persistenceBackend ?? process.env.TRITON_PERSISTENCE_BACKEND ?? 'file',
+  )
+    .trim()
+    .toLowerCase()
+  const persistenceBackend = persistenceBackendRaw === 'postgres' ? 'postgres' : 'file'
+  const databaseUrl = String(options.databaseUrl ?? process.env.DATABASE_URL ?? '').trim()
   return {
     allowedRepoRoots,
     publicRuntimeUrl,
@@ -152,6 +159,8 @@ function runtimeConfig(options = {}) {
     stateDir,
     gitCacheRoot,
     httpPathPrefix,
+    persistenceBackend,
+    databaseUrl,
   }
 }
 
@@ -225,23 +234,6 @@ function readUtf8IfFile(filePath) {
   }
 }
 
-function recentReposFilePath(config) {
-  return path.join(config.stateDir, 'recent-repos.json')
-}
-
-function readJsonFile(filePath, fallbackValue) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
-  } catch {
-    return fallbackValue
-  }
-}
-
-function writeJsonFile(filePath, value) {
-  ensureDirSync(path.dirname(filePath))
-  fs.writeFileSync(filePath, JSON.stringify(value, null, 2))
-}
-
 function repoDisplayName(repoPath) {
   return path.basename(repoPath) || repoPath
 }
@@ -255,17 +247,15 @@ function repoMetadata(repoPath) {
   }
 }
 
-function readRecentRepos(config) {
-  const recentPath = recentReposFilePath(config)
-  const raw = readJsonFile(recentPath, [])
-  if (!Array.isArray(raw)) return []
-  return raw
+function enrichRecentRepoRows(rows) {
+  return rows
     .map((entry) => {
-      const repoPath = String(entry && entry.workspacePath ? entry.workspacePath : '').trim()
+      const repoPath = String(entry.workspacePath || '').trim()
       if (!repoPath || !fileExists(repoPath)) return null
       const base = {
         workspacePath: repoPath,
-        workspaceName: String(entry.workspaceName || repoDisplayName(repoPath)).trim() || repoDisplayName(repoPath),
+        workspaceName:
+          String(entry.workspaceName || repoDisplayName(repoPath)).trim() || repoDisplayName(repoPath),
         lastOpenedAt: String(entry.lastOpenedAt || '').trim(),
         probe: probeWorkspace(repoPath),
       }
@@ -281,21 +271,23 @@ function readRecentRepos(config) {
     .filter(Boolean)
 }
 
-function rememberRecentRepo(config, workspacePath, workspaceName, extras = {}) {
-  const recent = readRecentRepos(config).filter((entry) => entry.workspacePath !== workspacePath)
+async function loadRecentReposForHome(config) {
+  const rows = await config.persistence.listRecentRepositories()
+  return enrichRecentRepoRows(rows)
+}
+
+async function rememberRecentRepo(config, workspacePath, workspaceName, extras = {}) {
   const row = {
     workspacePath,
     workspaceName: workspaceName || repoDisplayName(workspacePath),
     lastOpenedAt: new Date().toISOString(),
-    probe: probeWorkspace(workspacePath),
   }
   if (extras.source === 'github') {
     row.source = 'github'
     if (extras.repositoryUrl) row.repositoryUrl = String(extras.repositoryUrl).trim()
     if (extras.gitRef) row.gitRef = String(extras.gitRef).trim()
   }
-  recent.unshift(row)
-  writeJsonFile(recentReposFilePath(config), recent.slice(0, RECENT_REPOS_LIMIT))
+  await config.persistence.recordRecentRepository(row)
 }
 
 function directoryLooksLikeRepo(dirPath) {
@@ -363,7 +355,7 @@ function discoverAllowedRepos(config) {
   return out
 }
 
-function apiHomeModel(config) {
+async function apiHomeModel(config) {
   return {
     ok: true,
     runtime: {
@@ -372,10 +364,11 @@ function apiHomeModel(config) {
       allowedRepoRoots: config.allowedRepoRoots,
       gitCacheRoot: config.gitCacheRoot,
       httpPathPrefix: config.httpPathPrefix || undefined,
+      persistenceBackend: config.persistence.kind,
       capabilities: ['analysis-local', 'analysis-github', 'github-sync'],
       version: RUNTIME_VERSION,
     },
-    recentRepos: readRecentRepos(config),
+    recentRepos: await loadRecentReposForHome(config),
     discoveredRepos: discoverAllowedRepos(config),
   }
 }
@@ -764,7 +757,7 @@ function runtimeWorkspaceLaunchUrls(workspacePath, workspaceName, config) {
   }
 }
 
-function analyzeLocalWorkspace(body, config) {
+async function analyzeLocalWorkspace(body, config) {
   const validation = validateWorkspacePath(body.workspacePath, config)
   if (!validation.ok) {
     return {
@@ -776,7 +769,7 @@ function analyzeLocalWorkspace(body, config) {
   const probe = probeWorkspace(workspacePath)
   const workspaceName =
     String(body.workspaceName || '').trim() || path.basename(workspacePath) || path.basename(path.dirname(workspacePath)) || 'workspace'
-  rememberRecentRepo(config, workspacePath, workspaceName)
+  await rememberRecentRepo(config, workspacePath, workspaceName)
   return {
     statusCode: 200,
     body: buildAnalysisSuccessBody(workspacePath, workspaceName, probe, config, { mode: 'local-path' }),
@@ -804,7 +797,7 @@ async function registerGithubWorkspace(body, config, token, mode) {
     }
   }
   const resolvedPath = validation.workspacePath
-  rememberRecentRepo(config, resolvedPath, workspaceName, {
+  await rememberRecentRepo(config, resolvedPath, workspaceName, {
     source: 'github',
     repositoryUrl: materialized.canonicalRepoUrl,
     gitRef: materialized.refRequested || undefined,
@@ -820,8 +813,8 @@ async function registerGithubWorkspace(body, config, token, mode) {
   }
 }
 
-function runtimeHomeHtml(config) {
-  const home = apiHomeModel(config)
+async function runtimeHomeHtml(config) {
+  const home = await apiHomeModel(config)
   const allowedRoots = config.allowedRepoRoots.length
     ? `<ul>${config.allowedRepoRoots.map((root) => `<li><code>${escapeHtml(root)}</code></li>`).join('')}</ul>`
     : '<p><em>No root restriction configured.</em></p>'
@@ -1222,7 +1215,11 @@ function routePathname(urlPathname, prefixRaw) {
 }
 
 function createRuntimeServer(options = {}) {
-  const config = runtimeConfig(options)
+  const persistence = options.persistence
+  if (!persistence || typeof persistence.listRecentRepositories !== 'function') {
+    throw new Error('createRuntimeServer requires options.persistence from createPersistence()')
+  }
+  const config = { ...runtimeConfig(options), persistence }
   return http.createServer(async (req, res) => {
     const method = req.method || 'GET'
     const url = new URL(req.url || '/', 'http://127.0.0.1')
@@ -1237,7 +1234,7 @@ function createRuntimeServer(options = {}) {
     }
 
     if (method === 'GET' && pathname === '/') {
-      const html = runtimeHomeHtml(config)
+      const html = await runtimeHomeHtml(config)
       applyCorsHeaders(res)
       res.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
@@ -1257,6 +1254,7 @@ function createRuntimeServer(options = {}) {
         allowedRepoRoots: config.allowedRepoRoots,
         gitCacheRoot: config.gitCacheRoot,
         httpPathPrefix: config.httpPathPrefix || undefined,
+        persistence: config.persistence.kind,
         editorUrl: config.editorUrl,
         publicRuntimeUrl: config.publicRuntimeUrl,
       })
@@ -1264,7 +1262,7 @@ function createRuntimeServer(options = {}) {
     }
 
     if (method === 'GET' && pathname === '/api/home') {
-      sendJson(res, 200, apiHomeModel(config))
+      sendJson(res, 200, await apiHomeModel(config))
       return
     }
 
@@ -1289,7 +1287,7 @@ function createRuntimeServer(options = {}) {
         sendJson(res, 400, { ok: false, error: 'invalid_json' })
         return
       }
-      const result = analyzeLocalWorkspace(body, config)
+      const result = await analyzeLocalWorkspace(body, config)
       sendJson(res, result.statusCode, result.body)
       return
     }
@@ -1404,28 +1402,32 @@ function createRuntimeServer(options = {}) {
   })
 }
 
-function startRuntimeServer(options = {}) {
+async function startRuntimeServer(options = {}) {
   const host = String(options.host || '127.0.0.1')
   const port = Number(options.port || 4317)
-  const server = createRuntimeServer({ ...options, host, port })
+  const baseConfig = runtimeConfig({ ...options, host, port })
+  const persistence = await createPersistence(baseConfig)
+  const server = createRuntimeServer({ ...options, host, port, persistence })
   return new Promise((resolve, reject) => {
     server.once('error', reject)
     server.listen(port, host, () => {
       const cfg = runtimeConfig({ ...options, host, port })
       process.stderr.write(
-        `[triton-runtime] listening http://${host}:${port} version=${RUNTIME_VERSION} TRITON_HTTP_PATH_PREFIX=${cfg.httpPathPrefix || '(unset)'}\n`,
+        `[triton-runtime] listening http://${host}:${port} version=${RUNTIME_VERSION} persistence=${persistence.kind} TRITON_HTTP_PATH_PREFIX=${cfg.httpPathPrefix || '(unset)'}\n`,
       )
       resolve({
         server,
         host,
         port,
         url: `http://${host}:${port}`,
+        persistence,
       })
     })
   })
 }
 
 module.exports = {
+  createPersistence,
   createRuntimeServer,
   probeWorkspace,
   readWorkspaceBundle,

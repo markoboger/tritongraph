@@ -35,6 +35,7 @@ export type RuntimeHomeModel = {
     allowedRepoRoots?: string[]
     gitCacheRoot?: string
     httpPathPrefix?: string
+    persistenceBackend?: 'file' | 'postgres'
     version?: string
     capabilities?: string[]
   }
@@ -648,6 +649,10 @@ watch(
         <div v-if="homeModel.runtime.version">
           <strong>Runtime version</strong>
           <div class="runtime-home__mono">{{ homeModel.runtime.version }}</div>
+        </div>
+        <div v-if="homeModel.runtime.persistenceBackend">
+          <strong>Persistence</strong>
+          <div class="runtime-home__mono">{{ homeModel.runtime.persistenceBackend }}</div>
         </div>
       </section>
 

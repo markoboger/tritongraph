@@ -57,7 +57,7 @@ Then open `http://127.0.0.1:4317`, enter a repo path like `/Users/markoboger/wor
 
 If `POST /api/analysis/github` returns JSON `{ "error": "not_found", ... }`:
 
-1. **Upgrade** so `/health` reports `"version": "0.3.0"` (or newer), `capabilities` includes `github-sync`, and `GET /api/analysis/github` returns JSON describing POST (not `not_found`). If GET also returns `not_found`, you are not hitting this codebase’s server on that port.
+1. **Upgrade** so `/health` reports `"version": "0.4.0"` (or newer), `capabilities` includes `github-sync`, and `GET /api/analysis/github` returns JSON describing POST (not `not_found`). If GET also returns `not_found`, you are not hitting this codebase’s server on that port.
 2. Read the **`pathnameRaw`** field on the 404 body (0.2.1+). If it looks like `/something/api/analysis/github` instead of `/api/analysis/github`, your reverse proxy forwards a **path prefix**. Set **`TRITON_HTTP_PATH_PREFIX`** to that prefix (e.g. `/something`) on the runtime process and restart, or reconfigure the proxy to strip the prefix before forwarding.
 3. **`path` ends with `/api/analysis/github/`** — trailing slash was fixed by normalizing paths; upgrade if you still see this on an older build.
 
@@ -86,9 +86,9 @@ Inside the container, host repos are mounted at `/repos`, so the `chess` example
 docker compose --profile postgres up -d postgres
 ```
 
-The Node runtime does not connect to it yet; see **Next phase: persistence** below.
+Use Postgres persistence only when you opt in (see below).
 
-### Next phase: persistence abstraction (plugin vs server)
+### Persistence (recent repositories): file vs Postgres
 
 Goal: **courses / projects / webhooks** need durable storage on the server without forcing **Postgres** onto every **VS Code plugin + local `npm start`** workflow.
 
@@ -109,12 +109,15 @@ Goal: **courses / projects / webhooks** need durable storage on the server witho
 | *(unset)* / `TRITON_PERSISTENCE_BACKEND=file` | File-backed store only |
 | `TRITON_PERSISTENCE_BACKEND=postgres` + `DATABASE_URL` | Postgres implementation |
 
-**Cutover** — implement the interface with file adapter first (wrap existing JSON), add Postgres adapter + migrations, then migrate features (courses, etc.) to use only the interface.
+**Implemented today:** `createPersistence(config)` selects **`file`** (default: `recent-repos.json` under `TRITON_RUNTIME_STATE_DIR`) or **`postgres`** (`TRITON_PERSISTENCE_BACKEND=postgres` + `DATABASE_URL`). The HTTP server only talks to `config.persistence` (`listRecentRepositories`, `recordRecentRepository`). `/health` and `/api/home` expose `persistence` / `persistenceBackend`.
+
+**Docker example** (same compose network): set `DATABASE_URL=postgres://triton:triton@postgres:5432/triton` and `TRITON_PERSISTENCE_BACKEND=postgres` on the `triton-runtime` service after `docker compose --profile postgres up -d postgres`.
+
+**Next:** add courses / projects / webhooks to the same interface (new methods + migrations).
 
 Near-term next steps:
 
-- implement `TritonPersistence` + file adapter (wrap current recent-repo JSON)
-- add Postgres adapter + migrations behind the same interface
+- extend persistence with course/project tables and APIs
 - let runtime-backed refresh/rescan requests update the browser's live data path directly
 - add workspace scan endpoints that return a fully built Triton payload, not just raw workspace inputs
 - package the runtime independently from the editor dev server
