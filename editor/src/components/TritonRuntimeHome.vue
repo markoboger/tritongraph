@@ -11,6 +11,7 @@ type StarterFoldSection = {
 import stackedCubesIconUrl from '../assets/language-icons/stacked-cubes.svg'
 import githubMarkIconUrl from '../assets/language-icons/Octicons-mark-github.svg'
 import gitlabMarkIconUrl from '../assets/language-icons/GitLab_icon.svg'
+import folderIconUrl from '../assets/language-icons/folder.svg'
 import { dockerBrandIconUrl } from '../triton/dockerConceptIcons'
 import cubeIconUrl from '../assets/language-icons/cube.svg'
 import sbtIconUrl from '../assets/language-icons/sbt.svg'
@@ -842,7 +843,7 @@ watch(
       <header class="runtime-home__hero">
         <h1>Triton Architecture Explorer</h1>
         <p>
-          Use the <strong>Add Course</strong>, <strong>Add local repo from folder</strong>, and
+          Use the <strong>Add Course</strong>, <strong>Add local repo</strong> (folder), and
           <strong>Add new repo</strong> (GitHub / GitLab) buttons (below once the runtime is connected) to register
           workspaces. Optionally create <strong>Courses</strong> to group repos on the server. Open the SBT or package
           diagram from each card. Bundled examples and dojos open in new tabs.
@@ -912,8 +913,16 @@ watch(
           >
             Add Course
           </button>
-          <button type="button" class="runtime-home__btn runtime-home__btn--primary" @click="openLocalRepoDialog">
-            Add local repo from folder
+          <button
+            type="button"
+            class="runtime-home__btn runtime-home__btn--primary runtime-home__btn--repo-hosts"
+            aria-label="Add local repo from folder"
+            @click="openLocalRepoDialog"
+          >
+            <span>Add local repo</span>
+            <span class="runtime-home__repo-host-icons" aria-hidden="true">
+              <img class="runtime-home__repo-host-icon" :src="folderIconUrl" alt="" width="20" height="20" />
+            </span>
           </button>
           <button
             type="button"
