@@ -1191,7 +1191,7 @@ watch(
               class="runtime-home__input"
               type="url"
               autocomplete="off"
-              placeholder="https://github.com/scala/hello-world.g8 or https://gitlab.com/gitlab-org/gitlab"
+              placeholder="https://github.com/scala/scala.git or https://gitlab.com/gitlab-org/gitlab.git"
             />
             <label class="runtime-home__label" for="runtime-dialog-remote-ref">Branch or tag (optional)</label>
             <input

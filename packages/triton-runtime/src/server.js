@@ -1055,7 +1055,7 @@ async function runtimeHomeHtml(config) {
         <form id="github-analysis-form">
           <div>
             <label for="repositoryUrl">GitHub or GitLab repository (HTTPS)</label>
-            <input id="repositoryUrl" name="repositoryUrl" type="text" placeholder="https://github.com/scala/scala or https://gitlab.com/group/project" autocomplete="off" />
+            <input id="repositoryUrl" name="repositoryUrl" type="text" placeholder="https://github.com/scala/scala.git or https://gitlab.com/group/project.git" autocomplete="off" />
           </div>
           <div>
             <label for="gitRef">Branch or tag (optional)</label>
