@@ -54,7 +54,10 @@ Then open `http://127.0.0.1:4317`, enter a repo path like `/Users/markoboger/wor
 
 Requires **public** repositories over HTTPS until auth is added.
 
-If `POST /api/analysis/github` returns JSON `{ "error": "not_found", "path": "/api/analysis/github" }`, the process answering on that port is an **older triton-runtime** (no GitHub route). Restart from current sources and check `GET /health`: it should list `"capabilities": ["analysis-local", "analysis-github"]` and `"version": "0.2.0"`.
+If `POST /api/analysis/github` returns JSON `{ "error": "not_found", ... }`:
+
+- **`path` ends with `/api/analysis/github/`** — you used a **trailing slash** on the URL; older servers treated that as unknown (fixed in current `github-link` by normalizing paths). Drop the slash or upgrade runtime.
+- **`path` is `/api/analysis/github`** but still `not_found` — the process is an **older triton-runtime** without the route. Check `GET /health` for `"capabilities": ["analysis-local", "analysis-github"]` and `"version": "0.2.0"`.
 
 If `TRITON_ALLOWED_REPO_ROOTS` points at a workspace root, the landing page also lists discovered repositories under that root and remembers recently opened repositories.
 When the browser UI is running against this runtime, source links from artefact panels can open a read-only source tab inside Triton instead of handing off to the IDE.

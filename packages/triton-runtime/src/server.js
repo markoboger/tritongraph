@@ -1148,11 +1148,18 @@ async function handleWorkspaceAction(body) {
   }
 }
 
+function normalizeRoutePathname(pathname) {
+  const p = String(pathname || '/').replace(/\/{2,}/g, '/')
+  if (p.length > 1 && p.endsWith('/')) return p.replace(/\/+$/, '')
+  return p
+}
+
 function createRuntimeServer(options = {}) {
   const config = runtimeConfig(options)
   return http.createServer(async (req, res) => {
     const method = req.method || 'GET'
     const url = new URL(req.url || '/', 'http://127.0.0.1')
+    const pathname = normalizeRoutePathname(url.pathname)
 
     if (method === 'OPTIONS') {
       applyCorsHeaders(res)
@@ -1161,7 +1168,7 @@ function createRuntimeServer(options = {}) {
       return
     }
 
-    if (method === 'GET' && url.pathname === '/') {
+    if (method === 'GET' && pathname === '/') {
       const html = runtimeHomeHtml(config)
       applyCorsHeaders(res)
       res.writeHead(200, {
@@ -1173,7 +1180,7 @@ function createRuntimeServer(options = {}) {
       return
     }
 
-    if (method === 'GET' && url.pathname === '/health') {
+    if (method === 'GET' && pathname === '/health') {
       sendJson(res, 200, {
         ok: true,
         service: 'triton-runtime',
@@ -1187,12 +1194,12 @@ function createRuntimeServer(options = {}) {
       return
     }
 
-    if (method === 'GET' && url.pathname === '/api/home') {
+    if (method === 'GET' && pathname === '/api/home') {
       sendJson(res, 200, apiHomeModel(config))
       return
     }
 
-    if (method === 'POST' && url.pathname === '/api/analysis/local') {
+    if (method === 'POST' && pathname === '/api/analysis/local') {
       const raw = await collectBody(req)
       const body = safeJsonParse(raw)
       if (!body) {
@@ -1204,7 +1211,7 @@ function createRuntimeServer(options = {}) {
       return
     }
 
-    if (method === 'POST' && url.pathname === '/api/analysis/github') {
+    if (method === 'POST' && pathname === '/api/analysis/github') {
       const raw = await collectBody(req)
       const body = safeJsonParse(raw)
       if (!body) {
@@ -1216,7 +1223,7 @@ function createRuntimeServer(options = {}) {
       return
     }
 
-    if (method === 'GET' && url.pathname === '/api/workspace/bundle') {
+    if (method === 'GET' && pathname === '/api/workspace/bundle') {
       const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
       const validation = validateWorkspacePath(workspacePath, config)
       if (!validation.ok) {
@@ -1232,7 +1239,7 @@ function createRuntimeServer(options = {}) {
       return
     }
 
-    if (method === 'GET' && url.pathname === '/api/workspace/source') {
+    if (method === 'GET' && pathname === '/api/workspace/source') {
       const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
       const relPath = String(url.searchParams.get('relPath') || '').trim()
       const validation = validateWorkspacePath(workspacePath, config)
@@ -1274,7 +1281,7 @@ function createRuntimeServer(options = {}) {
       return
     }
 
-    if (method === 'POST' && url.pathname === '/api/workspace/action') {
+    if (method === 'POST' && pathname === '/api/workspace/action') {
       const raw = await collectBody(req)
       const body = safeJsonParse(raw)
       if (!body) {
@@ -1290,7 +1297,7 @@ function createRuntimeServer(options = {}) {
       ok: false,
       error: 'not_found',
       method,
-      path: url.pathname,
+      path: pathname,
     })
   })
 }
