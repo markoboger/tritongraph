@@ -16,12 +16,18 @@ const IGNORED_DIRS = new Set([
   'out',
 ])
 const REPO_DISCOVERY_MAX_DEPTH = 3
-const RUNTIME_VERSION = '0.4.0'
+const RUNTIME_VERSION = '0.5.0'
 
 function applyCorsHeaders(res) {
   res.setHeader('access-control-allow-origin', '*')
-  res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS')
+  res.setHeader('access-control-allow-methods', 'GET,POST,DELETE,OPTIONS')
   res.setHeader('access-control-allow-headers', 'content-type')
+}
+
+function runtimeCapabilities(config) {
+  const caps = ['analysis-local', 'analysis-github', 'github-sync']
+  if (typeof config.persistence.listCourses === 'function') caps.push('courses-api')
+  return caps
 }
 
 function sendJson(res, statusCode, body) {
@@ -276,6 +282,51 @@ async function loadRecentReposForHome(config) {
   return enrichRecentRepoRows(rows)
 }
 
+async function validateOptionalCourseId(config, courseIdRaw) {
+  const courseId = String(courseIdRaw || '').trim()
+  if (!courseId) return { ok: true, courseId: '' }
+  if (typeof config.persistence.getCourse !== 'function') {
+    return { ok: false, error: 'courses_not_supported' }
+  }
+  const c = await config.persistence.getCourse(courseId)
+  if (!c) return { ok: false, error: 'course_not_found' }
+  return { ok: true, courseId }
+}
+
+async function loadCoursesForHome(config) {
+  const p = config.persistence
+  if (typeof p.listCourses !== 'function' || typeof p.listWorkspacesForCourse !== 'function') {
+    return []
+  }
+  const list = await p.listCourses()
+  const out = []
+  for (const c of list) {
+    const links = await p.listWorkspacesForCourse(c.id)
+    const rows = links.map((l) => ({
+      workspacePath: l.workspacePath,
+      workspaceName: l.workspaceName,
+      lastOpenedAt: l.linkedAt,
+      source: l.source,
+      repositoryUrl: l.repositoryUrl,
+      gitRef: l.gitRef,
+    }))
+    const workspaces = enrichRecentRepoRows(rows)
+    out.push({ ...c, workspaces })
+  }
+  return out
+}
+
+function filterOrphanRecentRepos(recentList, coursesPayload) {
+  const assigned = new Set()
+  for (const c of coursesPayload) {
+    for (const w of c.workspaces || []) {
+      const p = String(w.workspacePath || '').trim()
+      if (p) assigned.add(p)
+    }
+  }
+  return recentList.filter((r) => !assigned.has(String(r.workspacePath || '').trim()))
+}
+
 async function rememberRecentRepo(config, workspacePath, workspaceName, extras = {}) {
   const row = {
     workspacePath,
@@ -356,6 +407,8 @@ function discoverAllowedRepos(config) {
 }
 
 async function apiHomeModel(config) {
+  const courses = await loadCoursesForHome(config)
+  const recentAll = await loadRecentReposForHome(config)
   return {
     ok: true,
     runtime: {
@@ -365,10 +418,11 @@ async function apiHomeModel(config) {
       gitCacheRoot: config.gitCacheRoot,
       httpPathPrefix: config.httpPathPrefix || undefined,
       persistenceBackend: config.persistence.kind,
-      capabilities: ['analysis-local', 'analysis-github', 'github-sync'],
+      capabilities: runtimeCapabilities(config),
       version: RUNTIME_VERSION,
     },
-    recentRepos: await loadRecentReposForHome(config),
+    courses,
+    recentRepos: filterOrphanRecentRepos(recentAll, courses),
     discoveredRepos: discoverAllowedRepos(config),
   }
 }
@@ -758,6 +812,10 @@ function runtimeWorkspaceLaunchUrls(workspacePath, workspaceName, config) {
 }
 
 async function analyzeLocalWorkspace(body, config) {
+  const courseCheck = await validateOptionalCourseId(config, body.courseId)
+  if (!courseCheck.ok) {
+    return { statusCode: 400, body: { ok: false, error: courseCheck.error } }
+  }
   const validation = validateWorkspacePath(body.workspacePath, config)
   if (!validation.ok) {
     return {
@@ -770,6 +828,13 @@ async function analyzeLocalWorkspace(body, config) {
   const workspaceName =
     String(body.workspaceName || '').trim() || path.basename(workspacePath) || path.basename(path.dirname(workspacePath)) || 'workspace'
   await rememberRecentRepo(config, workspacePath, workspaceName)
+  if (courseCheck.courseId && typeof config.persistence.attachWorkspaceToCourse === 'function') {
+    await config.persistence.attachWorkspaceToCourse({
+      courseId: courseCheck.courseId,
+      workspacePath,
+      workspaceName,
+    })
+  }
   return {
     statusCode: 200,
     body: buildAnalysisSuccessBody(workspacePath, workspaceName, probe, config, { mode: 'local-path' }),
@@ -777,6 +842,10 @@ async function analyzeLocalWorkspace(body, config) {
 }
 
 async function registerGithubWorkspace(body, config, token, mode) {
+  const courseCheck = await validateOptionalCourseId(config, body.courseId)
+  if (!courseCheck.ok) {
+    return { statusCode: 400, body: { ok: false, error: courseCheck.error } }
+  }
   const materialized = await materializeGithubRepo(body, config, token)
   if (!materialized.ok) {
     return { statusCode: materialized.statusCode, body: materialized.body }
@@ -802,6 +871,16 @@ async function registerGithubWorkspace(body, config, token, mode) {
     repositoryUrl: materialized.canonicalRepoUrl,
     gitRef: materialized.refRequested || undefined,
   })
+  if (courseCheck.courseId && typeof config.persistence.attachWorkspaceToCourse === 'function') {
+    await config.persistence.attachWorkspaceToCourse({
+      courseId: courseCheck.courseId,
+      workspacePath: resolvedPath,
+      workspaceName,
+      repositoryUrl: materialized.canonicalRepoUrl,
+      gitRef: materialized.refRequested || undefined,
+      source: 'github',
+    })
+  }
   const probe = probeWorkspace(resolvedPath)
   return {
     statusCode: 200,
@@ -1250,7 +1329,7 @@ function createRuntimeServer(options = {}) {
         ok: true,
         service: 'triton-runtime',
         version: RUNTIME_VERSION,
-        capabilities: ['analysis-local', 'analysis-github', 'github-sync'],
+        capabilities: runtimeCapabilities(config),
         allowedRepoRoots: config.allowedRepoRoots,
         gitCacheRoot: config.gitCacheRoot,
         httpPathPrefix: config.httpPathPrefix || undefined,
@@ -1258,6 +1337,60 @@ function createRuntimeServer(options = {}) {
         editorUrl: config.editorUrl,
         publicRuntimeUrl: config.publicRuntimeUrl,
       })
+      return
+    }
+
+    if (method === 'GET' && pathname === '/api/courses') {
+      if (typeof config.persistence.listCourses !== 'function') {
+        sendJson(res, 501, { ok: false, error: 'courses_not_supported' })
+        return
+      }
+      const courses = await config.persistence.listCourses()
+      sendJson(res, 200, { ok: true, courses })
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/courses') {
+      if (typeof config.persistence.createCourse !== 'function') {
+        sendJson(res, 501, { ok: false, error: 'courses_not_supported' })
+        return
+      }
+      const raw = await collectBody(req)
+      const body = safeJsonParse(raw)
+      if (!body) {
+        sendJson(res, 400, { ok: false, error: 'invalid_json' })
+        return
+      }
+      const result = await config.persistence.createCourse({
+        slug: body.slug,
+        title: body.title,
+        term: body.term,
+      })
+      if (!result.ok) {
+        sendJson(res, 400, { ok: false, error: result.error })
+        return
+      }
+      sendJson(res, 200, { ok: true, course: result.course })
+      return
+    }
+
+    if (method === 'DELETE' && pathname.startsWith('/api/courses/')) {
+      if (typeof config.persistence.deleteCourse !== 'function') {
+        sendJson(res, 501, { ok: false, error: 'courses_not_supported' })
+        return
+      }
+      const id = pathname.slice('/api/courses/'.length).trim()
+      if (!id || id.includes('/')) {
+        sendJson(res, 400, { ok: false, error: 'invalid_course_id' })
+        return
+      }
+      const result = await config.persistence.deleteCourse(id)
+      if (!result.ok) {
+        const code = result.error === 'course_not_found' ? 404 : 400
+        sendJson(res, code, { ok: false, error: result.error })
+        return
+      }
+      sendJson(res, 200, { ok: true })
       return
     }
 

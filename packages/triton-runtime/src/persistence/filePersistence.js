@@ -1,5 +1,6 @@
 const fs = require('fs')
 const path = require('path')
+const crypto = require('crypto')
 
 const RECENT_LIMIT = 12
 
@@ -22,6 +23,35 @@ function writeJsonFile(filePath, value) {
 
 function recentReposFilePath(config) {
   return path.join(config.stateDir, 'recent-repos.json')
+}
+
+function directoryFilePath(config) {
+  return path.join(config.stateDir, 'directory.json')
+}
+
+function readDirectoryState(config) {
+  const raw = readJsonFile(directoryFilePath(config), { courses: [], courseWorkspaces: [] })
+  return {
+    courses: Array.isArray(raw.courses) ? raw.courses : [],
+    courseWorkspaces: Array.isArray(raw.courseWorkspaces) ? raw.courseWorkspaces : [],
+  }
+}
+
+function writeDirectoryState(config, state) {
+  writeJsonFile(directoryFilePath(config), {
+    courses: state.courses,
+    courseWorkspaces: state.courseWorkspaces,
+  })
+}
+
+function normalizeSlug(slug) {
+  return String(slug || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9_.-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
 }
 
 function normalizeStoredRow(entry) {
@@ -75,7 +105,95 @@ function createFilePersistence(config) {
       filtered.unshift(stored)
       writeJsonFile(fp(), filtered.slice(0, RECENT_LIMIT))
     },
+
+    async listCourses() {
+      const { courses } = readDirectoryState(config)
+      return [...courses].sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')))
+    },
+
+    async getCourse(courseId) {
+      const id = String(courseId || '').trim()
+      if (!id) return null
+      const { courses } = readDirectoryState(config)
+      return courses.find((c) => String(c.id) === id) || null
+    },
+
+    async createCourse({ slug, title, term }) {
+      const s = normalizeSlug(slug)
+      const t = String(title || '').trim()
+      if (!s) return { ok: false, error: 'course_slug_required' }
+      if (!t) return { ok: false, error: 'course_title_required' }
+      const state = readDirectoryState(config)
+      if (state.courses.some((c) => String(c.slug) === s)) {
+        return { ok: false, error: 'course_slug_exists' }
+      }
+      const id = crypto.randomUUID()
+      const rec = {
+        id,
+        slug: s,
+        title: t,
+        term: String(term || '').trim(),
+        createdAt: new Date().toISOString(),
+      }
+      state.courses.push(rec)
+      writeDirectoryState(config, state)
+      return { ok: true, course: rec }
+    },
+
+    async deleteCourse(courseId) {
+      const id = String(courseId || '').trim()
+      if (!id) return { ok: false, error: 'course_id_required' }
+      const state = readDirectoryState(config)
+      const nextCourses = state.courses.filter((c) => String(c.id) !== id)
+      if (nextCourses.length === state.courses.length) return { ok: false, error: 'course_not_found' }
+      const nextLinks = state.courseWorkspaces.filter((l) => String(l.courseId) !== id)
+      writeDirectoryState(config, { courses: nextCourses, courseWorkspaces: nextLinks })
+      return { ok: true }
+    },
+
+    async listWorkspacesForCourse(courseId) {
+      const id = String(courseId || '').trim()
+      if (!id) return []
+      const { courseWorkspaces } = readDirectoryState(config)
+      return courseWorkspaces
+        .filter((l) => String(l.courseId) === id)
+        .map((l) => ({
+          courseId: l.courseId,
+          workspacePath: String(l.workspacePath || '').trim(),
+          workspaceName: String(l.workspaceName || '').trim(),
+          repositoryUrl: l.repositoryUrl ? String(l.repositoryUrl) : undefined,
+          gitRef: l.gitRef ? String(l.gitRef) : undefined,
+          source: l.source === 'github' ? 'github' : undefined,
+          linkedAt: String(l.linkedAt || ''),
+        }))
+        .filter((l) => l.workspacePath)
+    },
+
+    async attachWorkspaceToCourse(row) {
+      const courseId = String(row.courseId || '').trim()
+      const workspacePath = String(row.workspacePath || '').trim()
+      const workspaceName = String(row.workspaceName || '').trim()
+      if (!courseId || !workspacePath) return { ok: false, error: 'course_and_path_required' }
+      const course = await this.getCourse(courseId)
+      if (!course) return { ok: false, error: 'course_not_found' }
+      const state = readDirectoryState(config)
+      const link = {
+        courseId,
+        workspacePath,
+        workspaceName: workspaceName || workspacePath,
+        repositoryUrl: row.repositoryUrl ? String(row.repositoryUrl).trim() : '',
+        gitRef: row.gitRef ? String(row.gitRef).trim() : '',
+        source: row.source === 'github' ? 'github' : '',
+        linkedAt: new Date().toISOString(),
+      }
+      const rest = state.courseWorkspaces.filter(
+        (l) => !(String(l.courseId) === courseId && String(l.workspacePath).trim() === workspacePath),
+      )
+      rest.push(link)
+      writeDirectoryState(config, { courses: state.courses, courseWorkspaces: rest })
+      return { ok: true }
+    },
   }
 }
 
-module.exports = { createFilePersistence, RECENT_LIMIT }
+module.exports = { createFilePersistence, RECENT_LIMIT, normalizeSlug }

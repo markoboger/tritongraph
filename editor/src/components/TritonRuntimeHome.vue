@@ -26,6 +26,15 @@ export type RuntimeHomeRepo = {
   gitRef?: string
 }
 
+export type RuntimeCourse = {
+  id: string
+  slug: string
+  title: string
+  term?: string
+  createdAt?: string
+  workspaces?: RuntimeHomeRepo[]
+}
+
 export type RuntimeHomeModel = {
   ok?: boolean
   error?: string
@@ -39,6 +48,8 @@ export type RuntimeHomeModel = {
     version?: string
     capabilities?: string[]
   }
+  /** Grouped workspaces; only present when the runtime advertises `courses-api`. */
+  courses?: RuntimeCourse[]
   recentRepos?: RuntimeHomeRepo[]
 }
 
@@ -86,6 +97,13 @@ const githubUrlInput = ref('')
 const githubRefInput = ref('')
 /** Optional PAT for private repos; cleared after successful import (never stored on cards). */
 const githubTokenInput = ref('')
+const selectedCourseId = ref('')
+const newCourseSlug = ref('')
+const newCourseTitle = ref('')
+const newCourseTerm = ref('')
+const courseFormBusy = ref(false)
+const courseSubmitError = ref('')
+const deletingCourseId = ref('')
 const homeModel = ref<RuntimeHomeModel | null>(null)
 const loadError = ref('')
 const submitError = ref('')
@@ -121,6 +139,26 @@ const runtimeSupportsGithubSync = computed(() => {
   return Array.isArray(caps) && caps.includes('github-sync')
 })
 
+const runtimeSupportsCourses = computed(() => {
+  const caps = homeModel.value?.runtime?.capabilities
+  return Array.isArray(caps) && caps.includes('courses-api')
+})
+
+const assignedWorkspacePaths = computed(() => {
+  const s = new Set<string>()
+  for (const c of homeModel.value?.courses ?? []) {
+    for (const w of c.workspaces ?? []) {
+      const p = String(w.workspacePath || '').trim()
+      if (p) s.add(p)
+    }
+  }
+  return s
+})
+
+const orphanDeckTitle = computed(() =>
+  assignedWorkspacePaths.value.size > 0 ? 'Other workspaces' : 'Repositories',
+)
+
 function markAnalyzed(path: string): void {
   const next = new Set(locallyAnalyzedPaths.value)
   next.add(path)
@@ -129,7 +167,11 @@ function markAnalyzed(path: string): void {
 
 function wasOpenedOrAnalyzed(path: string): boolean {
   if (locallyAnalyzedPaths.value.has(path)) return true
-  return !!(homeModel.value?.recentRepos?.some((r) => r.workspacePath === path))
+  if (homeModel.value?.recentRepos?.some((r) => r.workspacePath === path)) return true
+  for (const c of homeModel.value?.courses ?? []) {
+    if (c.workspaces?.some((w) => w.workspacePath === path)) return true
+  }
+  return false
 }
 
 function pushSessionRepo(repo: RuntimeHomeRepo): void {
@@ -141,27 +183,46 @@ function pushSessionRepo(repo: RuntimeHomeRepo): void {
 
 function mergeFromHome(r: RuntimeHomeRepo): RuntimeHomeRepo {
   const fr = homeModel.value?.recentRepos?.find((x) => x.workspacePath === r.workspacePath)
-  if (!fr) return r
-  return {
-    workspacePath: r.workspacePath,
-    workspaceName: r.workspaceName || fr.workspaceName,
-    lastOpenedAt: fr.lastOpenedAt || r.lastOpenedAt,
-    probe: r.probe || fr.probe,
-    source: fr.source ?? r.source,
-    repositoryUrl: fr.repositoryUrl ?? r.repositoryUrl,
-    gitRef: fr.gitRef ?? r.gitRef,
+  if (fr) {
+    return {
+      workspacePath: r.workspacePath,
+      workspaceName: r.workspaceName || fr.workspaceName,
+      lastOpenedAt: fr.lastOpenedAt || r.lastOpenedAt,
+      probe: r.probe || fr.probe,
+      source: fr.source ?? r.source,
+      repositoryUrl: fr.repositoryUrl ?? r.repositoryUrl,
+      gitRef: fr.gitRef ?? r.gitRef,
+    }
   }
+  for (const c of homeModel.value?.courses ?? []) {
+    const cw = c.workspaces?.find((x) => x.workspacePath === r.workspacePath)
+    if (cw) {
+      return {
+        workspacePath: r.workspacePath,
+        workspaceName: r.workspaceName || cw.workspaceName,
+        lastOpenedAt: cw.lastOpenedAt || r.lastOpenedAt,
+        probe: r.probe || cw.probe,
+        source: cw.source ?? r.source,
+        repositoryUrl: cw.repositoryUrl ?? r.repositoryUrl,
+        gitRef: cw.gitRef ?? r.gitRef,
+      }
+    }
+  }
+  return r
 }
 
 const repositoryCards = computed(() => {
   const seen = new Set<string>()
   const out: RuntimeHomeRepo[] = []
+  const keepOrphan = (wsPath: string) => !assignedWorkspacePaths.value.has(wsPath)
   for (const r of sessionRepos.value) {
+    if (!keepOrphan(r.workspacePath)) continue
     if (seen.has(r.workspacePath)) continue
     seen.add(r.workspacePath)
     out.push(mergeFromHome(r))
   }
   for (const r of homeModel.value?.recentRepos ?? []) {
+    if (!keepOrphan(r.workspacePath)) continue
     if (seen.has(r.workspacePath)) continue
     seen.add(r.workspacePath)
     out.push(r)
@@ -306,7 +367,12 @@ type AnalysisOk = {
 }
 type AnalysisFail = { ok: false; error: string; body?: Record<string, unknown> }
 
-async function postGithubAnalysis(repoUrl: string, ref: string, githubToken?: string): Promise<AnalysisOk | AnalysisFail> {
+async function postGithubAnalysis(
+  repoUrl: string,
+  ref: string,
+  githubToken?: string,
+  courseId?: string,
+): Promise<AnalysisOk | AnalysisFail> {
   const url = repoUrl.trim()
   lastResultJson.value = ''
   if (!url) {
@@ -316,6 +382,8 @@ async function postGithubAnalysis(repoUrl: string, ref: string, githubToken?: st
     const payload: Record<string, string> = { repositoryUrl: url, ref: ref.trim() }
     const tok = String(githubToken || '').trim()
     if (tok) payload.githubToken = tok
+    const cid = String(courseId || '').trim()
+    if (cid) payload.courseId = cid
     const res = await fetch(`${base.value}/api/analysis/github`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -388,17 +456,20 @@ async function postGithubSync(repoUrl: string, ref: string, githubToken?: string
   }
 }
 
-async function postLocalAnalysis(workspacePath: string): Promise<AnalysisOk | AnalysisFail> {
+async function postLocalAnalysis(workspacePath: string, courseId?: string): Promise<AnalysisOk | AnalysisFail> {
   const path = workspacePath.trim()
   lastResultJson.value = ''
   if (!path) {
     return { ok: false, error: 'Please enter an absolute repository path.' }
   }
   try {
+    const payload: Record<string, string> = { workspacePath: path }
+    const cid = String(courseId || '').trim()
+    if (cid) payload.courseId = cid
     const res = await fetch(`${base.value}/api/analysis/local`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ workspacePath: path }),
+      body: JSON.stringify(payload),
     })
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
     if (!res.ok || body.ok !== true) {
@@ -417,6 +488,64 @@ async function postLocalAnalysis(workspacePath: string): Promise<AnalysisOk | An
   }
 }
 
+async function createCourseFromForm(): Promise<void> {
+  courseSubmitError.value = ''
+  const slug = newCourseSlug.value.trim()
+  const title = newCourseTitle.value.trim()
+  if (!slug || !title) {
+    courseSubmitError.value = 'Course slug and title are required.'
+    return
+  }
+  courseFormBusy.value = true
+  try {
+    const res = await fetch(`${base.value}/api/courses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug, title, term: newCourseTerm.value.trim() }),
+    })
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; course?: { id: string } }
+    if (!res.ok || body.ok !== true) {
+      courseSubmitError.value = String(body.error || `Request failed (${res.status}).`)
+      return
+    }
+    newCourseSlug.value = ''
+    newCourseTitle.value = ''
+    newCourseTerm.value = ''
+    await fetchHome()
+    if (body.course?.id) selectedCourseId.value = body.course.id
+  } catch (e) {
+    courseSubmitError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    courseFormBusy.value = false
+  }
+}
+
+async function removeCourse(course: RuntimeCourse): Promise<void> {
+  courseSubmitError.value = ''
+  if (
+    !confirm(
+      `Remove course «${course.title}»? Workspace folders are not deleted; only the course grouping on this runtime is removed.`,
+    )
+  ) {
+    return
+  }
+  deletingCourseId.value = course.id
+  try {
+    const res = await fetch(`${base.value}/api/courses/${encodeURIComponent(course.id)}`, { method: 'DELETE' })
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+    if (!res.ok || body.ok !== true) {
+      courseSubmitError.value = String(body.error || `Request failed (${res.status}).`)
+      return
+    }
+    if (selectedCourseId.value === course.id) selectedCourseId.value = ''
+    await fetchHome()
+  } catch (e) {
+    courseSubmitError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    deletingCourseId.value = ''
+  }
+}
+
 async function addRepositoryFromForm(): Promise<void> {
   submitError.value = ''
   githubSubmitError.value = ''
@@ -428,7 +557,7 @@ async function addRepositoryFromForm(): Promise<void> {
   }
   formBusy.value = true
   try {
-    const result = await postLocalAnalysis(path)
+    const result = await postLocalAnalysis(path, runtimeSupportsCourses.value ? selectedCourseId.value : undefined)
     if (!result.ok) {
       submitError.value = result.error
       if (result.body) lastResultJson.value = JSON.stringify(result.body, null, 2)
@@ -459,7 +588,12 @@ async function addRepositoryFromGithub(): Promise<void> {
   }
   githubFormBusy.value = true
   try {
-    const result = await postGithubAnalysis(repoUrl, githubRefInput.value, githubTokenInput.value)
+    const result = await postGithubAnalysis(
+      repoUrl,
+      githubRefInput.value,
+      githubTokenInput.value,
+      runtimeSupportsCourses.value ? selectedCourseId.value : undefined,
+    )
     if (!result.ok) {
       githubSubmitError.value = result.error
       if (result.body) lastResultJson.value = JSON.stringify(result.body, null, 2)
@@ -509,9 +643,19 @@ async function syncGithubRepo(repo: RuntimeHomeRepo): Promise<void> {
   }
 }
 
+function findRepoForPath(workspacePath: string): RuntimeHomeRepo | undefined {
+  const orphan = repositoryCards.value.find((r) => r.workspacePath === workspacePath)
+  if (orphan) return orphan
+  for (const c of homeModel.value?.courses ?? []) {
+    const w = c.workspaces?.find((r) => r.workspacePath === workspacePath)
+    if (w) return w
+  }
+  return undefined
+}
+
 async function ensureAnalyzedForOpen(workspacePath: string): Promise<AnalysisOk | null> {
   if (wasOpenedOrAnalyzed(workspacePath)) {
-    const card = repositoryCards.value.find((r) => r.workspacePath === workspacePath)
+    const card = findRepoForPath(workspacePath)
     return {
       ok: true,
       workspacePath,
@@ -673,6 +817,136 @@ watch(
         </p>
       </section>
 
+      <section v-if="runtimeSupportsCourses" class="runtime-home__card">
+        <div class="runtime-home__add-head">
+          <img class="runtime-home__add-icon" :src="stackedCubesIconUrl" width="32" height="32" alt="" />
+          <div>
+            <h2>Courses</h2>
+            <p class="runtime-home__add-lead">
+              Group GitHub or local workspaces for a class or project. Repositories in a course also stay in recent history
+              but are listed here; ungrouped recents appear under “Other workspaces”.
+            </p>
+          </div>
+        </div>
+        <form class="runtime-home__form" @submit.prevent="void createCourseFromForm()">
+          <label class="runtime-home__label" for="triton-new-course-slug">Course slug (URL-safe)</label>
+          <input
+            id="triton-new-course-slug"
+            v-model="newCourseSlug"
+            class="runtime-home__input"
+            type="text"
+            name="courseSlug"
+            autocomplete="off"
+            placeholder="e.g. cs-101-fall"
+          />
+          <label class="runtime-home__label" for="triton-new-course-title">Title</label>
+          <input
+            id="triton-new-course-title"
+            v-model="newCourseTitle"
+            class="runtime-home__input"
+            type="text"
+            name="courseTitle"
+            autocomplete="off"
+            placeholder="Introduction to Software Architecture"
+          />
+          <label class="runtime-home__label" for="triton-new-course-term">Term (optional)</label>
+          <input
+            id="triton-new-course-term"
+            v-model="newCourseTerm"
+            class="runtime-home__input"
+            type="text"
+            name="courseTerm"
+            autocomplete="off"
+            placeholder="Fall 2026"
+          />
+          <div class="runtime-home__actions">
+            <button type="submit" class="runtime-home__btn runtime-home__btn--primary" :disabled="courseFormBusy || !!deletingCourseId">
+              {{ courseFormBusy ? 'Creating…' : 'Create course' }}
+            </button>
+          </div>
+        </form>
+        <p v-if="courseSubmitError" class="runtime-home__error">{{ courseSubmitError }}</p>
+        <p v-if="!(homeModel?.courses?.length)" class="runtime-home__hint">No courses yet. Create one, then pick it when adding a repository below.</p>
+        <details
+          v-for="course in homeModel?.courses ?? []"
+          :key="course.id"
+          class="runtime-home__fold runtime-home__fold--course"
+        >
+          <summary class="runtime-home__fold-summary runtime-home__course-summary">
+            <span class="runtime-home__course-summary-main">
+              <span class="runtime-home__fold-title">{{ course.title }}</span>
+              <span v-if="course.term" class="runtime-home__course-term">{{ course.term }}</span>
+              <span class="runtime-home__fold-count">{{ course.workspaces?.length ?? 0 }}</span>
+            </span>
+            <button
+              type="button"
+              class="runtime-home__course-del"
+              :disabled="!!deletingCourseId || courseFormBusy"
+              @click.prevent.stop="void removeCourse(course)"
+            >
+              {{ deletingCourseId === course.id ? 'Removing…' : 'Remove' }}
+            </button>
+          </summary>
+          <div class="runtime-home__fold-body">
+            <p v-if="!(course.workspaces?.length)" class="runtime-home__fold-hint">No workspaces linked yet.</p>
+            <div v-else class="runtime-home__grid">
+              <article v-for="repo in course.workspaces" :key="repo.workspacePath" class="repo-card">
+                <div class="repo-card__icon-wrap" aria-hidden="true">
+                  <img class="repo-card__icon" :src="stackedCubesIconUrl" width="28" height="28" alt="" />
+                </div>
+                <div class="repo-card__body">
+                  <div class="repo-card__title-row">
+                    <h3 class="repo-card__title">{{ repo.workspaceName }}</h3>
+                    <span v-if="repo.source === 'github'" class="repo-card__pill repo-card__pill--github">GitHub</span>
+                  </div>
+                  <p class="repo-card__path"><code>{{ repo.workspacePath }}</code></p>
+                  <p class="repo-card__meta">
+                    <span class="repo-card__badge">{{ repoKind(repo) }}</span>
+                    <template v-if="repo.lastOpenedAt">
+                      <span class="repo-card__dot" aria-hidden="true">·</span>
+                      <span class="runtime-home__muted">Linked {{ formatLastOpened(repo.lastOpenedAt) }}</span>
+                    </template>
+                  </p>
+                  <div class="repo-card__links">
+                    <button
+                      type="button"
+                      class="repo-card__link"
+                      :disabled="!!analyzingPath || !!syncingGithubPath"
+                      @click="void openSbtDiagram(repo)"
+                    >
+                      SBT diagram
+                    </button>
+                    <span class="repo-card__sep" aria-hidden="true">·</span>
+                    <button
+                      type="button"
+                      class="repo-card__link"
+                      :disabled="!!analyzingPath || !!syncingGithubPath"
+                      @click="void openPackageDiagram(repo)"
+                    >
+                      Package diagram
+                    </button>
+                    <template v-if="repo.source === 'github' && runtimeSupportsGithubSync">
+                      <span class="repo-card__sep" aria-hidden="true">·</span>
+                      <button
+                        type="button"
+                        class="repo-card__link"
+                        :disabled="!!analyzingPath || !!syncingGithubPath"
+                        @click="void syncGithubRepo(repo)"
+                      >
+                        {{ syncingGithubPath === repo.workspacePath ? 'Syncing…' : 'Sync from GitHub' }}
+                      </button>
+                    </template>
+                    <span v-if="analyzingPath === repo.workspacePath" class="repo-card__busy" aria-live="polite">
+                      Preparing…
+                    </span>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </div>
+        </details>
+      </section>
+
       <section class="runtime-home__card runtime-home__card--add">
         <div class="runtime-home__add-head">
           <img class="runtime-home__add-icon" :src="stackedCubesIconUrl" width="32" height="32" alt="" />
@@ -695,6 +969,13 @@ watch(
             autocomplete="off"
             placeholder="/repos/my-project"
           />
+          <template v-if="runtimeSupportsCourses && (homeModel?.courses?.length ?? 0) > 0">
+            <label class="runtime-home__label" for="triton-course-local">Course (optional)</label>
+            <select id="triton-course-local" v-model="selectedCourseId" class="runtime-home__input runtime-home__select">
+              <option value="">— None —</option>
+              <option v-for="c in homeModel?.courses ?? []" :key="c.id" :value="c.id">{{ c.title }}</option>
+            </select>
+          </template>
           <div class="runtime-home__actions">
             <button type="submit" class="runtime-home__btn runtime-home__btn--primary" :disabled="formBusy">
               {{ formBusy ? 'Adding…' : 'Add repository' }}
@@ -756,6 +1037,13 @@ watch(
           <p class="runtime-home__hint runtime-home__hint--field">
             Prefer headers or env on shared servers; this field is only sent with the request and not saved on the card.
           </p>
+          <template v-if="runtimeSupportsCourses && (homeModel?.courses?.length ?? 0) > 0">
+            <label class="runtime-home__label" for="triton-course-github">Course (optional)</label>
+            <select id="triton-course-github" v-model="selectedCourseId" class="runtime-home__input runtime-home__select">
+              <option value="">— None —</option>
+              <option v-for="c in homeModel?.courses ?? []" :key="c.id" :value="c.id">{{ c.title }}</option>
+            </select>
+          </template>
           <div class="runtime-home__actions">
             <button
               type="submit"
@@ -775,7 +1063,7 @@ watch(
 
       <section class="runtime-home__deck">
         <div class="runtime-home__deck-head">
-          <h2>Repositories</h2>
+          <h2>{{ orphanDeckTitle }}</h2>
           <span class="runtime-home__muted">{{ repositoryCards.length }} workspace{{ repositoryCards.length === 1 ? '' : 's' }}</span>
         </div>
         <p v-if="cardError" class="runtime-home__error runtime-home__error--card">{{ cardError }}</p>
@@ -784,7 +1072,12 @@ watch(
           <pre class="runtime-home__pre">{{ lastResultJson }}</pre>
         </details>
         <div v-if="!repositoryCards.length" class="runtime-home__empty runtime-home__empty--deck">
-          No repositories yet. Add a path above, or use Refresh after opening workspaces from other clients.
+          <template v-if="assignedWorkspacePaths.size > 0">
+            No ungrouped workspaces. Repositories assigned to a course appear under Courses above.
+          </template>
+          <template v-else>
+            No repositories yet. Add a path above, or use Refresh after opening workspaces from other clients.
+          </template>
         </div>
         <div v-else class="runtime-home__grid">
           <article v-for="repo in repositoryCards" :key="repo.workspacePath" class="repo-card">
@@ -1084,6 +1377,48 @@ watch(
   outline: 2px solid #38bdf8;
   outline-offset: 1px;
   border-color: #0ea5e9;
+}
+.runtime-home__select {
+  cursor: pointer;
+}
+.runtime-home__fold--course {
+  margin-top: 12px;
+}
+.runtime-home__course-summary {
+  align-items: center;
+}
+.runtime-home__course-summary-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.runtime-home__course-term {
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+}
+.runtime-home__course-del {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.runtime-home__course-del:hover:not(:disabled) {
+  background: #fee2e2;
+}
+.runtime-home__course-del:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 .runtime-home__actions {
   display: flex;

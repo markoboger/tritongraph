@@ -57,7 +57,7 @@ Then open `http://127.0.0.1:4317`, enter a repo path like `/Users/markoboger/wor
 
 If `POST /api/analysis/github` returns JSON `{ "error": "not_found", ... }`:
 
-1. **Upgrade** so `/health` reports `"version": "0.4.0"` (or newer), `capabilities` includes `github-sync`, and `GET /api/analysis/github` returns JSON describing POST (not `not_found`). If GET also returns `not_found`, you are not hitting this codebase’s server on that port.
+1. **Upgrade** so `/health` reports a current **`version`** (e.g. `0.5.0`), `capabilities` includes `github-sync`, and `GET /api/analysis/github` returns JSON describing POST (not `not_found`). If GET also returns `not_found`, you are not hitting this codebase’s server on that port.
 2. Read the **`pathnameRaw`** field on the 404 body (0.2.1+). If it looks like `/something/api/analysis/github` instead of `/api/analysis/github`, your reverse proxy forwards a **path prefix**. Set **`TRITON_HTTP_PATH_PREFIX`** to that prefix (e.g. `/something`) on the runtime process and restart, or reconfigure the proxy to strip the prefix before forwarding.
 3. **`path` ends with `/api/analysis/github/`** — trailing slash was fixed by normalizing paths; upgrade if you still see this on an older build.
 
@@ -109,15 +109,25 @@ Goal: **courses / projects / webhooks** need durable storage on the server witho
 | *(unset)* / `TRITON_PERSISTENCE_BACKEND=file` | File-backed store only |
 | `TRITON_PERSISTENCE_BACKEND=postgres` + `DATABASE_URL` | Postgres implementation |
 
-**Implemented today:** `createPersistence(config)` selects **`file`** (default: `recent-repos.json` under `TRITON_RUNTIME_STATE_DIR`) or **`postgres`** (`TRITON_PERSISTENCE_BACKEND=postgres` + `DATABASE_URL`). The HTTP server only talks to `config.persistence` (`listRecentRepositories`, `recordRecentRepository`). `/health` and `/api/home` expose `persistence` / `persistenceBackend`.
+**Implemented today:** `createPersistence(config)` selects **`file`** (default: `recent-repos.json` plus optional **`directory.json`** under `TRITON_RUNTIME_STATE_DIR`) or **`postgres`** (`TRITON_PERSISTENCE_BACKEND=postgres` + `DATABASE_URL`). The HTTP server uses `config.persistence` for recent repos, courses, and course–workspace links. `/health` and `/api/home` expose `persistence` / `persistenceBackend`. When the persistence layer implements courses, `/health` and `GET /api/home` include **`courses-api`** in `capabilities`, and home JSON includes a **`courses`** array (each course lists enriched **`workspaces`**). **`recentRepos`** on home omits paths that appear under any course so the UI can show course groups plus an “other” list without duplicates.
+
+**Courses HTTP API** (same path-prefix rules as other `/api/*` routes):
+
+| Method | Path | Body / notes |
+|--------|------|----------------|
+| `GET` | `/api/courses` | `{ "ok": true, "courses": [...] }` — lightweight list (no workspaces). |
+| `POST` | `/api/courses` | JSON `{ "slug", "title", "term?" }` → `{ "ok": true, "course": { id, slug, title, ... } }`. Errors: `course_slug_required`, `course_title_required`, `course_slug_exists`. |
+| `DELETE` | `/api/courses/:id` | Removes the course and its workspace links (not the repo folders). |
+
+Optional JSON field **`courseId`** on **`POST /api/analysis/local`** and **`POST /api/analysis/github`** (and accepted on **`POST /api/workspace/github/sync`** before clone/sync): must reference an existing course or the handler returns **`course_not_found`**. After a successful registration, the workspace is linked to that course.
+
+**File persistence:** `directory.json` holds `{ "courses": [...], "courseWorkspaces": [...] }` alongside `recent-repos.json`.
 
 **Docker example** (same compose network): set `DATABASE_URL=postgres://triton:triton@postgres:5432/triton` and `TRITON_PERSISTENCE_BACKEND=postgres` on the `triton-runtime` service after `docker compose --profile postgres up -d postgres`.
 
-**Next:** add courses / projects / webhooks to the same interface (new methods + migrations).
-
 Near-term next steps:
 
-- extend persistence with course/project tables and APIs
+- projects / webhooks on the same persistence interface
 - let runtime-backed refresh/rescan requests update the browser's live data path directly
 - add workspace scan endpoints that return a fully built Triton payload, not just raw workspace inputs
 - package the runtime independently from the editor dev server
