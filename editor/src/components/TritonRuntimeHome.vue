@@ -843,8 +843,8 @@ watch(
       <header class="runtime-home__hero">
         <h1>Triton Architecture Explorer</h1>
         <p>
-          Use the <strong>Add Course</strong>, <strong>Add local repo</strong> (folder), and
-          <strong>Add new repo</strong> (GitHub / GitLab) buttons (below once the runtime is connected) to register
+          Use <strong>Add local repo</strong> (folder), <strong>Add new repo</strong> (GitHub / GitLab), and
+          <strong>Add Course</strong> (below once the runtime is connected) to register
           workspaces. Optionally create <strong>Courses</strong> to group repos on the server. Open the SBT or package
           diagram from each card. Bundled examples and dojos open in new tabs.
         </p>
@@ -902,17 +902,9 @@ watch(
       <section v-if="homeModel?.runtime" class="runtime-home__card runtime-home__card--actions">
         <h2 class="runtime-home__actions-title">Repositories</h2>
         <p class="runtime-home__add-lead runtime-home__actions-lead">
-          Open a dialog to add a course or register a workspace with the runtime.
+          Open a dialog to register a workspace (local or hosted Git) or add a course.
         </p>
         <div class="runtime-home__action-bar">
-          <button
-            v-if="showCoursesSection"
-            type="button"
-            class="runtime-home__btn runtime-home__btn--primary"
-            @click="openCourseDialog"
-          >
-            Add Course
-          </button>
           <button
             type="button"
             class="runtime-home__btn runtime-home__btn--primary runtime-home__btn--repo-hosts"
@@ -936,6 +928,14 @@ watch(
               <img class="runtime-home__repo-host-icon" :src="githubMarkIconUrl" alt="" width="20" height="20" />
               <img class="runtime-home__repo-host-icon" :src="gitlabMarkIconUrl" alt="" width="20" height="20" />
             </span>
+          </button>
+          <button
+            v-if="showCoursesSection"
+            type="button"
+            class="runtime-home__btn runtime-home__btn--primary"
+            @click="openCourseDialog"
+          >
+            Add Course
           </button>
           <button type="button" class="runtime-home__btn" @click="void fetchHome()">Refresh lists</button>
         </div>
