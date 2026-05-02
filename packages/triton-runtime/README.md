@@ -80,16 +80,41 @@ TRITON_LOCAL_REPOS=/Users/markoboger/workspace docker compose up --build
 
 Inside the container, host repos are mounted at `/repos`, so the `chess` example becomes `/repos/chess`.
 
-**Postgres (optional, for upcoming DB-backed courses/projects):**
+**Postgres (optional compose service only today):**
 
 ```bash
 docker compose --profile postgres up -d postgres
 ```
 
-Runtime does not connect to it yet; `DATABASE_URL` wiring comes in a later change.
+The Node runtime does not connect to it yet; see **Next phase: persistence** below.
+
+### Next phase: persistence abstraction (plugin vs server)
+
+Goal: **courses / projects / webhooks** need durable storage on the server without forcing **Postgres** onto every **VS Code plugin + local `npm start`** workflow.
+
+**Approach**
+
+1. **Define a small storage interface** (e.g. `TritonPersistence` / `ProjectDirectory`) in `triton-runtime`: operations needed by HTTP handlers—recent repos, future course/project rows, webhook secrets, job pointers—not SQL-shaped leaks into routes.
+2. **Two implementations behind that interface**
+   - **File-backed (default, plugin-friendly)** — evolve today’s JSON state (`recent-repos.json` under `TRITON_RUNTIME_STATE_DIR`) into the canonical implementation for local/extension use. Same process model as now: no extra daemon, easy backup, works offline. *(If you prefer an embedded key-value layer later—e.g. lowdb-style—it still sits behind this interface.)*
+   - **Postgres (server / Docker)** — used when explicitly configured (e.g. `TRITON_PERSISTENCE_BACKEND=postgres` + `DATABASE_URL`), with migrations owned by the runtime package.
+3. **Startup wiring (dependency injection)** — `runtimeConfig` (or a factory `createPersistence(config)`) chooses the implementation once at boot from env; the HTTP server receives a **single `persistence` instance** (constructor / factory injection), and modules stop calling free functions that hard-code `readJsonFile(recentReposFilePath(...))`.
+4. **VS Code plugin** — keep pointing `triton.localRepoPath` at `packages/triton-runtime`; **no Postgres requirement** unless the operator opts in via env. CI and student laptops stay file-backed.
+5. **Docker / university server** — compose brings up Postgres; runtime container gets `DATABASE_URL` + backend flag; same HTTP API and UI.
+
+**Configuration sketch**
+
+| Env | Behaviour |
+|-----|-----------|
+| *(unset)* / `TRITON_PERSISTENCE_BACKEND=file` | File-backed store only |
+| `TRITON_PERSISTENCE_BACKEND=postgres` + `DATABASE_URL` | Postgres implementation |
+
+**Cutover** — implement the interface with file adapter first (wrap existing JSON), add Postgres adapter + migrations, then migrate features (courses, etc.) to use only the interface.
 
 Near-term next steps:
 
+- implement `TritonPersistence` + file adapter (wrap current recent-repo JSON)
+- add Postgres adapter + migrations behind the same interface
 - let runtime-backed refresh/rescan requests update the browser's live data path directly
 - add workspace scan endpoints that return a fully built Triton payload, not just raw workspace inputs
 - package the runtime independently from the editor dev server
