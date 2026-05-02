@@ -54,14 +54,18 @@ function normalizeSlug(slug) {
     .replace(/^-|-$/g, '')
 }
 
+function isRemoteGitSource(value) {
+  return value === 'github' || value === 'gitlab'
+}
+
 function normalizeStoredRow(entry) {
   const workspacePath = String(entry && entry.workspacePath ? entry.workspacePath : '').trim()
   if (!workspacePath) return null
   const workspaceName = String(entry.workspaceName || '').trim()
   const lastOpenedAt = String(entry.lastOpenedAt || '').trim()
   const row = { workspacePath, workspaceName, lastOpenedAt }
-  if (entry.source === 'github') {
-    row.source = 'github'
+  if (isRemoteGitSource(entry.source)) {
+    row.source = entry.source
     const ru = String(entry.repositoryUrl || '').trim()
     if (ru) row.repositoryUrl = ru
     const gr = String(entry.gitRef || '').trim()
@@ -93,8 +97,8 @@ function createFilePersistence(config) {
         workspaceName,
         lastOpenedAt: String(row.lastOpenedAt || new Date().toISOString()),
       }
-      if (row.source === 'github') {
-        stored.source = 'github'
+      if (isRemoteGitSource(row.source)) {
+        stored.source = row.source
         if (row.repositoryUrl) stored.repositoryUrl = String(row.repositoryUrl).trim()
         if (row.gitRef) stored.gitRef = String(row.gitRef).trim()
       }
@@ -163,7 +167,7 @@ function createFilePersistence(config) {
           workspaceName: String(l.workspaceName || '').trim(),
           repositoryUrl: l.repositoryUrl ? String(l.repositoryUrl) : undefined,
           gitRef: l.gitRef ? String(l.gitRef) : undefined,
-          source: l.source === 'github' ? 'github' : undefined,
+          source: isRemoteGitSource(l.source) ? l.source : undefined,
           linkedAt: String(l.linkedAt || ''),
         }))
         .filter((l) => l.workspacePath)
@@ -183,7 +187,7 @@ function createFilePersistence(config) {
         workspaceName: workspaceName || workspacePath,
         repositoryUrl: row.repositoryUrl ? String(row.repositoryUrl).trim() : '',
         gitRef: row.gitRef ? String(row.gitRef).trim() : '',
-        source: row.source === 'github' ? 'github' : '',
+        source: isRemoteGitSource(row.source) ? row.source : '',
         linkedAt: new Date().toISOString(),
       }
       const rest = state.courseWorkspaces.filter(

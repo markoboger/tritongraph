@@ -16,7 +16,7 @@ const IGNORED_DIRS = new Set([
   'out',
 ])
 const REPO_DISCOVERY_MAX_DEPTH = 3
-const RUNTIME_VERSION = '0.5.0'
+const RUNTIME_VERSION = '0.6.0'
 
 function applyCorsHeaders(res) {
   res.setHeader('access-control-allow-origin', '*')
@@ -265,8 +265,8 @@ function enrichRecentRepoRows(rows) {
         lastOpenedAt: String(entry.lastOpenedAt || '').trim(),
         probe: probeWorkspace(repoPath),
       }
-      if (entry.source === 'github') {
-        base.source = 'github'
+      if (entry.source === 'github' || entry.source === 'gitlab') {
+        base.source = entry.source
         const ru = String(entry.repositoryUrl || '').trim()
         if (ru) base.repositoryUrl = ru
         const gr = String(entry.gitRef || '').trim()
@@ -333,8 +333,8 @@ async function rememberRecentRepo(config, workspacePath, workspaceName, extras =
     workspaceName: workspaceName || repoDisplayName(workspacePath),
     lastOpenedAt: new Date().toISOString(),
   }
-  if (extras.source === 'github') {
-    row.source = 'github'
+  if (extras.source === 'github' || extras.source === 'gitlab') {
+    row.source = extras.source
     if (extras.repositoryUrl) row.repositoryUrl = String(extras.repositoryUrl).trim()
     if (extras.gitRef) row.gitRef = String(extras.gitRef).trim()
   }
@@ -590,16 +590,21 @@ function readWorkspaceBundle(workspacePath) {
 
 const GIT_CLONE_TIMEOUT_MS = Number(process.env.TRITON_GIT_CLONE_TIMEOUT_MS || 180000)
 
-/** GitHub HTTPS PAT via Authorization Basic (avoids putting the token in the remote URL). */
-function gitAuthConfigArgs(token) {
+/**
+ * HTTPS Git auth via Authorization Basic (token never embedded in remote URL).
+ * GitHub: x-access-token:<pat>. GitLab (and compatible hosts): oauth2:<pat>.
+ */
+function gitAuthConfigArgs(host, token) {
   const t = String(token || '').trim()
   if (!t) return []
-  const basic = Buffer.from(`x-access-token:${t}`, 'utf8').toString('base64')
+  const h = String(host || '').toLowerCase()
+  const userPass = h === 'github.com' ? `x-access-token:${t}` : `oauth2:${t}`
+  const basic = Buffer.from(userPass, 'utf8').toString('base64')
   return ['-c', `http.extraHeader=Authorization: Basic ${basic}`]
 }
 
 function execGit(args, options = {}) {
-  const prefix = gitAuthConfigArgs(options.token)
+  const prefix = gitAuthConfigArgs(options.authHost, options.token)
   const mergedArgs = [...prefix, ...args]
   return new Promise((resolve) => {
     cp.execFile(
@@ -622,34 +627,42 @@ function execGit(args, options = {}) {
   })
 }
 
-function githubTokenFromRequest(body, req) {
+function remoteGitTokenFromRequest(body, req) {
   const auth = req.headers?.authorization
   if (typeof auth === 'string' && /^Bearer\s+/i.test(auth)) {
     const t = auth.replace(/^Bearer\s+/i, '').trim()
     if (t) return t
   }
-  const xt = req.headers?.['x-github-token']
-  if (typeof xt === 'string' && xt.trim()) return xt.trim()
-  if (Array.isArray(xt) && xt[0]) return String(xt[0]).trim()
-  const fromBody = String(body?.githubToken || '').trim()
-  if (fromBody) return fromBody
-  return String(process.env.TRITON_GITHUB_TOKEN || '').trim()
+  const xtGh = req.headers?.['x-github-token']
+  if (typeof xtGh === 'string' && xtGh.trim()) return xtGh.trim()
+  if (Array.isArray(xtGh) && xtGh[0]) return String(xtGh[0]).trim()
+  const xtGl = req.headers?.['x-gitlab-token']
+  if (typeof xtGl === 'string' && xtGl.trim()) return xtGl.trim()
+  if (Array.isArray(xtGl) && xtGl[0]) return String(xtGl[0]).trim()
+  const fromGeneric = String(body?.gitToken || '').trim()
+  if (fromGeneric) return fromGeneric
+  const fromGh = String(body?.githubToken || '').trim()
+  if (fromGh) return fromGh
+  const fromGl = String(body?.gitlabToken || '').trim()
+  if (fromGl) return fromGl
+  const envGh = String(process.env.TRITON_GITHUB_TOKEN || '').trim()
+  if (envGh) return envGh
+  return String(process.env.TRITON_GITLAB_TOKEN || '').trim()
 }
 
-function gitMaterializeFailure(gitResult, errorCode = 'git_clone_failed') {
-  const tail = gitResult.stderr.trim() || gitResult.stdout.trim() || `exit ${gitResult.exitCode}`
-  return {
-    ok: false,
-    statusCode: 502,
-    body: {
-      ok: false,
-      error: errorCode,
-      detail: tail.slice(-4000),
-    },
-  }
+function parseExtraGitHostsSet() {
+  const raw = String(process.env.TRITON_EXTRA_GIT_HOSTS || '').trim()
+  if (!raw) return new Set()
+  return new Set(raw.split(',').map((h) => h.trim().toLowerCase()).filter(Boolean))
 }
 
-function parseGithubHttpsUrl(input) {
+function gitUrlPathSegmentInvalid(seg) {
+  const s = String(seg || '').trim()
+  if (!s || s === '.' || s === '..') return true
+  return /[/\\\x00-\x1f]/.test(s)
+}
+
+function parseHostedGitHttpsUrl(input) {
   const trimmed = String(input || '').trim()
   if (!trimmed) {
     return { ok: false, error: 'missing_repository_url' }
@@ -665,49 +678,117 @@ function parseGithubHttpsUrl(input) {
     return { ok: false, error: 'invalid_repository_url' }
   }
   if (u.protocol !== 'https:') {
-    return { ok: false, error: 'only_https_github_urls_supported' }
+    return { ok: false, error: 'only_https_repository_urls_supported' }
   }
   const host = u.hostname.toLowerCase()
-  if (host !== 'github.com') {
-    return { ok: false, error: 'only_github_com_supported' }
+  const extraHosts = parseExtraGitHostsSet()
+  const isGithub = host === 'github.com'
+  const isGitlab = host === 'gitlab.com' || extraHosts.has(host)
+  if (!isGithub && !isGitlab) {
+    return {
+      ok: false,
+      error: 'unsupported_git_host',
+      hint: 'Use https://github.com/… or https://gitlab.com/…. Self-hosted GitLab: set TRITON_EXTRA_GIT_HOSTS to your hostname.',
+    }
   }
+
   const parts = u.pathname
     .replace(/\/+$/, '')
     .split('/')
     .filter(Boolean)
-  if (parts.length < 2) {
-    return { ok: false, error: 'github_url_need_owner_repo' }
+    .map((p) => p.replace(/\.git$/i, ''))
+
+  if (parts.some(gitUrlPathSegmentInvalid)) {
+    return { ok: false, error: 'invalid_repository_path' }
   }
-  if (parts[0] === 'orgs' || parts[0] === 'organizations') {
+
+  if (parts.length < 2) {
+    return { ok: false, error: 'repository_url_need_namespace_and_project' }
+  }
+
+  if (isGithub) {
+    if (parts.length !== 2) {
+      return { ok: false, error: 'github_url_need_owner_repo' }
+    }
+    if (parts[0] === 'orgs' || parts[0] === 'organizations') {
+      return {
+        ok: false,
+        error: 'github_org_list_url_not_repo',
+        hint: 'Open a single repository and copy its URL, e.g. https://github.com/owner/repo-name',
+      }
+    }
+    const owner = parts[0]
+    const repo = parts[1]
+    if (!/^[a-zA-Z0-9_.-]+$/.test(owner) || !/^[a-zA-Z0-9_.-]+$/.test(repo)) {
+      return { ok: false, error: 'invalid_owner_or_repo' }
+    }
+    const cloneUrl = `https://github.com/${owner}/${repo}.git`
+    const canonicalRepoUrl = `https://github.com/${owner}/${repo}`
     return {
-      ok: false,
-      error: 'github_org_list_url_not_repo',
-      hint: 'Open a single repository and copy its URL, e.g. https://github.com/EJ-Chess/your-repo-name',
+      ok: true,
+      host,
+      segments: [owner, repo],
+      cloneUrl,
+      canonicalRepoUrl,
+      provider: 'github',
     }
   }
-  const owner = parts[0]
-  const repo = parts[1].replace(/\.git$/i, '')
-  if (!/^[a-zA-Z0-9_.-]+$/.test(owner) || !/^[a-zA-Z0-9_.-]+$/.test(repo)) {
-    return { ok: false, error: 'invalid_owner_or_repo' }
+
+  const pathStr = parts.join('/')
+  const cloneUrl = `https://${host}/${pathStr}.git`
+  const canonicalRepoUrl = `https://${host}/${pathStr}`
+  return {
+    ok: true,
+    host,
+    segments: parts,
+    cloneUrl,
+    canonicalRepoUrl,
+    provider: 'gitlab',
   }
-  const cloneUrl = `https://github.com/${owner}/${repo}.git`
-  const canonicalRepoUrl = `https://github.com/${owner}/${repo}`
-  return { ok: true, owner, repo, cloneUrl, canonicalRepoUrl }
 }
 
-function githubCloneDestPath(config, owner, repo) {
-  return path.join(path.resolve(config.gitCacheRoot), 'github.com', owner, repo)
+function hostedGitCloneDestPath(config, host, segments) {
+  const root = path.resolve(config.gitCacheRoot)
+  const hostDir = host.replace(/[^a-zA-Z0-9_.-]/g, '_')
+  let cur = path.join(root, hostDir)
+  for (const seg of segments) {
+    const safe = String(seg).replace(/[^a-zA-Z0-9_.@-]/g, '_')
+    if (!safe || safe === '.' || safe === '..') {
+      return null
+    }
+    cur = path.join(cur, safe)
+  }
+  return cur
+}
+
+function gitMaterializeFailure(gitResult, errorCode = 'git_clone_failed') {
+  const tail = gitResult.stderr.trim() || gitResult.stdout.trim() || `exit ${gitResult.exitCode}`
+  return {
+    ok: false,
+    statusCode: 502,
+    body: {
+      ok: false,
+      error: errorCode,
+      detail: tail.slice(-4000),
+    },
+  }
 }
 
 async function materializeGithubRepo(body, config, token = '') {
-  const parsed = parseGithubHttpsUrl(body.repositoryUrl)
+  const parsed = parseHostedGitHttpsUrl(body.repositoryUrl)
   if (!parsed.ok) {
-    return { ok: false, statusCode: 400, body: { ok: false, error: parsed.error } }
+    const errBody = { ok: false, error: parsed.error }
+    if (parsed.hint) errBody.hint = parsed.hint
+    return { ok: false, statusCode: 400, body: errBody }
   }
   const refRequested = String(body.ref || '').trim()
-  const dest = githubCloneDestPath(config, parsed.owner, parsed.repo)
-  const gitTok = { token, timeoutMs: GIT_CLONE_TIMEOUT_MS }
+  const dest = hostedGitCloneDestPath(config, parsed.host, parsed.segments)
+  if (!dest) {
+    return { ok: false, statusCode: 400, body: { ok: false, error: 'invalid_repository_path' } }
+  }
+  const gitTok = { token, timeoutMs: GIT_CLONE_TIMEOUT_MS, authHost: parsed.host }
   const gitMetaPath = path.join(dest, '.git')
+  const workspaceLabel = parsed.segments[parsed.segments.length - 1]
 
   ensureDirSync(path.dirname(dest))
 
@@ -765,9 +846,10 @@ async function materializeGithubRepo(body, config, token = '') {
   return {
     ok: true,
     workspacePath: realPath,
-    workspaceName: parsed.repo,
+    workspaceName: workspaceLabel,
     canonicalRepoUrl: parsed.canonicalRepoUrl,
     refRequested,
+    provider: parsed.provider,
   }
 }
 
@@ -866,8 +948,9 @@ async function registerGithubWorkspace(body, config, token, mode) {
     }
   }
   const resolvedPath = validation.workspacePath
+  const remoteSource = materialized.provider === 'github' ? 'github' : 'gitlab'
   await rememberRecentRepo(config, resolvedPath, workspaceName, {
-    source: 'github',
+    source: remoteSource,
     repositoryUrl: materialized.canonicalRepoUrl,
     gitRef: materialized.refRequested || undefined,
   })
@@ -878,7 +961,7 @@ async function registerGithubWorkspace(body, config, token, mode) {
       workspaceName,
       repositoryUrl: materialized.canonicalRepoUrl,
       gitRef: materialized.refRequested || undefined,
-      source: 'github',
+      source: remoteSource,
     })
   }
   const probe = probeWorkspace(resolvedPath)
@@ -971,15 +1054,15 @@ async function runtimeHomeHtml(config) {
         </form>
         <form id="github-analysis-form">
           <div>
-            <label for="repositoryUrl">GitHub repository (HTTPS)</label>
-            <input id="repositoryUrl" name="repositoryUrl" type="text" placeholder="https://github.com/scala/scala" autocomplete="off" />
+            <label for="repositoryUrl">GitHub or GitLab repository (HTTPS)</label>
+            <input id="repositoryUrl" name="repositoryUrl" type="text" placeholder="https://github.com/scala/scala or https://gitlab.com/group/project" autocomplete="off" />
           </div>
           <div>
             <label for="gitRef">Branch or tag (optional)</label>
             <input id="gitRef" name="gitRef" type="text" placeholder="main" autocomplete="off" />
           </div>
           <div class="button-row">
-            <button type="submit">Clone &amp; Analyze from GitHub</button>
+            <button type="submit">Clone &amp; analyze (GitHub / GitLab)</button>
           </div>
         </form>
         <div class="meta">
@@ -1137,7 +1220,7 @@ async function runtimeHomeHtml(config) {
       const repositoryUrl = repositoryUrlInput.value.trim();
       const ref = gitRefInput.value.trim();
       if (!repositoryUrl) {
-        error.textContent = 'Please enter a GitHub repository URL.';
+        error.textContent = 'Please enter a GitHub or GitLab HTTPS repository URL.';
         return;
       }
       try {
@@ -1153,7 +1236,7 @@ async function runtimeHomeHtml(config) {
           result.classList.add('visible');
           return;
         }
-        resultSummary.textContent = 'Ready (GitHub): ' + body.workspaceName + ' (' + body.probe.kind + ')';
+        resultSummary.textContent = 'Ready (clone): ' + body.workspaceName + ' (' + body.probe.kind + ')';
         resultJson.textContent = JSON.stringify(body, null, 2);
         if (body.launch && body.launch.sbtDiagramUrl) {
           sbtLink.href = body.launch.sbtDiagramUrl;
@@ -1403,7 +1486,7 @@ function createRuntimeServer(options = {}) {
       sendJson(res, 200, {
         ok: true,
         message:
-          'Routes: POST /api/analysis/github (register) and POST /api/workspace/github/sync (pull latest). Body: { "repositoryUrl": "https://github.com/owner/repo", "ref": "optional" }. PAT: Authorization Bearer, x-github-token header, githubToken in JSON, or TRITON_GITHUB_TOKEN.',
+          'Routes: POST /api/analysis/github (register) and POST /api/workspace/github/sync (pull latest). Body: { "repositoryUrl": "https URL", "ref": "optional" }. Hosts: github.com, gitlab.com, or hostnames listed in TRITON_EXTRA_GIT_HOSTS (self-hosted GitLab). Tokens: Authorization Bearer, x-github-token / x-gitlab-token, JSON gitToken / githubToken / gitlabToken, or TRITON_GITHUB_TOKEN / TRITON_GITLAB_TOKEN.',
         methodHint: 'POST',
         path: '/api/analysis/github',
         runtimeVersion: RUNTIME_VERSION,
@@ -1432,7 +1515,7 @@ function createRuntimeServer(options = {}) {
         sendJson(res, 400, { ok: false, error: 'invalid_json' })
         return
       }
-      const token = githubTokenFromRequest(body, req)
+      const token = remoteGitTokenFromRequest(body, req)
       const result = await registerGithubWorkspace(body, config, token, 'github')
       sendJson(res, result.statusCode, result.body)
       return
@@ -1445,7 +1528,7 @@ function createRuntimeServer(options = {}) {
         sendJson(res, 400, { ok: false, error: 'invalid_json' })
         return
       }
-      const token = githubTokenFromRequest(body, req)
+      const token = remoteGitTokenFromRequest(body, req)
       const result = await registerGithubWorkspace(body, config, token, 'github-sync')
       sendJson(res, result.statusCode, result.body)
       return

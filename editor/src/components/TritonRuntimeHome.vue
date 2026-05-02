@@ -9,6 +9,8 @@ type StarterFoldSection = {
   cards: StarterCard[]
 }
 import stackedCubesIconUrl from '../assets/language-icons/stacked-cubes.svg'
+import githubMarkIconUrl from '../assets/language-icons/Octicons-mark-github.svg'
+import gitlabMarkIconUrl from '../assets/language-icons/GitLab_icon.svg'
 import { dockerBrandIconUrl } from '../triton/dockerConceptIcons'
 import cubeIconUrl from '../assets/language-icons/cube.svg'
 import sbtIconUrl from '../assets/language-icons/sbt.svg'
@@ -20,8 +22,8 @@ export type RuntimeHomeRepo = {
   workspaceName: string
   probe?: { kind?: string }
   lastOpenedAt?: string
-  /** Present when registered via `POST /api/analysis/github`. */
-  source?: 'github'
+  /** Present when registered via hosted Git clone (`POST /api/analysis/github`). */
+  source?: 'github' | 'gitlab'
   repositoryUrl?: string
   gitRef?: string
 }
@@ -143,6 +145,11 @@ const runtimeSupportsCourses = computed(() => {
   const caps = homeModel.value?.runtime?.capabilities
   return Array.isArray(caps) && caps.includes('courses-api')
 })
+
+/** Show the Courses block whenever we have a successful home payload (not gated on capability — older runtimes get an upgrade hint instead). */
+const showCoursesSection = computed(() => !!homeModel.value?.runtime)
+
+const hasCoursesForPicker = computed(() => (homeModel.value?.courses?.length ?? 0) > 0)
 
 const assignedWorkspacePaths = computed(() => {
   const s = new Set<string>()
@@ -376,12 +383,15 @@ async function postGithubAnalysis(
   const url = repoUrl.trim()
   lastResultJson.value = ''
   if (!url) {
-    return { ok: false, error: 'Please enter a GitHub repository URL.' }
+    return { ok: false, error: 'Please enter an HTTPS repository URL (GitHub or GitLab).' }
   }
   try {
     const payload: Record<string, string> = { repositoryUrl: url, ref: ref.trim() }
     const tok = String(githubToken || '').trim()
-    if (tok) payload.githubToken = tok
+    if (tok) {
+      payload.gitToken = tok
+      payload.githubToken = tok
+    }
     const cid = String(courseId || '').trim()
     if (cid) payload.courseId = cid
     const res = await fetch(`${base.value}/api/analysis/github`, {
@@ -419,12 +429,15 @@ async function postGithubSync(repoUrl: string, ref: string, githubToken?: string
   const url = repoUrl.trim()
   lastResultJson.value = ''
   if (!url) {
-    return { ok: false, error: 'Missing GitHub repository URL for sync.' }
+    return { ok: false, error: 'Missing repository URL for sync.' }
   }
   try {
     const payload: Record<string, string> = { repositoryUrl: url, ref: ref.trim() }
     const tok = String(githubToken || '').trim()
-    if (tok) payload.githubToken = tok
+    if (tok) {
+      payload.gitToken = tok
+      payload.githubToken = tok
+    }
     const res = await fetch(`${base.value}/api/workspace/github/sync`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -557,7 +570,8 @@ async function addRepositoryFromForm(): Promise<void> {
   }
   formBusy.value = true
   try {
-    const result = await postLocalAnalysis(path, runtimeSupportsCourses.value ? selectedCourseId.value : undefined)
+    const cid = String(selectedCourseId.value || '').trim()
+    const result = await postLocalAnalysis(path, cid || undefined)
     if (!result.ok) {
       submitError.value = result.error
       if (result.body) lastResultJson.value = JSON.stringify(result.body, null, 2)
@@ -583,17 +597,13 @@ async function addRepositoryFromGithub(): Promise<void> {
   lastResultJson.value = ''
   const repoUrl = githubUrlInput.value.trim()
   if (!repoUrl) {
-    githubSubmitError.value = 'Please enter a GitHub repository URL (HTTPS).'
+    githubSubmitError.value = 'Please enter an HTTPS GitHub or GitLab repository URL.'
     return
   }
   githubFormBusy.value = true
   try {
-    const result = await postGithubAnalysis(
-      repoUrl,
-      githubRefInput.value,
-      githubTokenInput.value,
-      runtimeSupportsCourses.value ? selectedCourseId.value : undefined,
-    )
+    const cid = String(selectedCourseId.value || '').trim()
+    const result = await postGithubAnalysis(repoUrl, githubRefInput.value, githubTokenInput.value, cid || undefined)
     if (!result.ok) {
       githubSubmitError.value = result.error
       if (result.body) lastResultJson.value = JSON.stringify(result.body, null, 2)
@@ -604,7 +614,7 @@ async function addRepositoryFromGithub(): Promise<void> {
       workspacePath: result.workspacePath,
       workspaceName: result.workspaceName,
       probe: result.probe,
-      source: 'github',
+      source: remoteSourceFromRepositoryUrl(result.repositoryUrl),
       repositoryUrl: result.repositoryUrl,
       gitRef: result.gitRef,
     })
@@ -624,7 +634,8 @@ async function syncGithubRepo(repo: RuntimeHomeRepo): Promise<void> {
   lastResultJson.value = ''
   const repoUrl = repo.repositoryUrl?.trim()
   if (!repoUrl) {
-    cardError.value = 'This card has no GitHub URL stored; remove it and add the repository again from GitHub.'
+    cardError.value =
+      'This card has no clone URL stored; remove it and add the repository again using “Add from GitHub or GitLab”.'
     return
   }
   syncingGithubPath.value = repo.workspacePath
@@ -706,6 +717,31 @@ function repoKind(repo: RuntimeHomeRepo): string {
   return repo.probe?.kind || 'workspace'
 }
 
+function repoCardIconUrl(repo: RuntimeHomeRepo): string {
+  if (repo.source === 'github') return githubMarkIconUrl
+  if (repo.source === 'gitlab') return gitlabMarkIconUrl
+  return stackedCubesIconUrl
+}
+
+/** Infer persisted source for the session card before `/api/home` returns stored metadata. */
+function remoteSourceFromRepositoryUrl(url: string | undefined): 'github' | 'gitlab' {
+  const u = String(url || '').trim()
+  if (!u) return 'gitlab'
+  try {
+    return new URL(u).hostname.toLowerCase() === 'github.com' ? 'github' : 'gitlab'
+  } catch {
+    return 'gitlab'
+  }
+}
+
+function remoteRepoSupportsSync(repo: RuntimeHomeRepo): boolean {
+  return (
+    (repo.source === 'github' || repo.source === 'gitlab') &&
+    !!repo.repositoryUrl?.trim() &&
+    runtimeSupportsGithubSync.value
+  )
+}
+
 onMounted(() => {
   void fetchHome()
 })
@@ -763,8 +799,9 @@ watch(
       <header class="runtime-home__hero">
         <h1>Triton Architecture Explorer</h1>
         <p>
-          Add a repository by absolute path or clone a public GitHub URL, then open the SBT or package diagram from
-          its card. Recent workspaces from the runtime appear below; bundled examples and dojos open in new tabs.
+          Optionally create <strong>Courses</strong> below to group repos. Add a repository by absolute path or clone from
+          <strong>GitHub</strong> or <strong>GitLab</strong> (HTTPS), then open the SBT or package diagram from its card.
+          Recent workspaces from the runtime appear below; bundled examples and dojos open in new tabs.
         </p>
       </header>
 
@@ -787,7 +824,7 @@ watch(
           </ul>
         </div>
         <div v-if="homeModel.runtime.gitCacheRoot">
-          <strong>GitHub clone cache</strong>
+          <strong>Remote Git clone cache</strong>
           <div class="runtime-home__mono">{{ homeModel.runtime.gitCacheRoot }}</div>
         </div>
         <div v-if="homeModel.runtime.version">
@@ -805,11 +842,11 @@ watch(
         class="runtime-home__card runtime-home__card--warn"
         role="status"
       >
-        <strong>GitHub import unavailable on this runtime</strong>
+        <strong>Hosted Git clone unavailable on this runtime</strong>
         <p class="runtime-home__hint">
           <code>/api/home</code> does not list <code>analysis-github</code> in <code>capabilities</code>, so this process
           is an older triton-runtime (or not rebuilt). Restart from the branch that adds
-          <code>POST /api/analysis/github</code>, or run
+          <code>POST /api/analysis/github</code> (GitHub and GitLab HTTPS URLs), or run
           <code>curl -sS -X POST {{ base }}/api/analysis/github -H 'content-type: application/json' -d '{}'</code>
           — you want HTTP <strong>400</strong>
           <code>missing_repository_url</code>, not <strong>404</strong>
@@ -817,13 +854,25 @@ watch(
         </p>
       </section>
 
-      <section v-if="runtimeSupportsCourses" class="runtime-home__card">
+      <section v-if="showCoursesSection" class="runtime-home__card">
+        <div
+          v-if="!runtimeSupportsCourses"
+          class="runtime-home__courses-compat"
+          role="status"
+        >
+          <strong>Course storage needs a newer runtime</strong>
+          <p class="runtime-home__hint">
+            <code>GET {{ base }}/health</code> should list <code>courses-api</code> in <code>capabilities</code> and version
+            <strong>0.5.0</strong> or newer. Restart or rebuild <code>triton-runtime</code> from this repo, then refresh this page.
+          </p>
+        </div>
+        <div class="runtime-home__courses-body" :class="{ 'runtime-home__courses-body--disabled': !runtimeSupportsCourses }">
         <div class="runtime-home__add-head">
           <img class="runtime-home__add-icon" :src="stackedCubesIconUrl" width="32" height="32" alt="" />
           <div>
             <h2>Courses</h2>
             <p class="runtime-home__add-lead">
-              Group GitHub or local workspaces for a class or project. Repositories in a course also stay in recent history
+              Group hosted Git (GitHub/GitLab) or local workspaces for a class or project. Repositories in a course also stay in recent history
               but are listed here; ungrouped recents appear under “Other workspaces”.
             </p>
           </div>
@@ -838,6 +887,7 @@ watch(
             name="courseSlug"
             autocomplete="off"
             placeholder="e.g. cs-101-fall"
+            :disabled="!runtimeSupportsCourses"
           />
           <label class="runtime-home__label" for="triton-new-course-title">Title</label>
           <input
@@ -848,6 +898,7 @@ watch(
             name="courseTitle"
             autocomplete="off"
             placeholder="Introduction to Software Architecture"
+            :disabled="!runtimeSupportsCourses"
           />
           <label class="runtime-home__label" for="triton-new-course-term">Term (optional)</label>
           <input
@@ -858,15 +909,22 @@ watch(
             name="courseTerm"
             autocomplete="off"
             placeholder="Fall 2026"
+            :disabled="!runtimeSupportsCourses"
           />
           <div class="runtime-home__actions">
-            <button type="submit" class="runtime-home__btn runtime-home__btn--primary" :disabled="courseFormBusy || !!deletingCourseId">
+            <button
+              type="submit"
+              class="runtime-home__btn runtime-home__btn--primary"
+              :disabled="!runtimeSupportsCourses || courseFormBusy || !!deletingCourseId"
+            >
               {{ courseFormBusy ? 'Creating…' : 'Create course' }}
             </button>
           </div>
         </form>
         <p v-if="courseSubmitError" class="runtime-home__error">{{ courseSubmitError }}</p>
-        <p v-if="!(homeModel?.courses?.length)" class="runtime-home__hint">No courses yet. Create one, then pick it when adding a repository below.</p>
+        <p v-if="runtimeSupportsCourses && !(homeModel?.courses?.length)" class="runtime-home__hint">
+          No courses yet. Create one, then pick it when adding a repository below.
+        </p>
         <details
           v-for="course in homeModel?.courses ?? []"
           :key="course.id"
@@ -881,7 +939,7 @@ watch(
             <button
               type="button"
               class="runtime-home__course-del"
-              :disabled="!!deletingCourseId || courseFormBusy"
+              :disabled="!runtimeSupportsCourses || !!deletingCourseId || courseFormBusy"
               @click.prevent.stop="void removeCourse(course)"
             >
               {{ deletingCourseId === course.id ? 'Removing…' : 'Remove' }}
@@ -892,12 +950,13 @@ watch(
             <div v-else class="runtime-home__grid">
               <article v-for="repo in course.workspaces" :key="repo.workspacePath" class="repo-card">
                 <div class="repo-card__icon-wrap" aria-hidden="true">
-                  <img class="repo-card__icon" :src="stackedCubesIconUrl" width="28" height="28" alt="" />
+                  <img class="repo-card__icon" :src="repoCardIconUrl(repo)" width="28" height="28" alt="" />
                 </div>
                 <div class="repo-card__body">
                   <div class="repo-card__title-row">
                     <h3 class="repo-card__title">{{ repo.workspaceName }}</h3>
                     <span v-if="repo.source === 'github'" class="repo-card__pill repo-card__pill--github">GitHub</span>
+                    <span v-if="repo.source === 'gitlab'" class="repo-card__pill repo-card__pill--gitlab">GitLab</span>
                   </div>
                   <p class="repo-card__path"><code>{{ repo.workspacePath }}</code></p>
                   <p class="repo-card__meta">
@@ -925,7 +984,7 @@ watch(
                     >
                       Package diagram
                     </button>
-                    <template v-if="repo.source === 'github' && runtimeSupportsGithubSync">
+                    <template v-if="remoteRepoSupportsSync(repo)">
                       <span class="repo-card__sep" aria-hidden="true">·</span>
                       <button
                         type="button"
@@ -933,7 +992,7 @@ watch(
                         :disabled="!!analyzingPath || !!syncingGithubPath"
                         @click="void syncGithubRepo(repo)"
                       >
-                        {{ syncingGithubPath === repo.workspacePath ? 'Syncing…' : 'Sync from GitHub' }}
+                        {{ syncingGithubPath === repo.workspacePath ? 'Syncing…' : 'Pull latest' }}
                       </button>
                     </template>
                     <span v-if="analyzingPath === repo.workspacePath" class="repo-card__busy" aria-live="polite">
@@ -945,6 +1004,7 @@ watch(
             </div>
           </div>
         </details>
+        </div>
       </section>
 
       <section class="runtime-home__card runtime-home__card--add">
@@ -969,7 +1029,7 @@ watch(
             autocomplete="off"
             placeholder="/repos/my-project"
           />
-          <template v-if="runtimeSupportsCourses && (homeModel?.courses?.length ?? 0) > 0">
+          <template v-if="hasCoursesForPicker">
             <label class="runtime-home__label" for="triton-course-local">Course (optional)</label>
             <select id="triton-course-local" v-model="selectedCourseId" class="runtime-home__input runtime-home__select">
               <option value="">— None —</option>
@@ -996,15 +1056,16 @@ watch(
         <div class="runtime-home__add-head">
           <img class="runtime-home__add-icon" :src="stackedCubesIconUrl" width="32" height="32" alt="" />
           <div>
-            <h2>Add from GitHub</h2>
+            <h2>Add from GitHub or GitLab</h2>
             <p class="runtime-home__add-lead">
-              Clones a public repository into the runtime cache and registers it like a local workspace. Re-adding the
-              same repo refreshes the clone (prototype).
+              Clones an HTTPS repository into the runtime cache and registers it like a local workspace. Re-adding the same
+              URL refreshes the clone. Self-hosted GitLab is supported if the runtime sets
+              <code>TRITON_EXTRA_GIT_HOSTS</code>.
             </p>
           </div>
         </div>
         <form class="runtime-home__form" @submit.prevent="void addRepositoryFromGithub()">
-          <label class="runtime-home__label" for="triton-github-url">Repository URL</label>
+          <label class="runtime-home__label" for="triton-github-url">Repository URL (HTTPS)</label>
           <input
             id="triton-github-url"
             v-model="githubUrlInput"
@@ -1012,7 +1073,7 @@ watch(
             type="url"
             name="repositoryUrl"
             autocomplete="off"
-            placeholder="https://github.com/scala/hello-world.g8"
+            placeholder="https://github.com/scala/hello-world.g8 or https://gitlab.com/gitlab-org/gitlab"
           />
           <label class="runtime-home__label" for="triton-github-ref">Branch or tag (optional)</label>
           <input
@@ -1024,20 +1085,20 @@ watch(
             autocomplete="off"
             placeholder="main"
           />
-          <label class="runtime-home__label" for="triton-github-token">GitHub token (optional)</label>
+          <label class="runtime-home__label" for="triton-github-token">Access token (optional)</label>
           <input
             id="triton-github-token"
             v-model="githubTokenInput"
             class="runtime-home__input"
             type="password"
-            name="githubToken"
+            name="gitToken"
             autocomplete="new-password"
-            placeholder="PAT for private repos — cleared after add"
+            placeholder="GitHub PAT or GitLab PAT — cleared after add"
           />
           <p class="runtime-home__hint runtime-home__hint--field">
             Prefer headers or env on shared servers; this field is only sent with the request and not saved on the card.
           </p>
-          <template v-if="runtimeSupportsCourses && (homeModel?.courses?.length ?? 0) > 0">
+          <template v-if="hasCoursesForPicker">
             <label class="runtime-home__label" for="triton-course-github">Course (optional)</label>
             <select id="triton-course-github" v-model="selectedCourseId" class="runtime-home__input runtime-home__select">
               <option value="">— None —</option>
@@ -1082,12 +1143,13 @@ watch(
         <div v-else class="runtime-home__grid">
           <article v-for="repo in repositoryCards" :key="repo.workspacePath" class="repo-card">
             <div class="repo-card__icon-wrap" aria-hidden="true">
-              <img class="repo-card__icon" :src="stackedCubesIconUrl" width="28" height="28" alt="" />
+              <img class="repo-card__icon" :src="repoCardIconUrl(repo)" width="28" height="28" alt="" />
             </div>
             <div class="repo-card__body">
               <div class="repo-card__title-row">
                 <h3 class="repo-card__title">{{ repo.workspaceName }}</h3>
                 <span v-if="repo.source === 'github'" class="repo-card__pill repo-card__pill--github">GitHub</span>
+                <span v-if="repo.source === 'gitlab'" class="repo-card__pill repo-card__pill--gitlab">GitLab</span>
                 <span v-if="isSessionListed(repo)" class="repo-card__pill">Added</span>
               </div>
               <p class="repo-card__path"><code>{{ repo.workspacePath }}</code></p>
@@ -1116,7 +1178,7 @@ watch(
                 >
                   Package diagram
                 </button>
-                <template v-if="repo.source === 'github' && runtimeSupportsGithubSync">
+                <template v-if="remoteRepoSupportsSync(repo)">
                   <span class="repo-card__sep" aria-hidden="true">·</span>
                   <button
                     type="button"
@@ -1124,7 +1186,7 @@ watch(
                     :disabled="!!analyzingPath || !!syncingGithubPath"
                     @click="void syncGithubRepo(repo)"
                   >
-                    {{ syncingGithubPath === repo.workspacePath ? 'Syncing…' : 'Sync from GitHub' }}
+                    {{ syncingGithubPath === repo.workspacePath ? 'Syncing…' : 'Pull latest' }}
                   </button>
                 </template>
                 <span v-if="analyzingPath === repo.workspacePath" class="repo-card__busy" aria-live="polite">
@@ -1381,6 +1443,27 @@ watch(
 .runtime-home__select {
   cursor: pointer;
 }
+.runtime-home__courses-compat {
+  margin: -4px 0 18px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #fcd34d;
+  background: #fffbeb;
+  color: #92400e;
+}
+.runtime-home__courses-compat strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+.runtime-home__courses-compat .runtime-home__hint {
+  margin-top: 0;
+  color: #78350f;
+}
+.runtime-home__courses-body--disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
 .runtime-home__fold--course {
   margin-top: 12px;
 }
@@ -1557,6 +1640,10 @@ watch(
 .repo-card__pill--github {
   background: #dbeafe;
   color: #1d4ed8;
+}
+.repo-card__pill--gitlab {
+  background: #fde8d0;
+  color: #c26700;
 }
 .repo-card__path {
   margin: 6px 0 0;

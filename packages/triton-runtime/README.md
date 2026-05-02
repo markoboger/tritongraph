@@ -15,11 +15,11 @@ Current MVP scaffold:
   - direct path entry
   - discovered repositories under configured workspace roots
   - recent repositories that can be reopened with one click
-- local repo validation via `TRITON_ALLOWED_REPO_ROOTS` (GitHub clones are stored under `TRITON_GIT_CACHE_ROOT` and are allowed when roots are configured; otherwise the same “no root list” rules apply as for local paths)
+- local repo validation via `TRITON_ALLOWED_REPO_ROOTS` (hosted Git clones are stored under `TRITON_GIT_CACHE_ROOT` and are allowed when roots are configured; otherwise the same “no root list” rules apply as for local paths)
 - home data endpoint at `GET /api/home`
 - local analysis launch endpoint at `POST /api/analysis/local`
-- GitHub registration at `POST /api/analysis/github` (shallow clone or **incremental fetch** if the repo already exists under `TRITON_GIT_CACHE_ROOT`)
-- GitHub sync at `POST /api/workspace/github/sync` (same body as registration; updates an existing cached clone via `git fetch` / `git pull`)
+- Hosted Git registration at `POST /api/analysis/github` (**GitHub** or **GitLab** HTTPS URLs — shallow clone or **incremental fetch** if the repo already exists under `TRITON_GIT_CACHE_ROOT`; route name unchanged for compatibility)
+- Sync at `POST /api/workspace/github/sync` (same body as registration; updates an existing cached clone via `git fetch` / `git pull`)
 - source-file endpoint at `GET /api/workspace/source`
 - workspace bundle endpoint that discovers live local inputs:
   - `build.sbt`
@@ -46,24 +46,33 @@ npm start
 
 Then open `http://127.0.0.1:4317`, enter a repo path like `/Users/markoboger/workspace/chess`, and use the generated links to open the Triton browser UI against that workspace.
 
-**GitHub:** the host must have `git` on `PATH`. In Docker, the image installs **`ca-certificates`** so Git can verify `https://github.com` (without it you may see `CAfile: none` / certificate verification failed). Optional env:
+**Hosted Git (GitHub + GitLab):** the host must have `git` on `PATH`. In Docker, the image installs **`ca-certificates`** so Git can verify HTTPS remotes (without it you may see `CAfile: none` / certificate verification failed). Supported repository URLs:
+
+- `https://github.com/<owner>/<repo>` (exactly two path segments).
+- `https://gitlab.com/<namespace>/<project>` or nested groups (`…/group/subgroup/project`).
+- Self-hosted GitLab: set **`TRITON_EXTRA_GIT_HOSTS`** to a comma-separated list of hostnames (e.g. `git.my-university.edu`). Those hosts use the same GitLab-style **`oauth2:<token>`** HTTP Basic auth as `gitlab.com`.
+
+Optional env:
 
 - `TRITON_GIT_CACHE_ROOT` — where clones are stored (default: `<state-dir>/github-cache`).
 - `TRITON_GIT_CLONE_TIMEOUT_MS` — clone timeout in ms (default `180000`).
 - `TRITON_HTTP_PATH_PREFIX` — when the HTTP request path includes a gateway prefix (e.g. `/triton/api/...` instead of `/api/...`), set this to that prefix (e.g. `/triton`) so routing matches.
-- `TRITON_GITHUB_TOKEN` — optional default **PAT** for private repos (server-wide). Per-request overrides: `Authorization: Bearer <token>`, header `x-github-token`, or JSON field `githubToken` (UI uses the latter for ad-hoc PATs).
+- `TRITON_EXTRA_GIT_HOSTS` — optional extra HTTPS hostnames allowed for clone/sync (self-hosted GitLab).
+- `TRITON_GITHUB_TOKEN` / `TRITON_GITLAB_TOKEN` — optional default tokens (server-wide). Per-request: `Authorization: Bearer`, headers `x-github-token` / `x-gitlab-token`, or JSON `gitToken`, `githubToken`, `gitlabToken`.
 
-`POST /api/analysis/github` and `POST /api/workspace/github/sync` JSON body: `{ "repositoryUrl": "https://github.com/org/repo", "ref": "main", "githubToken": "optional" }` — `ref` is optional. If the clone directory already exists, the runtime **updates** it (no full wipe).
+`POST /api/analysis/github` and `POST /api/workspace/github/sync` JSON body example:
+
+`{ "repositoryUrl": "https://gitlab.com/gitlab-org/gitlab", "ref": "master", "gitToken": "optional" }` — `ref` is optional. If the clone directory already exists, the runtime **updates** it (no full wipe). Recent-repo persistence stores `source` as `github` or `gitlab`.
 
 If `POST /api/analysis/github` returns JSON `{ "error": "not_found", ... }`:
 
-1. **Upgrade** so `/health` reports a current **`version`** (e.g. `0.5.0`), `capabilities` includes `github-sync`, and `GET /api/analysis/github` returns JSON describing POST (not `not_found`). If GET also returns `not_found`, you are not hitting this codebase’s server on that port.
+1. **Upgrade** so `/health` reports a current **`version`** (e.g. `0.6.0`), `capabilities` includes `github-sync`, and `GET /api/analysis/github` returns JSON describing POST (not `not_found`). If GET also returns `not_found`, you are not hitting this codebase’s server on that port.
 2. Read the **`pathnameRaw`** field on the 404 body (0.2.1+). If it looks like `/something/api/analysis/github` instead of `/api/analysis/github`, your reverse proxy forwards a **path prefix**. Set **`TRITON_HTTP_PATH_PREFIX`** to that prefix (e.g. `/something`) on the runtime process and restart, or reconfigure the proxy to strip the prefix before forwarding.
 3. **`path` ends with `/api/analysis/github/`** — trailing slash was fixed by normalizing paths; upgrade if you still see this on an older build.
 
 **Smoke test:** `curl -sS -X POST http://127.0.0.1:4317/api/analysis/github -H 'content-type: application/json' -d '{}'`
 
-- **HTTP 400** with `missing_repository_url` → the GitHub route exists; your clone URL/body was wrong.
+- **HTTP 400** with `missing_repository_url` → the hosted-Git route exists; your clone URL/body was wrong. **`unsupported_git_host`** means the hostname is not `github.com`, `gitlab.com`, or listed in `TRITON_EXTRA_GIT_HOSTS`.
 - **HTTP 404** with `not_found` → the running Node process does **not** include `POST /api/analysis/github` (wrong checkout, stale Docker image, or a second older binary bound to that port).
 
 If `TRITON_ALLOWED_REPO_ROOTS` points at a workspace root, the landing page also lists discovered repositories under that root and remembers recently opened repositories.

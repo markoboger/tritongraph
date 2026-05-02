@@ -31,14 +31,18 @@ CREATE TABLE IF NOT EXISTS triton_course_workspaces (
 );
 `
 
+function isRemoteGitSource(value) {
+  return value === 'github' || value === 'gitlab'
+}
+
 function rowFromPg(r) {
   const out = {
     workspacePath: r.workspace_path,
     workspaceName: r.workspace_name,
     lastOpenedAt: r.last_opened_at ? new Date(r.last_opened_at).toISOString() : '',
   }
-  if (r.source === 'github') {
-    out.source = 'github'
+  if (isRemoteGitSource(r.source)) {
+    out.source = r.source
     if (r.repository_url) out.repositoryUrl = r.repository_url
     if (r.git_ref) out.gitRef = r.git_ref
   }
@@ -98,7 +102,7 @@ function createPostgresPersistence(config) {
       if (!workspacePath) return
       const workspaceName = String(row.workspaceName || '').trim()
       const lastOpenedAt = row.lastOpenedAt ? new Date(row.lastOpenedAt) : new Date()
-      const source = row.source === 'github' ? 'github' : null
+      const source = isRemoteGitSource(row.source) ? row.source : null
       const repositoryUrl = row.repositoryUrl ? String(row.repositoryUrl).trim() : null
       const gitRef = row.gitRef ? String(row.gitRef).trim() : null
 
@@ -179,7 +183,7 @@ function createPostgresPersistence(config) {
         workspaceName: l.workspace_name,
         repositoryUrl: l.repository_url || undefined,
         gitRef: l.git_ref || undefined,
-        source: l.source === 'github' ? 'github' : undefined,
+        source: isRemoteGitSource(l.source) ? l.source : undefined,
         linkedAt: l.linked_at ? new Date(l.linked_at).toISOString() : '',
       }))
     },
@@ -194,7 +198,7 @@ function createPostgresPersistence(config) {
       const wn = workspaceName || workspacePath
       const repositoryUrl = row.repositoryUrl ? String(row.repositoryUrl).trim() : null
       const gitRef = row.gitRef ? String(row.gitRef).trim() : null
-      const source = row.source === 'github' ? 'github' : null
+      const source = isRemoteGitSource(row.source) ? row.source : null
       await pool.query(
         `INSERT INTO triton_course_workspaces (course_id, workspace_path, workspace_name, repository_url, git_ref, source)
          VALUES ($1, $2, $3, $4, $5, $6)
