@@ -1,0 +1,27 @@
+<!--?xml version="1.0" encoding="UTF-8"?-->
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" fill="black">
+
+  <!-- Head -->
+  <circle cx="40" cy="40" r="12"></circle>
+
+  <!-- Body -->
+  <rect x="30" y="55" width="20" height="60" rx="10"></rect>
+
+  <!-- Legs -->
+  <rect x="30" y="115" width="8" height="40" rx="4"></rect>
+  <rect x="42" y="115" width="8" height="40" rx="4"></rect>
+
+  <!-- Arm -->
+  <rect x="45" y="65" width="45" height="10" rx="5" transform="rotate(30 45 65)"></rect>
+
+  <!-- Pointer -->
+  <line x1="80" y1="80" x2="140" y2="40" stroke="black" stroke-width="3"></line>
+
+  <!-- Board -->
+  <rect x="90" y="30" width="90" height="80" rx="8" fill="none" stroke="black" stroke-width="6"></rect>
+
+  <!-- Board stand -->
+  <line x1="120" y1="110" x2="100" y2="140" stroke="black" stroke-width="6" stroke-linecap="round"></line>
+  <line x1="120" y1="110" x2="140" y2="140" stroke="black" stroke-width="6" stroke-linecap="round"></line>
+
+</svg>

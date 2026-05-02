@@ -12,6 +12,7 @@ import stackedCubesIconUrl from '../assets/language-icons/stacked-cubes.svg'
 import githubMarkIconUrl from '../assets/language-icons/Octicons-mark-github.svg'
 import gitlabMarkIconUrl from '../assets/language-icons/GitLab_icon.svg'
 import folderIconUrl from '../assets/language-icons/folder.svg'
+import courseIconUrl from '../assets/language-icons/course.svg'
 import { dockerBrandIconUrl } from '../triton/dockerConceptIcons'
 import cubeIconUrl from '../assets/language-icons/cube.svg'
 import sbtIconUrl from '../assets/language-icons/sbt.svg'
@@ -955,7 +956,7 @@ watch(
         </div>
         <div class="runtime-home__courses-body" :class="{ 'runtime-home__courses-body--disabled': !runtimeSupportsCourses }">
         <div class="runtime-home__add-head">
-          <img class="runtime-home__add-icon" :src="stackedCubesIconUrl" width="32" height="32" alt="" />
+          <img class="runtime-home__add-icon" :src="courseIconUrl" width="32" height="32" alt="" />
           <div>
             <h2>Courses</h2>
             <p class="runtime-home__add-lead">
