@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { StarterCard, StarterCardKind } from '../triton/tritonStarterCard'
 
 type StarterFoldSection = {
@@ -106,6 +106,11 @@ const newCourseTerm = ref('')
 const courseFormBusy = ref(false)
 const courseSubmitError = ref('')
 const deletingCourseId = ref('')
+const courseDialogRef = ref<HTMLDialogElement | null>(null)
+const localRepoDialogRef = ref<HTMLDialogElement | null>(null)
+const remoteRepoDialogRef = ref<HTMLDialogElement | null>(null)
+/** Tracks modal open state so course errors can show inline vs in-dialog without duplication. */
+const courseDialogOpen = ref(false)
 const homeModel = ref<RuntimeHomeModel | null>(null)
 const loadError = ref('')
 const submitError = ref('')
@@ -122,6 +127,41 @@ const sessionRepos = ref<RuntimeHomeRepo[]>([])
 const locallyAnalyzedPaths = ref<Set<string>>(new Set())
 
 const base = computed(() => props.runtimeBaseUrl.replace(/\/$/, ''))
+
+function openCourseDialog(): void {
+  courseSubmitError.value = ''
+  courseDialogOpen.value = true
+  void nextTick(() => courseDialogRef.value?.showModal())
+}
+
+function closeCourseDialog(): void {
+  courseSubmitError.value = ''
+  courseDialogRef.value?.close()
+}
+
+function openLocalRepoDialog(): void {
+  submitError.value = ''
+  lastResultJson.value = ''
+  void nextTick(() => localRepoDialogRef.value?.showModal())
+}
+
+function closeLocalRepoDialog(): void {
+  submitError.value = ''
+  lastResultJson.value = ''
+  localRepoDialogRef.value?.close()
+}
+
+function openRemoteRepoDialog(): void {
+  githubSubmitError.value = ''
+  lastResultJson.value = ''
+  void nextTick(() => remoteRepoDialogRef.value?.showModal())
+}
+
+function closeRemoteRepoDialog(): void {
+  githubSubmitError.value = ''
+  lastResultJson.value = ''
+  remoteRepoDialogRef.value?.close()
+}
 
 /** `/api/home` from builds without GitHub analysis omits `capabilities.analysis-github`. */
 const runtimeSupportsGithubAnalysis = computed(() => {
@@ -526,6 +566,7 @@ async function createCourseFromForm(): Promise<void> {
     newCourseTerm.value = ''
     await fetchHome()
     if (body.course?.id) selectedCourseId.value = body.course.id
+    closeCourseDialog()
   } catch (e) {
     courseSubmitError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -586,6 +627,7 @@ async function addRepositoryFromForm(): Promise<void> {
     await fetchHome()
     submitError.value = ''
     workspacePathInput.value = ''
+    closeLocalRepoDialog()
   } finally {
     formBusy.value = false
   }
@@ -623,6 +665,7 @@ async function addRepositoryFromGithub(): Promise<void> {
     githubUrlInput.value = ''
     githubRefInput.value = ''
     githubTokenInput.value = ''
+    closeRemoteRepoDialog()
   } finally {
     githubFormBusy.value = false
   }
@@ -799,9 +842,10 @@ watch(
       <header class="runtime-home__hero">
         <h1>Triton Architecture Explorer</h1>
         <p>
-          Optionally create <strong>Courses</strong> below to group repos. Add a repository by absolute path or clone from
-          <strong>GitHub</strong> or <strong>GitLab</strong> (HTTPS), then open the SBT or package diagram from its card.
-          Recent workspaces from the runtime appear below; bundled examples and dojos open in new tabs.
+          Use the <strong>Add Course</strong>, <strong>Add local repo from folder</strong>, and
+          <strong>Add new repo from GitHub / GitLab</strong> buttons (below once the runtime is connected) to register
+          workspaces. Optionally create <strong>Courses</strong> to group repos on the server. Open the SBT or package
+          diagram from each card. Bundled examples and dojos open in new tabs.
         </p>
       </header>
 
@@ -854,6 +898,35 @@ watch(
         </p>
       </section>
 
+      <section v-if="homeModel?.runtime" class="runtime-home__card runtime-home__card--actions">
+        <h2 class="runtime-home__actions-title">Repositories</h2>
+        <p class="runtime-home__add-lead runtime-home__actions-lead">
+          Open a dialog to add a course or register a workspace with the runtime.
+        </p>
+        <div class="runtime-home__action-bar">
+          <button
+            v-if="showCoursesSection"
+            type="button"
+            class="runtime-home__btn runtime-home__btn--primary"
+            @click="openCourseDialog"
+          >
+            Add Course
+          </button>
+          <button type="button" class="runtime-home__btn runtime-home__btn--primary" @click="openLocalRepoDialog">
+            Add local repo from folder
+          </button>
+          <button
+            type="button"
+            class="runtime-home__btn runtime-home__btn--primary"
+            :disabled="githubRuntimeStaleWarning"
+            @click="openRemoteRepoDialog"
+          >
+            Add new repo from GitHub / GitLab
+          </button>
+          <button type="button" class="runtime-home__btn" @click="void fetchHome()">Refresh lists</button>
+        </div>
+      </section>
+
       <section v-if="showCoursesSection" class="runtime-home__card">
         <div
           v-if="!runtimeSupportsCourses"
@@ -872,58 +945,15 @@ watch(
           <div>
             <h2>Courses</h2>
             <p class="runtime-home__add-lead">
-              Group hosted Git (GitHub/GitLab) or local workspaces for a class or project. Repositories in a course also stay in recent history
-              but are listed here; ungrouped recents appear under “Other workspaces”.
+              Group hosted Git (GitHub/GitLab) or local workspaces for a class or project. Use <strong>Add Course</strong>
+              in the bar above. Repositories in a course stay in recent history but are listed here; ungrouped recents appear
+              under “Other workspaces”.
             </p>
           </div>
         </div>
-        <form class="runtime-home__form" @submit.prevent="void createCourseFromForm()">
-          <label class="runtime-home__label" for="triton-new-course-slug">Course slug (URL-safe)</label>
-          <input
-            id="triton-new-course-slug"
-            v-model="newCourseSlug"
-            class="runtime-home__input"
-            type="text"
-            name="courseSlug"
-            autocomplete="off"
-            placeholder="e.g. cs-101-fall"
-            :disabled="!runtimeSupportsCourses"
-          />
-          <label class="runtime-home__label" for="triton-new-course-title">Title</label>
-          <input
-            id="triton-new-course-title"
-            v-model="newCourseTitle"
-            class="runtime-home__input"
-            type="text"
-            name="courseTitle"
-            autocomplete="off"
-            placeholder="Introduction to Software Architecture"
-            :disabled="!runtimeSupportsCourses"
-          />
-          <label class="runtime-home__label" for="triton-new-course-term">Term (optional)</label>
-          <input
-            id="triton-new-course-term"
-            v-model="newCourseTerm"
-            class="runtime-home__input"
-            type="text"
-            name="courseTerm"
-            autocomplete="off"
-            placeholder="Fall 2026"
-            :disabled="!runtimeSupportsCourses"
-          />
-          <div class="runtime-home__actions">
-            <button
-              type="submit"
-              class="runtime-home__btn runtime-home__btn--primary"
-              :disabled="!runtimeSupportsCourses || courseFormBusy || !!deletingCourseId"
-            >
-              {{ courseFormBusy ? 'Creating…' : 'Create course' }}
-            </button>
-          </div>
-        </form>
-        <p v-if="courseSubmitError" class="runtime-home__error">{{ courseSubmitError }}</p>
+        <p v-if="courseSubmitError && !courseDialogOpen" class="runtime-home__error">{{ courseSubmitError }}</p>
         <p v-if="runtimeSupportsCourses && !(homeModel?.courses?.length)" class="runtime-home__hint">
-          No courses yet. Create one, then pick it when adding a repository below.
+          No courses yet. Use <strong>Add Course</strong> above, then optionally pick a course when adding a repo.
         </p>
         <details
           v-for="course in homeModel?.courses ?? []"
@@ -1007,120 +1037,200 @@ watch(
         </div>
       </section>
 
-      <section class="runtime-home__card runtime-home__card--add">
-        <div class="runtime-home__add-head">
-          <img class="runtime-home__add-icon" :src="stackedCubesIconUrl" width="32" height="32" alt="" />
-          <div>
-            <h2>Add new Repository</h2>
-            <p class="runtime-home__add-lead">
-              Registers the workspace with the runtime and adds a card below. Open diagrams from the card when you
-              are ready.
+      <dialog
+        ref="courseDialogRef"
+        class="runtime-home__dialog"
+        aria-labelledby="runtime-dialog-course-title"
+        @close="courseDialogOpen = false"
+      >
+        <div class="runtime-home__dialog-panel">
+          <header class="runtime-home__dialog-head">
+            <h2 id="runtime-dialog-course-title">Add Course</h2>
+            <button type="button" class="runtime-home__dialog-close" aria-label="Close" @click="closeCourseDialog">
+              ×
+            </button>
+          </header>
+          <div
+            v-if="!runtimeSupportsCourses"
+            class="runtime-home__courses-compat runtime-home__dialog-compat"
+            role="status"
+          >
+            <strong>Course storage needs a newer runtime</strong>
+            <p class="runtime-home__hint">
+              Upgrade <code>triton-runtime</code> so <code>/health</code> lists <code>courses-api</code> (version 0.5.0+).
             </p>
           </div>
+          <form class="runtime-home__form" @submit.prevent="void createCourseFromForm()">
+            <label class="runtime-home__label" for="runtime-dialog-course-slug">Course slug (URL-safe)</label>
+            <input
+              id="runtime-dialog-course-slug"
+              v-model="newCourseSlug"
+              class="runtime-home__input"
+              type="text"
+              autocomplete="off"
+              placeholder="e.g. cs-101-fall"
+              :disabled="!runtimeSupportsCourses"
+            />
+            <label class="runtime-home__label" for="runtime-dialog-course-title-field">Title</label>
+            <input
+              id="runtime-dialog-course-title-field"
+              v-model="newCourseTitle"
+              class="runtime-home__input"
+              type="text"
+              autocomplete="off"
+              placeholder="Introduction to Software Architecture"
+              :disabled="!runtimeSupportsCourses"
+            />
+            <label class="runtime-home__label" for="runtime-dialog-course-term">Term (optional)</label>
+            <input
+              id="runtime-dialog-course-term"
+              v-model="newCourseTerm"
+              class="runtime-home__input"
+              type="text"
+              autocomplete="off"
+              placeholder="Fall 2026"
+              :disabled="!runtimeSupportsCourses"
+            />
+            <p v-if="courseSubmitError" class="runtime-home__error">{{ courseSubmitError }}</p>
+            <div class="runtime-home__dialog-actions">
+              <button type="button" class="runtime-home__btn" :disabled="courseFormBusy" @click="closeCourseDialog">
+                Cancel
+              </button>
+              <button
+                type="submit"
+                class="runtime-home__btn runtime-home__btn--primary"
+                :disabled="!runtimeSupportsCourses || courseFormBusy || !!deletingCourseId"
+              >
+                {{ courseFormBusy ? 'Creating…' : 'Create course' }}
+              </button>
+            </div>
+          </form>
         </div>
-        <form class="runtime-home__form" @submit.prevent="void addRepositoryFromForm()">
-          <label class="runtime-home__label" for="triton-runtime-path">Repository path</label>
-          <input
-            id="triton-runtime-path"
-            v-model="workspacePathInput"
-            class="runtime-home__input"
-            type="text"
-            name="workspacePath"
-            autocomplete="off"
-            placeholder="/repos/my-project"
-          />
-          <template v-if="hasCoursesForPicker">
-            <label class="runtime-home__label" for="triton-course-local">Course (optional)</label>
-            <select id="triton-course-local" v-model="selectedCourseId" class="runtime-home__input runtime-home__select">
-              <option value="">— None —</option>
-              <option v-for="c in homeModel?.courses ?? []" :key="c.id" :value="c.id">{{ c.title }}</option>
-            </select>
-          </template>
-          <div class="runtime-home__actions">
-            <button type="submit" class="runtime-home__btn runtime-home__btn--primary" :disabled="formBusy">
-              {{ formBusy ? 'Adding…' : 'Add repository' }}
-            </button>
-            <button type="button" class="runtime-home__btn" :disabled="formBusy" @click="void fetchHome()">
-              Refresh lists
-            </button>
-          </div>
-        </form>
-        <p v-if="submitError" class="runtime-home__error">{{ submitError }}</p>
-        <details v-if="lastResultJson && submitError" class="runtime-home__details">
-          <summary>Response details</summary>
-          <pre class="runtime-home__pre">{{ lastResultJson }}</pre>
-        </details>
-      </section>
+      </dialog>
 
-      <section class="runtime-home__card runtime-home__card--add">
-        <div class="runtime-home__add-head">
-          <img class="runtime-home__add-icon" :src="stackedCubesIconUrl" width="32" height="32" alt="" />
-          <div>
-            <h2>Add from GitHub or GitLab</h2>
-            <p class="runtime-home__add-lead">
-              Clones an HTTPS repository into the runtime cache and registers it like a local workspace. Re-adding the same
-              URL refreshes the clone. Self-hosted GitLab is supported if the runtime sets
-              <code>TRITON_EXTRA_GIT_HOSTS</code>.
-            </p>
-          </div>
-        </div>
-        <form class="runtime-home__form" @submit.prevent="void addRepositoryFromGithub()">
-          <label class="runtime-home__label" for="triton-github-url">Repository URL (HTTPS)</label>
-          <input
-            id="triton-github-url"
-            v-model="githubUrlInput"
-            class="runtime-home__input"
-            type="url"
-            name="repositoryUrl"
-            autocomplete="off"
-            placeholder="https://github.com/scala/hello-world.g8 or https://gitlab.com/gitlab-org/gitlab"
-          />
-          <label class="runtime-home__label" for="triton-github-ref">Branch or tag (optional)</label>
-          <input
-            id="triton-github-ref"
-            v-model="githubRefInput"
-            class="runtime-home__input"
-            type="text"
-            name="gitRef"
-            autocomplete="off"
-            placeholder="main"
-          />
-          <label class="runtime-home__label" for="triton-github-token">Access token (optional)</label>
-          <input
-            id="triton-github-token"
-            v-model="githubTokenInput"
-            class="runtime-home__input"
-            type="password"
-            name="gitToken"
-            autocomplete="new-password"
-            placeholder="GitHub PAT or GitLab PAT — cleared after add"
-          />
-          <p class="runtime-home__hint runtime-home__hint--field">
-            Prefer headers or env on shared servers; this field is only sent with the request and not saved on the card.
-          </p>
-          <template v-if="hasCoursesForPicker">
-            <label class="runtime-home__label" for="triton-course-github">Course (optional)</label>
-            <select id="triton-course-github" v-model="selectedCourseId" class="runtime-home__input runtime-home__select">
-              <option value="">— None —</option>
-              <option v-for="c in homeModel?.courses ?? []" :key="c.id" :value="c.id">{{ c.title }}</option>
-            </select>
-          </template>
-          <div class="runtime-home__actions">
-            <button
-              type="submit"
-              class="runtime-home__btn runtime-home__btn--primary"
-              :disabled="githubFormBusy || githubRuntimeStaleWarning"
-            >
-              {{ githubFormBusy ? 'Cloning…' : 'Clone & add' }}
+      <dialog ref="localRepoDialogRef" class="runtime-home__dialog" aria-labelledby="runtime-dialog-local-title">
+        <div class="runtime-home__dialog-panel">
+          <header class="runtime-home__dialog-head">
+            <h2 id="runtime-dialog-local-title">Add local repo from folder</h2>
+            <button type="button" class="runtime-home__dialog-close" aria-label="Close" @click="closeLocalRepoDialog">
+              ×
             </button>
-          </div>
-        </form>
-        <p v-if="githubSubmitError" class="runtime-home__error">{{ githubSubmitError }}</p>
-        <details v-if="lastResultJson && githubSubmitError" class="runtime-home__details">
-          <summary>Response details</summary>
-          <pre class="runtime-home__pre">{{ lastResultJson }}</pre>
-        </details>
-      </section>
+          </header>
+          <p class="runtime-home__dialog-lead">
+            Registers an absolute path with the runtime and adds a card to the list. Open diagrams from the card when ready.
+          </p>
+          <form class="runtime-home__form" @submit.prevent="void addRepositoryFromForm()">
+            <label class="runtime-home__label" for="runtime-dialog-local-path">Repository path</label>
+            <input
+              id="runtime-dialog-local-path"
+              v-model="workspacePathInput"
+              class="runtime-home__input"
+              type="text"
+              autocomplete="off"
+              placeholder="/repos/my-project"
+            />
+            <template v-if="hasCoursesForPicker">
+              <label class="runtime-home__label" for="runtime-dialog-local-course">Course (optional)</label>
+              <select
+                id="runtime-dialog-local-course"
+                v-model="selectedCourseId"
+                class="runtime-home__input runtime-home__select"
+              >
+                <option value="">— None —</option>
+                <option v-for="c in homeModel?.courses ?? []" :key="c.id" :value="c.id">{{ c.title }}</option>
+              </select>
+            </template>
+            <p v-if="submitError" class="runtime-home__error">{{ submitError }}</p>
+            <details v-if="lastResultJson && submitError" class="runtime-home__details">
+              <summary>Response details</summary>
+              <pre class="runtime-home__pre">{{ lastResultJson }}</pre>
+            </details>
+            <div class="runtime-home__dialog-actions">
+              <button type="button" class="runtime-home__btn" :disabled="formBusy" @click="closeLocalRepoDialog">
+                Cancel
+              </button>
+              <button type="submit" class="runtime-home__btn runtime-home__btn--primary" :disabled="formBusy">
+                {{ formBusy ? 'Adding…' : 'Add repository' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </dialog>
+
+      <dialog ref="remoteRepoDialogRef" class="runtime-home__dialog" aria-labelledby="runtime-dialog-remote-title">
+        <div class="runtime-home__dialog-panel">
+          <header class="runtime-home__dialog-head">
+            <h2 id="runtime-dialog-remote-title">Add new repo from GitHub / GitLab</h2>
+            <button type="button" class="runtime-home__dialog-close" aria-label="Close" @click="closeRemoteRepoDialog">
+              ×
+            </button>
+          </header>
+          <p class="runtime-home__dialog-lead">
+            Clones an HTTPS repository into the runtime cache. Re-adding the same URL refreshes the clone. Self-hosted GitLab:
+            set <code>TRITON_EXTRA_GIT_HOSTS</code> on the runtime.
+          </p>
+          <form class="runtime-home__form" @submit.prevent="void addRepositoryFromGithub()">
+            <label class="runtime-home__label" for="runtime-dialog-remote-url">Repository URL (HTTPS)</label>
+            <input
+              id="runtime-dialog-remote-url"
+              v-model="githubUrlInput"
+              class="runtime-home__input"
+              type="url"
+              autocomplete="off"
+              placeholder="https://github.com/scala/hello-world.g8 or https://gitlab.com/gitlab-org/gitlab"
+            />
+            <label class="runtime-home__label" for="runtime-dialog-remote-ref">Branch or tag (optional)</label>
+            <input
+              id="runtime-dialog-remote-ref"
+              v-model="githubRefInput"
+              class="runtime-home__input"
+              type="text"
+              autocomplete="off"
+              placeholder="main"
+            />
+            <label class="runtime-home__label" for="runtime-dialog-remote-token">Access token (optional)</label>
+            <input
+              id="runtime-dialog-remote-token"
+              v-model="githubTokenInput"
+              class="runtime-home__input"
+              type="password"
+              autocomplete="new-password"
+              placeholder="GitHub PAT or GitLab PAT — cleared after add"
+            />
+            <p class="runtime-home__hint runtime-home__hint--field">
+              Sent only with this request; not stored on the card.
+            </p>
+            <template v-if="hasCoursesForPicker">
+              <label class="runtime-home__label" for="runtime-dialog-remote-course">Course (optional)</label>
+              <select
+                id="runtime-dialog-remote-course"
+                v-model="selectedCourseId"
+                class="runtime-home__input runtime-home__select"
+              >
+                <option value="">— None —</option>
+                <option v-for="c in homeModel?.courses ?? []" :key="c.id" :value="c.id">{{ c.title }}</option>
+              </select>
+            </template>
+            <p v-if="githubSubmitError" class="runtime-home__error">{{ githubSubmitError }}</p>
+            <details v-if="lastResultJson && githubSubmitError" class="runtime-home__details">
+              <summary>Response details</summary>
+              <pre class="runtime-home__pre">{{ lastResultJson }}</pre>
+            </details>
+            <div class="runtime-home__dialog-actions">
+              <button type="button" class="runtime-home__btn" :disabled="githubFormBusy" @click="closeRemoteRepoDialog">
+                Cancel
+              </button>
+              <button
+                type="submit"
+                class="runtime-home__btn runtime-home__btn--primary"
+                :disabled="githubFormBusy || githubRuntimeStaleWarning"
+              >
+                {{ githubFormBusy ? 'Cloning…' : 'Clone & add' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </dialog>
 
       <section class="runtime-home__deck">
         <div class="runtime-home__deck-head">
@@ -1359,9 +1469,92 @@ watch(
   padding: 20px 22px;
   box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
 }
-.runtime-home__card--add {
+.runtime-home__card--actions {
   border-color: #bae6fd;
   box-shadow: 0 8px 28px rgba(14, 116, 144, 0.08);
+}
+.runtime-home__actions-title {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+.runtime-home__actions-lead {
+  margin: 0 0 14px;
+}
+.runtime-home__action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.runtime-home__dialog {
+  border: none;
+  border-radius: 16px;
+  padding: 0;
+  max-width: min(520px, calc(100vw - 32px));
+  width: 100%;
+  background: #fff;
+  color: #0f172a;
+  box-shadow: 0 25px 60px rgba(15, 23, 42, 0.28);
+}
+.runtime-home__dialog::backdrop {
+  background: rgba(15, 23, 42, 0.48);
+}
+.runtime-home__dialog-panel {
+  padding: 22px 24px 24px;
+}
+.runtime-home__dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.runtime-home__dialog-head h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+.runtime-home__dialog-close {
+  flex-shrink: 0;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  color: #475569;
+  font-family: inherit;
+  padding: 0;
+}
+.runtime-home__dialog-close:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+.runtime-home__dialog-lead {
+  margin: 0 0 14px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: #475569;
+}
+.runtime-home__dialog-lead code {
+  font-size: 12px;
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.runtime-home__dialog-compat {
+  margin-bottom: 14px;
+}
+.runtime-home__dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
 }
 .runtime-home__card h2 {
   margin: 0;
