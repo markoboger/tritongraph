@@ -49,6 +49,7 @@ Then open `http://127.0.0.1:4317`, enter a repo path like `/Users/markoboger/wor
 
 - `TRITON_GIT_CACHE_ROOT` — where clones are stored (default: `<state-dir>/github-cache`).
 - `TRITON_GIT_CLONE_TIMEOUT_MS` — clone timeout in ms (default `180000`).
+- `TRITON_HTTP_PATH_PREFIX` — when the HTTP request path includes a gateway prefix (e.g. `/triton/api/...` instead of `/api/...`), set this to that prefix (e.g. `/triton`) so routing matches.
 
 `POST /api/analysis/github` JSON body: `{ "repositoryUrl": "https://github.com/org/repo", "ref": "main" }` — `ref` is optional (default branch). Re-adding the same repo removes the previous clone directory and clones again (prototype behaviour).
 
@@ -56,8 +57,9 @@ Requires **public** repositories over HTTPS until auth is added.
 
 If `POST /api/analysis/github` returns JSON `{ "error": "not_found", ... }`:
 
-- **`path` ends with `/api/analysis/github/`** — you used a **trailing slash** on the URL; older servers treated that as unknown (fixed in current `github-link` by normalizing paths). Drop the slash or upgrade runtime.
-- **`path` is `/api/analysis/github`** but still `not_found` — the process is an **older triton-runtime** without the route. Check `GET /health` for `"capabilities": ["analysis-local", "analysis-github"]` and `"version": "0.2.0"`.
+1. **Upgrade** so `/health` reports `"version": "0.2.1"` (or newer) and `GET /api/analysis/github` returns JSON describing POST (not `not_found`). If GET also returns `not_found`, you are not hitting this codebase’s server on that port.
+2. Read the **`pathnameRaw`** field on the 404 body (0.2.1+). If it looks like `/something/api/analysis/github` instead of `/api/analysis/github`, your reverse proxy forwards a **path prefix**. Set **`TRITON_HTTP_PATH_PREFIX`** to that prefix (e.g. `/something`) on the runtime process and restart, or reconfigure the proxy to strip the prefix before forwarding.
+3. **`path` ends with `/api/analysis/github/`** — trailing slash was fixed by normalizing paths; upgrade if you still see this on an older build.
 
 If `TRITON_ALLOWED_REPO_ROOTS` points at a workspace root, the landing page also lists discovered repositories under that root and remembers recently opened repositories.
 When the browser UI is running against this runtime, source links from artefact panels can open a read-only source tab inside Triton instead of handing off to the IDE.

@@ -16,6 +16,7 @@ const IGNORED_DIRS = new Set([
 ])
 const RECENT_REPOS_LIMIT = 12
 const REPO_DISCOVERY_MAX_DEPTH = 3
+const RUNTIME_VERSION = '0.2.1'
 
 function applyCorsHeaders(res) {
   res.setHeader('access-control-allow-origin', '*')
@@ -143,12 +144,14 @@ function runtimeConfig(options = {}) {
   const gitCacheRoot = path.resolve(
     String(options.gitCacheRoot || process.env.TRITON_GIT_CACHE_ROOT || path.join(stateDir, 'github-cache')).trim(),
   )
+  const httpPathPrefix = String(options.httpPathPrefix ?? process.env.TRITON_HTTP_PATH_PREFIX ?? '').trim()
   return {
     allowedRepoRoots,
     publicRuntimeUrl,
     editorUrl,
     stateDir,
     gitCacheRoot,
+    httpPathPrefix,
   }
 }
 
@@ -368,8 +371,9 @@ function apiHomeModel(config) {
       editorUrl: config.editorUrl,
       allowedRepoRoots: config.allowedRepoRoots,
       gitCacheRoot: config.gitCacheRoot,
+      httpPathPrefix: config.httpPathPrefix || undefined,
       capabilities: ['analysis-local', 'analysis-github'],
-      version: '0.2.0',
+      version: RUNTIME_VERSION,
     },
     recentRepos: readRecentRepos(config),
     discoveredRepos: discoverAllowedRepos(config),
@@ -1154,12 +1158,31 @@ function normalizeRoutePathname(pathname) {
   return p
 }
 
+/** When a reverse proxy forwards /prefix/api/... set TRITON_HTTP_PATH_PREFIX=/prefix */
+function stripConfiguredPathPrefix(pathname, prefixRaw) {
+  const prefRaw = String(prefixRaw || '').trim()
+  if (!prefRaw) return pathname
+  const prefix = normalizeRoutePathname(prefRaw.startsWith('/') ? prefRaw : `/${prefRaw}`)
+  if (!prefix || prefix === '/') return pathname
+  const n = pathname
+  if (n === prefix) return '/'
+  if (n.startsWith(`${prefix}/`)) {
+    return normalizeRoutePathname(n.slice(prefix.length) || '/')
+  }
+  return n
+}
+
+function routePathname(urlPathname, prefixRaw) {
+  return stripConfiguredPathPrefix(normalizeRoutePathname(urlPathname), prefixRaw)
+}
+
 function createRuntimeServer(options = {}) {
   const config = runtimeConfig(options)
   return http.createServer(async (req, res) => {
     const method = req.method || 'GET'
     const url = new URL(req.url || '/', 'http://127.0.0.1')
-    const pathname = normalizeRoutePathname(url.pathname)
+    const pathnameRaw = normalizeRoutePathname(url.pathname)
+    const pathname = routePathname(url.pathname, config.httpPathPrefix)
 
     if (method === 'OPTIONS') {
       applyCorsHeaders(res)
@@ -1184,10 +1207,11 @@ function createRuntimeServer(options = {}) {
       sendJson(res, 200, {
         ok: true,
         service: 'triton-runtime',
-        version: '0.2.0',
+        version: RUNTIME_VERSION,
         capabilities: ['analysis-local', 'analysis-github'],
         allowedRepoRoots: config.allowedRepoRoots,
         gitCacheRoot: config.gitCacheRoot,
+        httpPathPrefix: config.httpPathPrefix || undefined,
         editorUrl: config.editorUrl,
         publicRuntimeUrl: config.publicRuntimeUrl,
       })
@@ -1196,6 +1220,19 @@ function createRuntimeServer(options = {}) {
 
     if (method === 'GET' && pathname === '/api/home') {
       sendJson(res, 200, apiHomeModel(config))
+      return
+    }
+
+    if (method === 'GET' && pathname === '/api/analysis/github') {
+      sendJson(res, 200, {
+        ok: true,
+        message: 'Route is active. Clone with POST and JSON body { "repositoryUrl": "https://github.com/owner/repo" }.',
+        methodHint: 'POST',
+        path: '/api/analysis/github',
+        runtimeVersion: RUNTIME_VERSION,
+        pathnameRaw,
+        httpPathPrefix: config.httpPathPrefix || '',
+      })
       return
     }
 
@@ -1298,6 +1335,11 @@ function createRuntimeServer(options = {}) {
       error: 'not_found',
       method,
       path: pathname,
+      pathnameRaw,
+      rawUrl: req.url,
+      httpPathPrefix: config.httpPathPrefix || '',
+      hint:
+        'Open GET /api/analysis/github in a browser; if that 404s too, check TRITON_HTTP_PATH_PREFIX matches your reverse-proxy path prefix.',
     })
   })
 }
@@ -1309,6 +1351,10 @@ function startRuntimeServer(options = {}) {
   return new Promise((resolve, reject) => {
     server.once('error', reject)
     server.listen(port, host, () => {
+      const cfg = runtimeConfig({ ...options, host, port })
+      process.stderr.write(
+        `[triton-runtime] listening http://${host}:${port} version=${RUNTIME_VERSION} TRITON_HTTP_PATH_PREFIX=${cfg.httpPathPrefix || '(unset)'}\n`,
+      )
       resolve({
         server,
         host,

@@ -34,6 +34,9 @@ export type RuntimeHomeModel = {
     editorUrl?: string
     allowedRepoRoots?: string[]
     gitCacheRoot?: string
+    httpPathPrefix?: string
+    version?: string
+    capabilities?: string[]
   }
   recentRepos?: RuntimeHomeRepo[]
 }
