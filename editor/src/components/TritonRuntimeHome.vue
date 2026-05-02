@@ -843,7 +843,7 @@ watch(
         <h1>Triton Architecture Explorer</h1>
         <p>
           Use the <strong>Add Course</strong>, <strong>Add local repo from folder</strong>, and
-          <strong>Add new repo from GitHub / GitLab</strong> buttons (below once the runtime is connected) to register
+          <strong>Add new repo</strong> (GitHub / GitLab) buttons (below once the runtime is connected) to register
           workspaces. Optionally create <strong>Courses</strong> to group repos on the server. Open the SBT or package
           diagram from each card. Bundled examples and dojos open in new tabs.
         </p>
@@ -917,11 +917,16 @@ watch(
           </button>
           <button
             type="button"
-            class="runtime-home__btn runtime-home__btn--primary"
+            class="runtime-home__btn runtime-home__btn--primary runtime-home__btn--repo-hosts"
+            aria-label="Add new repo from GitHub or GitLab"
             :disabled="githubRuntimeStaleWarning"
             @click="openRemoteRepoDialog"
           >
-            Add new repo from GitHub / GitLab
+            <span>Add new repo</span>
+            <span class="runtime-home__repo-host-icons" aria-hidden="true">
+              <img class="runtime-home__repo-host-icon" :src="githubMarkIconUrl" alt="" width="20" height="20" />
+              <img class="runtime-home__repo-host-icon" :src="gitlabMarkIconUrl" alt="" width="20" height="20" />
+            </span>
           </button>
           <button type="button" class="runtime-home__btn" @click="void fetchHome()">Refresh lists</button>
         </div>
@@ -1485,6 +1490,23 @@ watch(
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+}
+.runtime-home__btn--repo-hosts {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.runtime-home__repo-host-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.runtime-home__repo-host-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  object-fit: contain;
 }
 .runtime-home__dialog {
   border: none;
