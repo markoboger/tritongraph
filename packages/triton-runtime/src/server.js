@@ -588,6 +588,13 @@ function parseGithubHttpsUrl(input) {
   if (parts.length < 2) {
     return { ok: false, error: 'github_url_need_owner_repo' }
   }
+  if (parts[0] === 'orgs' || parts[0] === 'organizations') {
+    return {
+      ok: false,
+      error: 'github_org_list_url_not_repo',
+      hint: 'Open a single repository and copy its URL, e.g. https://github.com/EJ-Chess/your-repo-name',
+    }
+  }
   const owner = parts[0]
   const repo = parts[1].replace(/\.git$/i, '')
   if (!/^[a-zA-Z0-9_.-]+$/.test(owner) || !/^[a-zA-Z0-9_.-]+$/.test(repo)) {
