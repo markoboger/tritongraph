@@ -20,7 +20,7 @@ import typescriptIconUrl from '../assets/language-icons/typescript.svg'
 import genericIconUrl from '../assets/language-icons/generic.svg'
 import tritonIconUrl from '../assets/language-icons/triton.svg'
 
-/** Derived on GET /api/home when runtime supports `workspace-test-ci` (webhook post-sync tests, logs). */
+/** Derived on GET /api/home when runtime supports workspace sbt tests and logs. */
 export type WorkspaceTestCiStatus = 'none' | 'idle' | 'running' | 'failed' | 'passed'
 
 export type RuntimeHomeRepoWorkspaceTest = {
@@ -162,6 +162,7 @@ const formBusy = ref(false)
 const githubFormBusy = ref(false)
 const analyzingPath = ref('')
 const syncingGithubPath = ref('')
+const runningSbtTestPath = ref('')
 const lastResultJson = ref('')
 /** Repositories added from “Add new Repository” this session (shown first in the grid). */
 const sessionRepos = ref<RuntimeHomeRepo[]>([])
@@ -967,6 +968,52 @@ async function syncGithubRepo(repo: RuntimeHomeRepo): Promise<void> {
   }
 }
 
+function workspaceCanRunSbtTest(repo: RuntimeHomeRepo): boolean {
+  return !!repo.workspaceTest && repo.workspaceTest.status !== 'none'
+}
+
+function sbtTestButtonLabel(repo: RuntimeHomeRepo): string {
+  if (runningSbtTestPath.value === repo.workspacePath || repo.workspaceTest?.status === 'running') {
+    return 'Running tests…'
+  }
+  if (repo.workspaceTest?.status === 'passed' || repo.workspaceTest?.status === 'failed') {
+    return 'Run sbt test again'
+  }
+  return 'Run sbt test'
+}
+
+async function runSbtTest(repo: RuntimeHomeRepo): Promise<void> {
+  cardError.value = ''
+  lastResultJson.value = ''
+  if (!workspaceCanRunSbtTest(repo)) {
+    cardError.value = 'This workspace does not look like an sbt project.'
+    return
+  }
+  runningSbtTestPath.value = repo.workspacePath
+  try {
+    const res = await fetch(`${base.value}/api/workspace/action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        action: 'sbt-test',
+        workspacePath: repo.workspacePath,
+      }),
+    })
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+    if (!res.ok || body.ok !== true) {
+      cardError.value = String(body.error || `Failed to start sbt test (${res.status}).`)
+      lastResultJson.value = JSON.stringify(body, null, 2)
+      return
+    }
+    await fetchHome()
+    syncHomeCiPoll()
+  } catch (e) {
+    cardError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    runningSbtTestPath.value = ''
+  }
+}
+
 function findRepoForPath(workspacePath: string): RuntimeHomeRepo | undefined {
   const orphan = repositoryCards.value.find((r) => r.workspacePath === workspacePath)
   if (orphan) return orphan
@@ -1055,15 +1102,10 @@ function stopHomeCiPoll(): void {
 }
 
 function syncHomeCiPoll(): void {
-  const needs = collectReposForHomePoll(homeModel.value).some((r) => r.workspaceTest?.status === 'running')
-  if (!needs) {
-    stopHomeCiPoll()
-    return
-  }
   if (homeCiPollTimer.value != null) return
   homeCiPollTimer.value = setInterval(() => {
     void fetchHome()
-  }, 4000)
+  }, collectReposForHomePoll(homeModel.value).some((r) => r.workspaceTest?.status === 'running') ? 4000 : 15000)
 }
 
 function ciDotTitle(repo: RuntimeHomeRepo): string {
@@ -1295,9 +1337,9 @@ watch(
         </summary>
         <div class="runtime-home__fold-body">
           <p class="runtime-home__hint runtime-home__hint-block">
-            After each successful sync, the server runs <code>sbt</code> (<code>coverage;test;coverageReport</code> by default),
-            writes <code>sbt-test.log</code>, and shows status on each repo card (coloured dot). Set
-            <code>TRITON_WEBHOOK_POST_SYNC_TESTS=0</code> on the runtime to disable.
+            Use <strong>Run sbt test</strong> on a repo card to execute <code>sbt "test"</code> on the server,
+            write <code>sbt-test.log</code>, and update the coloured status dot. Automated post-sync tests are
+            opt-in with <code>TRITON_WEBHOOK_POST_SYNC_TESTS=1</code>.
           </p>
           <p class="runtime-home__add-lead runtime-home__hint-block">
             After you clone a repo with <strong>Add new repo</strong>, register it here so pushes trigger a pull on this runtime.
@@ -1443,6 +1485,21 @@ watch(
                       @click="void openPackageDiagram(repo)"
                     >
                       Package diagram
+                    </button>
+                    <span class="repo-card__sep" aria-hidden="true">·</span>
+                    <button
+                      type="button"
+                      class="repo-card__link"
+                      :disabled="
+                        !!analyzingPath ||
+                        !!syncingGithubPath ||
+                        !!runningSbtTestPath ||
+                        repo.workspaceTest?.status === 'running' ||
+                        !workspaceCanRunSbtTest(repo)
+                      "
+                      @click="void runSbtTest(repo)"
+                    >
+                      {{ sbtTestButtonLabel(repo) }}
                     </button>
                     <template v-if="remoteRepoSupportsSync(repo)">
                       <span class="repo-card__sep" aria-hidden="true">·</span>
@@ -1845,6 +1902,21 @@ watch(
                   @click="void openPackageDiagram(repo)"
                 >
                   Package diagram
+                </button>
+                <span class="repo-card__sep" aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  class="repo-card__link"
+                  :disabled="
+                    !!analyzingPath ||
+                    !!syncingGithubPath ||
+                    !!runningSbtTestPath ||
+                    repo.workspaceTest?.status === 'running' ||
+                    !workspaceCanRunSbtTest(repo)
+                  "
+                  @click="void runSbtTest(repo)"
+                >
+                  {{ sbtTestButtonLabel(repo) }}
                 </button>
                 <template v-if="remoteRepoSupportsSync(repo)">
                   <span class="repo-card__sep" aria-hidden="true">·</span>

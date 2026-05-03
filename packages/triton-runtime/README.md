@@ -26,10 +26,10 @@ Current MVP scaffold:
   - `build.sbt`
   - Scala source files
   - `sbt-test.log`
-  - the newest `target/scala-*/scoverage-report/scoverage.xml`
+  - every readable `scoverage.xml` under `target/scoverage-report/` and `target/scala-*/scoverage-report/` (multi-module merge in the editor), newest listed first as `coverageReport` for compatibility
 - workspace action endpoint for:
   - `refresh`
-  - `sbt-test`
+  - `sbt-test` (queued in the background, writes `sbt-test.log`, status appears on repo cards)
   - `sbt-coverage`
 - CLI entrypoint to run the server locally
 
@@ -60,6 +60,9 @@ Optional env:
 - `TRITON_HTTP_PATH_PREFIX` — when the HTTP request path includes a gateway prefix (e.g. `/triton/api/...` instead of `/api/...`), set this to that prefix (e.g. `/triton`) so routing matches.
 - `TRITON_EXTRA_GIT_HOSTS` — optional extra HTTPS hostnames allowed for clone/sync (self-hosted GitLab).
 - `TRITON_GITHUB_TOKEN` / `TRITON_GITLAB_TOKEN` — optional default tokens (server-wide). Per-request: `Authorization: Bearer`, headers `x-github-token` / `x-gitlab-token`, or JSON `gitToken`, `githubToken`, `gitlabToken`.
+- `TRITON_WEBHOOK_POST_SYNC_TESTS=1` — opt in to running sbt after successful webhook syncs. The default is manual-only via the repo-card **Run sbt test** button. Override the command with `TRITON_WEBHOOK_POST_SYNC_SBT` (default `test`).
+- `TRITON_SBT_TEST_COMMAND` — command used by the manual repo-card **Run sbt test** button (default `test`). Useful for multi-module repos where the aggregate test task needs external services.
+- `TRITON_SBT_COVERAGE_COMMAND` — command used by the `sbt-coverage` workspace action (default `coverage; test; coverageReport`).
 
 `POST /api/analysis/github` and `POST /api/workspace/github/sync` JSON body example:
 
@@ -144,10 +147,12 @@ To use **file** persistence in Compose instead, comment those env lines and unco
 
 When **`TRITON_WEBHOOK_ADMIN_TOKEN`** is set, register/delete/repos require **`Authorization: Bearer …`**. Local HTTPS tunnels: [docs/webhooks-development.md](../../docs/webhooks-development.md).
 
-**Post-sync CI tests:** After a **`push`** webhook finishes **`git fetch`/sync** successfully, the runtime schedules a background **`sbt`** run (same mechanism as the workspace action). Defaults:
+**Post-sync CI tests:** After a **`push`** webhook finishes **`git fetch`/sync** successfully, the runtime can schedule a background **`sbt`** run (same mechanism as the workspace action). Defaults:
 
-- **`TRITON_WEBHOOK_POST_SYNC_TESTS`** — `1` (set to `0` / `false` / `no` to disable).
-- **`TRITON_WEBHOOK_POST_SYNC_SBT`** — `coverage;test;coverageReport` (instrumented tests + HTML/XML coverage for Triton).
+- **`TRITON_WEBHOOK_POST_SYNC_TESTS`** — `0` / disabled (set to `1` to enable).
+- **`TRITON_WEBHOOK_POST_SYNC_SBT`** — `test`.
+- **`TRITON_SBT_EXECUTABLE`** — manual repo-card test executable, default `sbt`.
+- **`TRITON_SBT_TEST_COMMAND`** — manual repo-card test command, default `test`.
 - **`TRITON_WEBHOOK_SBT_EXECUTABLE`** — `sbt`.
 - **`TRITON_WEBHOOK_TEST_STALE_MS`** — after this duration a row still marked **`running`** is reconciled to **failed** (default **45 minutes**).
 

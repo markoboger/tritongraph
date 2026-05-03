@@ -17,7 +17,7 @@ const IGNORED_DIRS = new Set([
   'out',
 ])
 const REPO_DISCOVERY_MAX_DEPTH = 3
-const RUNTIME_VERSION = '0.7.3'
+const RUNTIME_VERSION = '0.7.5'
 
 function applyCorsHeaders(res) {
   res.setHeader('access-control-allow-origin', '*')
@@ -343,7 +343,7 @@ function filterOrphanRecentRepos(recentList, coursesPayload) {
   return recentList.filter((r) => !assigned.has(String(r.workspacePath || '').trim()))
 }
 
-/** Prevents overlapping sbt runs per workspace after GitHub push webhooks. */
+/** Prevents overlapping sbt runs per workspace. */
 const WEBHOOK_TEST_RUN_LOCKS = new Set()
 
 function webhookTestStaleRunningMs() {
@@ -391,7 +391,7 @@ function reconcileStaleRunningTests(config) {
   for (const [p, row] of Object.entries(map)) {
     if (!row || row.status !== 'running') continue
     const started = row.startedAt ? new Date(row.startedAt).getTime() : 0
-    if (started && Date.now - started > threshold) {
+    if (started && Date.now() - started > threshold) {
       map[p] = {
         ...row,
         status: 'failed',
@@ -442,7 +442,7 @@ function deriveWorkspaceTestFields(workspacePath, stored, probe) {
   }
   if (stored.status === 'running') {
     const started = stored.startedAt ? new Date(stored.startedAt).getTime() : 0
-    if (started && Date.now - started > webhookTestStaleRunningMs()) {
+    if (started && Date.now() - started > webhookTestStaleRunningMs()) {
       return {
         status: 'failed',
         updatedAt: stored.updatedAt,
@@ -633,11 +633,19 @@ function collectScalaFiles(workspacePath) {
   return out
 }
 
-function findScoverageReport(workspacePath) {
-  const candidates = []
+/**
+ * Collect every readable `scoverage.xml` under the workspace (multi-module sbt roots, optional
+ * `target/scoverage-report/` layout, and each `target/scala-<binary>/scoverage-report/` tree).
+ * Newest files first so legacy single-field consumers keep a sensible default; the editor merges all entries.
+ */
+function collectScoverageReports(workspacePath) {
+  const root = String(workspacePath || '').trim()
+  if (!root) return []
+
+  const paths = new Set()
 
   function walk(dirPath, depth) {
-    if (depth > 3) return
+    if (depth > 8) return
     let entries = []
     try {
       entries = fs.readdirSync(dirPath, { withFileTypes: true })
@@ -649,6 +657,8 @@ function findScoverageReport(workspacePath) {
       if (IGNORED_DIRS.has(entry.name)) continue
       const abs = path.join(dirPath, entry.name)
       if (entry.name === 'target') {
+        paths.add(path.join(abs, 'scoverage.xml'))
+        paths.add(path.join(abs, 'scoverage-report', 'scoverage.xml'))
         let scalaDirs = []
         try {
           scalaDirs = fs
@@ -658,22 +668,34 @@ function findScoverageReport(workspacePath) {
         } catch {
           scalaDirs = []
         }
-        for (const p of scalaDirs) candidates.push(p)
+        for (const p of scalaDirs) paths.add(p)
         continue
       }
       walk(abs, depth + 1)
     }
   }
 
-  walk(workspacePath, 0)
-  const best = newestPath(candidates)
-  if (!best) return null
-  const xml = readUtf8IfFile(best)
-  if (xml == null) return null
-  return {
-    relPath: normalizeRelPath(workspacePath, best),
-    xml,
+  walk(root, 0)
+
+  const reports = []
+  for (const absPath of paths) {
+    const xml = readUtf8IfFile(absPath)
+    if (xml == null || !String(xml).trim()) continue
+    let mtimeMs = 0
+    try {
+      mtimeMs = fs.statSync(absPath).mtimeMs
+    } catch {
+      mtimeMs = 0
+    }
+    reports.push({
+      absPath,
+      relPath: normalizeRelPath(root, absPath),
+      xml: String(xml),
+      mtimeMs,
+    })
   }
+  reports.sort((a, b) => b.mtimeMs - a.mtimeMs || a.relPath.localeCompare(b.relPath))
+  return reports.map(({ relPath, xml }) => ({ relPath, xml }))
 }
 
 function findSbtTestLog(workspacePath) {
@@ -722,6 +744,7 @@ function readWorkspaceBundle(workspacePath) {
   const probe = probeWorkspace(root)
   const buildSbtPath = path.join(root, 'build.sbt')
   const buildSbtSource = readUtf8IfFile(buildSbtPath)
+  const coverageReports = collectScoverageReports(root)
   return {
     ok: true,
     workspacePath: root,
@@ -735,7 +758,8 @@ function readWorkspaceBundle(workspacePath) {
         },
     scalaFiles: collectScalaFiles(root),
     testLog: findSbtTestLog(root),
-    coverageReport: findScoverageReport(root),
+    coverageReports,
+    coverageReport: coverageReports.length ? coverageReports[0] : null,
   }
 }
 
@@ -749,9 +773,10 @@ function gitAuthConfigArgs(host, token) {
   const t = String(token || '').trim()
   if (!t) return []
   const h = String(host || '').toLowerCase()
-  const userPass = h === 'github.com' ? `x-access-token:${t}` : `oauth2:${t}`
+  // Plain concatenation (no template literals): some deploy pipelines corrupt backticks in copied files.
+  const userPass = h === 'github.com' ? 'x-access-token:' + t : 'oauth2:' + t
   const basic = Buffer.from(userPass, 'utf8').toString('base64')
-  return ['-c', `http.extraHeader=Authorization: Basic ${basic}`]
+  return ['-c', 'http.extraHeader=Authorization: Basic ' + basic]
 }
 
 function execGit(args, options = {}) {
@@ -1809,13 +1834,15 @@ async function runtimeHomeHtml(config) {
 function commandForAction(action, body) {
   if (action === 'refresh') return null
   if (action === 'sbt-test') {
-    const executable = String(body.sbtExecutable || 'sbt').trim() || 'sbt'
-    const command = String(body.sbtTestCommand || 'test').trim() || 'test'
+    const executable = String(body.sbtExecutable || process.env.TRITON_SBT_EXECUTABLE || 'sbt').trim() || 'sbt'
+    const command = String(body.sbtTestCommand || process.env.TRITON_SBT_TEST_COMMAND || 'test').trim() || 'test'
     return `${executable} "${command.replaceAll('"', '\\"')}"`
   }
   if (action === 'sbt-coverage') {
-    const executable = String(body.sbtExecutable || 'sbt').trim() || 'sbt'
-    const command = String(body.sbtCoverageCommand || 'coverage; test; coverageReport').trim() || 'coverage; test; coverageReport'
+    const executable = String(body.sbtExecutable || process.env.TRITON_SBT_EXECUTABLE || 'sbt').trim() || 'sbt'
+    const command =
+      String(body.sbtCoverageCommand || process.env.TRITON_SBT_COVERAGE_COMMAND || 'coverage; test; coverageReport').trim() ||
+      'coverage; test; coverageReport'
     return `${executable} "${command.replaceAll('"', '\\"')}"`
   }
   return undefined
@@ -1823,7 +1850,7 @@ function commandForAction(action, body) {
 
 function runShellCommand(command, cwd) {
   return new Promise((resolve) => {
-    cp.exec(command, { cwd }, (error, stdout, stderr) => {
+    cp.exec(command, { cwd, maxBuffer: 20 * 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({
         ok: !error,
         exitCode: error && typeof error.code === 'number' ? error.code : 0,
@@ -1834,8 +1861,47 @@ function runShellCommand(command, cwd) {
   })
 }
 
+function writeWorkspaceTestLog(workspacePath, command, result, label = 'manual') {
+  const banner =
+    `=== Triton sbt test (${label}) ${new Date().toISOString()} ===\n` +
+    `Command: ${command}\n` +
+    `Exit code: ${result.exitCode}\n\n`
+  const logBody = `${banner}${result.stdout || ''}${result.stderr ? `\n--- stderr ---\n${result.stderr}` : ''}`
+  try {
+    fs.writeFileSync(path.join(workspacePath, 'sbt-test.log'), logBody, 'utf8')
+  } catch {
+    // ignore
+  }
+}
+
+function queueWorkspaceSbtTest(config, workspacePath, command, label = 'manual') {
+  const root = String(workspacePath || '').trim()
+  if (!root) return false
+  if (WEBHOOK_TEST_RUN_LOCKS.has(root)) return false
+  WEBHOOK_TEST_RUN_LOCKS.add(root)
+  updateWorkspaceTestEntry(config, root, {
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    exitCode: null,
+    lastCommand: command,
+  })
+  setImmediate(() => {
+    runShellCommand(command, root).then((result) => {
+      writeWorkspaceTestLog(root, command, result, label)
+      updateWorkspaceTestEntry(config, root, {
+        status: result.ok ? 'passed' : 'failed',
+        exitCode: result.exitCode,
+        startedAt: undefined,
+        lastCommand: command,
+      })
+      WEBHOOK_TEST_RUN_LOCKS.delete(root)
+    })
+  })
+  return true
+}
+
 function webhookPostSyncTestsEnabled() {
-  const v = String(process.env.TRITON_WEBHOOK_POST_SYNC_TESTS ?? '1').trim().toLowerCase()
+  const v = String(process.env.TRITON_WEBHOOK_POST_SYNC_TESTS ?? '0').trim().toLowerCase()
   return v !== '0' && v !== 'false' && v !== 'no'
 }
 
@@ -1860,49 +1926,32 @@ function scheduleWebhookWorkspaceTests(workspacePath, config) {
     return
   }
 
-  WEBHOOK_TEST_RUN_LOCKS.add(root)
-  updateWorkspaceTestEntry(config, root, {
-    status: 'running',
-    startedAt: new Date().toISOString(),
-    exitCode: null,
-  })
-
   const executable = String(process.env.TRITON_WEBHOOK_SBT_EXECUTABLE || 'sbt').trim() || 'sbt'
   const commandText =
-    String(process.env.TRITON_WEBHOOK_POST_SYNC_SBT || 'coverage;test;coverageReport').trim() ||
-    'coverage;test;coverageReport'
+    String(process.env.TRITON_WEBHOOK_POST_SYNC_SBT || 'test').trim() ||
+    'test'
   const command = `${executable} "${commandText.replaceAll('"', '\\"')}"`
-
-  setImmediate(() => {
-    runShellCommand(command, root).then((result) => {
-      const banner = `=== Triton CI (post-sync) ${new Date().toISOString()} ===\nCommand: ${command}\nExit code: ${result.exitCode}\n\n`
-      const logBody = `${banner}${result.stdout || ''}${result.stderr ? `\n--- stderr ---\n${result.stderr}` : ''}`
-      try {
-        fs.writeFileSync(path.join(root, 'sbt-test.log'), logBody, 'utf8')
-      } catch {
-        // ignore
-      }
-      updateWorkspaceTestEntry(config, root, {
-        status: result.ok ? 'passed' : 'failed',
-        exitCode: result.exitCode,
-        startedAt: undefined,
-        lastCommand: command,
-      })
-      WEBHOOK_TEST_RUN_LOCKS.delete(root)
-    })
-  })
+  queueWorkspaceSbtTest(config, root, command, 'post-sync')
 }
 
-async function handleWorkspaceAction(body) {
+async function handleWorkspaceAction(body, config) {
   const action = String(body.action || '').trim()
   const workspacePath = String(body.workspacePath || '').trim()
-  const probe = probeWorkspace(workspacePath)
   if (!action) {
     return { statusCode: 400, body: { ok: false, error: 'missing_action' } }
   }
   if (!workspacePath) {
     return { statusCode: 400, body: { ok: false, error: 'missing_workspace_path' } }
   }
+  const validation = validateWorkspacePath(workspacePath, config)
+  if (!validation.ok) {
+    return {
+      statusCode: validation.statusCode,
+      body: { ok: false, error: validation.error, workspacePath: validation.workspacePath },
+    }
+  }
+  const root = validation.workspacePath
+  const probe = probeWorkspace(root)
 
   const command = commandForAction(action, body)
   if (command === undefined) {
@@ -1920,8 +1969,33 @@ async function handleWorkspaceAction(body) {
       },
     }
   }
+  if (action === 'sbt-test') {
+    if (!workspaceTestsCanRun(probe)) {
+      updateWorkspaceTestEntry(config, root, {
+        status: 'none',
+        exitCode: null,
+        startedAt: undefined,
+      })
+      return { statusCode: 400, body: { ok: false, error: 'sbt_not_detected', action, probe } }
+    }
+    const queued = queueWorkspaceSbtTest(config, root, command, 'manual')
+    if (!queued) {
+      return { statusCode: 409, body: { ok: false, error: 'test_already_running', action, probe } }
+    }
+    return {
+      statusCode: 202,
+      body: {
+        ok: true,
+        queued: true,
+        action,
+        command,
+        probe,
+        workspaceTest: deriveWorkspaceTestFields(root, readWorkspaceTestStatusMap(config)[root], probe),
+      },
+    }
+  }
 
-  const result = await runShellCommand(command, workspacePath)
+  const result = await runShellCommand(command, root)
   return {
     statusCode: result.ok ? 200 : 500,
     body: {
@@ -2256,7 +2330,7 @@ function createRuntimeServer(options = {}) {
         sendJson(res, 400, { ok: false, error: 'invalid_json' })
         return
       }
-      const result = await handleWorkspaceAction(body)
+      const result = await handleWorkspaceAction(body, config)
       sendJson(res, result.statusCode, result.body)
       return
     }
