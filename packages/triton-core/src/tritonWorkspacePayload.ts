@@ -48,6 +48,12 @@ interface BuildScalaWorkspacePayloadOptions {
   graph: ScalaPackageGraph
   title?: string
   ilographDocument?: IlographDocument
+  /**
+   * Optional sbt project list document used only for coverage attribution (base dirs → project ids).
+   * The packages diagram document usually lacks `x-triton-project-compartments`; pass the same
+   * document shape as `sbtProjectsToIlographDocument` here when loading a packages tab.
+   */
+  coverageProjectDocument?: IlographDocument
   parsedTestLog?: readonly ParsedSbtSuiteBlock[]
   parsedCoverage?: ParsedScoverageXml
 }
@@ -56,6 +62,12 @@ type CoverageAggregate = {
   covered: number
   total: number
   weighted: boolean
+}
+
+function meanFinite(values: readonly number[]): number | undefined {
+  const xs = values.filter((x) => typeof x === 'number' && Number.isFinite(x))
+  if (!xs.length) return undefined
+  return xs.reduce((a, b) => a + b, 0) / xs.length
 }
 
 type ProjectCoverageMeta = {
@@ -185,9 +197,6 @@ function addProjectCoverageFromPackages(
     out.set(projectId, agg.covered / agg.total)
   }
 
-  const rootProjects = projects.filter((project) => project.kind === 'project')
-  if (!rootProjects.length) return
-
   const overall = { covered: 0, total: 0 }
   for (const pkg of graph.packages) {
     const pkgRate = packageRates.get(pkg.name)
@@ -200,9 +209,16 @@ function addProjectCoverageFromPackages(
     overall.covered += pkgRate * weight
     overall.total += weight
   }
-  if (!(overall.total > 0)) return
-  const overallRate = overall.covered / overall.total
-  for (const project of rootProjects) out.set(project.id, overallRate)
+  const overallRate = overall.total > 0 ? overall.covered / overall.total : undefined
+  if (overallRate == null) return
+
+  const rootProjects = projects.filter((project) => project.kind === 'project')
+  if (rootProjects.length) {
+    for (const project of rootProjects) out.set(project.id, overallRate)
+  }
+  for (const project of projects) {
+    if (!out.has(project.id)) out.set(project.id, overallRate)
+  }
 }
 
 function buildArtefactSimpleNameIndex(
@@ -226,18 +242,22 @@ function simpleName(raw: string): string {
   return text.includes('.') ? text.slice(text.lastIndexOf('.') + 1) : text
 }
 
+function specRefFromArtefact(a: { name: string; declaration: string; file: string; startRow: number; kind: string }): TritonScalaSpecRef {
+  return {
+    name: a.name,
+    declaration: a.declaration || `${a.kind} ${a.name}`,
+    file: a.file,
+    startRow: Number.isFinite(a.startRow) ? a.startRow : 0,
+  }
+}
+
 function buildSpecRefsByName(graph: ScalaPackageGraph): Map<string, TritonScalaSpecRef> {
   const specNameCounts = new Map<string, number>()
   const specByName = new Map<string, TritonScalaSpecRef>()
   for (const a of graph.testArtefacts ?? []) {
     if (!a?.name || !a?.file) continue
     specNameCounts.set(a.name, (specNameCounts.get(a.name) ?? 0) + 1)
-    specByName.set(a.name, {
-      name: a.name,
-      declaration: a.declaration || `${a.kind} ${a.name}`,
-      file: a.file,
-      startRow: Number.isFinite(a.startRow) ? a.startRow : 0,
-    })
+    specByName.set(a.name, specRefFromArtefact(a))
   }
   for (const [name, count] of specNameCounts.entries()) {
     if (count !== 1) specByName.delete(name)
@@ -245,23 +265,145 @@ function buildSpecRefsByName(graph: ScalaPackageGraph): Map<string, TritonScalaS
   return specByName
 }
 
+function addSpecRef(
+  specsByArtefactId: Map<string, TritonScalaSpecRef[]>,
+  artefactId: string,
+  spec: TritonScalaSpecRef,
+): void {
+  const bucket = specsByArtefactId.get(artefactId) ?? []
+  if (!bucket.some((existing) => existing.name === spec.name && existing.file === spec.file)) bucket.push(spec)
+  specsByArtefactId.set(artefactId, bucket)
+}
+
+function suiteName(raw: string): string {
+  return String(raw ?? '').trim().replace(/:$/, '')
+}
+
+function suiteTargetNameCandidates(rawSuite: string): string[] {
+  const raw = simpleName(suiteName(rawSuite))
+  if (!raw) return []
+  const out = [raw]
+  if (raw.endsWith('Spec')) out.push(raw.slice(0, -'Spec'.length))
+  for (const suffix of ['ModelSpec', 'RoutesSpec', 'ParserSpec', 'RepositorySpec', 'ServiceSpec']) {
+    if (raw.endsWith(suffix)) out.push(raw.slice(0, -suffix.length))
+  }
+  return [...new Set(out.filter(Boolean))]
+}
+
+function testLogHeadingTargetNameCandidates(block: ParsedSbtSuiteBlock): string[] {
+  const out: string[] = []
+  for (const line of block.lines ?? []) {
+    const text = String(line ?? '').trim()
+    if (!text || text.endsWith('Spec:') || text.startsWith('- ')) continue
+    const m = /^([A-Z]\w*)\b/.exec(text)
+    if (m?.[1]) out.push(m[1])
+  }
+  return [...new Set(out)]
+}
+
+function addUniqueBlock(
+  blocksByArtefactId: Map<string, TritonScalaTestBlockEntry[]>,
+  artefactId: string,
+  block: TritonScalaTestBlockEntry,
+): void {
+  const bucket = blocksByArtefactId.get(artefactId) ?? []
+  if (!bucket.some((existing) => existing.suite === block.suite && existing.blockText === block.blockText)) {
+    bucket.push(block)
+  }
+  blocksByArtefactId.set(artefactId, bucket)
+}
+
+function caseClassConstructionIdsBySpecName(graph: ScalaPackageGraph): Map<string, string[]> {
+  const bySimpleName = new Map<string, Array<{ id: string; packageName: string }>>()
+  const byPackageAndName = new Map<string, string>()
+
+  for (const p of graph.packages) {
+    for (const a of p.artefacts) {
+      if (a.kind !== 'case class') continue
+      const id = artefactResourceId(a.packageName, a)
+      const simpleBucket = bySimpleName.get(a.name) ?? []
+      simpleBucket.push({ id, packageName: a.packageName })
+      bySimpleName.set(a.name, simpleBucket)
+      byPackageAndName.set(`${a.packageName}\u0001${a.name}`, id)
+    }
+  }
+
+  const out = new Map<string, string[]>()
+  for (const specArt of graph.testArtefacts ?? []) {
+    if (!specArt?.name || !specArt.file || !specArt.createdTypeRefs.length) continue
+    const ids = new Set<string>()
+    for (const rawRef of specArt.createdTypeRefs) {
+      const ref = String(rawRef ?? '').trim()
+      if (!ref) continue
+      const simple = simpleName(ref)
+      if (!simple) continue
+
+      const explicitPackage = ref.includes('.') ? ref.slice(0, ref.lastIndexOf('.')) : ''
+      const explicitHit = explicitPackage ? byPackageAndName.get(`${explicitPackage}\u0001${simple}`) : undefined
+      if (explicitHit) {
+        ids.add(explicitHit)
+        continue
+      }
+
+      const candidates = bySimpleName.get(simple) ?? []
+      const samePackageHit = candidates.find((c) => c.packageName === specArt.packageName)
+      if (samePackageHit) {
+        ids.add(samePackageHit.id)
+        continue
+      }
+      if (candidates.length === 1) ids.add(candidates[0]!.id)
+    }
+    if (ids.size) out.set(specArt.name, [...ids])
+  }
+  return out
+}
+
 function buildTestBlocks(
   graph: ScalaPackageGraph,
   parsedTestLog: readonly ParsedSbtSuiteBlock[],
 ): TritonScalaTestBlockEntry[] {
   const byName = buildArtefactSimpleNameIndex(graph)
-  const out: TritonScalaTestBlockEntry[] = []
+  const constructedCaseClassIds = caseClassConstructionIdsBySpecName(graph)
+  const blocksByArtefactId = new Map<string, TritonScalaTestBlockEntry[]>()
   for (const block of parsedTestLog) {
-    const simple = simpleName(block.subject)
-    if (!simple) continue
-    const ids = byName.get(simple) ?? []
-    if (ids.length !== 1) continue
-    out.push({
-      id: ids[0]!,
+    const entry = {
+      id: '',
       suite: block.suite,
       subject: block.subject,
       blockText: block.blockText,
-    })
+    }
+    const targetIds = new Set<string>()
+    for (const name of [
+      simpleName(block.subject),
+      ...testLogHeadingTargetNameCandidates(block),
+      ...suiteTargetNameCandidates(block.suite),
+    ]) {
+      const ids = byName.get(name) ?? []
+      if (ids.length === 1) targetIds.add(ids[0]!)
+    }
+
+    const specConstructedIds = constructedCaseClassIds.get(suiteName(block.suite))
+    for (const id of specConstructedIds ?? []) targetIds.add(id)
+
+    for (const id of targetIds) addUniqueBlock(blocksByArtefactId, id, { ...entry, id })
+  }
+  return [...blocksByArtefactId.entries()]
+    .map(([id, blocks]) => ({
+      id,
+      suite: blocks.length === 1 ? blocks[0]!.suite : `${blocks.length} test suites`,
+      subject: blocks.length === 1 ? blocks[0]!.subject : '',
+      blockText: blocks.map((b) => b.blockText).join('\n\n'),
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id))
+}
+
+function buildCaseClassConstructionSpecs(graph: ScalaPackageGraph): Map<string, TritonScalaSpecRef[]> {
+  const idsBySpecName = caseClassConstructionIdsBySpecName(graph)
+  const out = new Map<string, TritonScalaSpecRef[]>()
+  for (const specArt of graph.testArtefacts ?? []) {
+    if (!specArt?.name || !specArt.file) continue
+    const spec = specRefFromArtefact(specArt)
+    for (const id of idsBySpecName.get(specArt.name) ?? []) addSpecRef(out, id, spec)
   }
   return out
 }
@@ -272,7 +414,7 @@ function buildSpecsByArtefact(
 ): TritonSpecsByArtefactEntry[] {
   const byName = buildArtefactSimpleNameIndex(graph)
   const specByName = buildSpecRefsByName(graph)
-  const specsByArtefactId = new Map<string, TritonScalaSpecRef[]>()
+  const specsByArtefactId = buildCaseClassConstructionSpecs(graph)
 
   for (const block of parsedTestLog) {
     const rawSubject = String(block.subject ?? '').trim()
@@ -285,9 +427,7 @@ function buildSpecsByArtefact(
     const suiteName = suiteLine.endsWith(':') ? suiteLine.slice(0, -1) : suiteLine
     const spec = specByName.get(suiteName)
     if (!spec) continue
-    const bucket = specsByArtefactId.get(artefactId) ?? []
-    if (!bucket.some((existing) => existing.name === spec.name)) bucket.push(spec)
-    specsByArtefactId.set(artefactId, bucket)
+    addSpecRef(specsByArtefactId, artefactId, spec)
   }
 
   return [...specsByArtefactId.entries()]
@@ -299,6 +439,7 @@ function buildCoverage(
   graph: ScalaPackageGraph,
   parsedCoverage: ParsedScoverageXml,
   ilographDocument?: IlographDocument,
+  coverageProjectDocument?: IlographDocument,
 ): TritonCoverageEntry[] {
   const out = new Map<string, number>()
   const packageRollups = packageCoverageRollups(parsedCoverage)
@@ -321,7 +462,12 @@ function buildCoverage(
     out.set(packageId, stmtPct)
   }
 
-  addProjectCoverageFromPackages(out, graph, parsedCoverage, ilographDocument)
+  addProjectCoverageFromPackages(
+    out,
+    graph,
+    parsedCoverage,
+    coverageProjectDocument ?? ilographDocument,
+  )
 
   for (const rate of parsedCoverage.classRates) {
     const dot = rate.fullName.lastIndexOf('.')
@@ -363,6 +509,34 @@ function buildCoverage(
     }
   }
 
+  const projectDoc = coverageProjectDocument ?? ilographDocument
+  const metas = projectCoverageMetas(projectDoc)
+  const rollupValues = [...packageRollups.values()]
+  const fallback =
+    parsedCoverage.documentStatementRate ??
+    meanFinite(parsedCoverage.packageRates.map((r) => r.statementRate)) ??
+    meanFinite(rollupValues)
+  if (fallback != null && metas.length) {
+    for (const m of metas) {
+      if (!out.has(m.id)) out.set(m.id, fallback)
+    }
+  }
+
+  /**
+   * When XML only exposes an aggregate rate, package names disagree with the scanner, or reports
+   * omit per-package summaries, project-level fallbacks alone leave every package/artefact node
+   * without overlay rows — so the UI shows no coverage dots at all.
+   */
+  if (fallback != null) {
+    for (const p of graph.packages) {
+      if (!out.has(p.name)) out.set(p.name, fallback)
+      for (const a of p.artefacts) {
+        const id = artefactResourceId(a.packageName, a)
+        if (!out.has(id)) out.set(id, fallback)
+      }
+    }
+  }
+
   return [...out.entries()]
     .map(([id, stmtPct]) => ({ id, stmtPct }))
     .sort((a, b) => a.id.localeCompare(b.id))
@@ -373,11 +547,14 @@ export function buildScalaWorkspacePayload(
 ): TritonScalaWorkspacePayload {
   const docs = collectScalaArtefactDocs(options.graph)
   const testBlocks = options.parsedTestLog ? buildTestBlocks(options.graph, options.parsedTestLog) : []
-  const specsByArtefact = options.parsedTestLog
-    ? buildSpecsByArtefact(options.graph, options.parsedTestLog)
-    : []
+  const specsByArtefact = buildSpecsByArtefact(options.graph, options.parsedTestLog ?? [])
   const coverage = options.parsedCoverage
-    ? buildCoverage(options.graph, options.parsedCoverage, options.ilographDocument)
+    ? buildCoverage(
+        options.graph,
+        options.parsedCoverage,
+        options.ilographDocument,
+        options.coverageProjectDocument,
+      )
     : []
 
   return {

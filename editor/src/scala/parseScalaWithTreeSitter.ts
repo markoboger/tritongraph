@@ -544,11 +544,15 @@ function extractCreatedTypeRefs(defNode: TSNode): string[] {
   }
 
   let m: RegExpExecArray | null
-  const explicitNew = /\bnew\s+([A-Z][\w.]*)\b/g
+  const typeRef = String.raw`(?:[a-z_]\w*\.)*[A-Z]\w*`
+  const explicitNew = new RegExp(String.raw`\bnew\s+(${typeRef})\b`, 'g')
   while ((m = explicitNew.exec(text)) !== null) push(m[1])
 
-  const directCtor = /(^|[^\w.])([A-Z][\w.]*)\s*(?:\[[^\]]*\])?\s*\(/g
+  const directCtor = new RegExp(String.raw`(^|[^\w.])(${typeRef})\s*(?:\[[^\]]*\])?\s*\(`, 'g')
   while ((m = directCtor.exec(text)) !== null) push(m[2])
+
+  const companionFactory = new RegExp(String.raw`(^|[^\w.])(${typeRef})\s*\.\s*[a-zA-Z_]\w*\s*(?:\[[^\]]*\])?\s*\(`, 'g')
+  while ((m = companionFactory.exec(text)) !== null) push(m[2])
 
   return out
 }

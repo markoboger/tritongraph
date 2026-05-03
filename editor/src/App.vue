@@ -804,6 +804,9 @@ interface RuntimeWorkspaceBundle {
   buildSbt: { relPath: string; source: string } | null
   scalaFiles: Array<{ relPath: string; source: string }>
   testLog: { relPath: string; text: string } | null
+  /** All discovered reports (multi-module); merged client-side for diagrams. */
+  coverageReports: Array<{ relPath: string; xml: string }>
+  /** Newest report only — backward compat; prefer {@link coverageReports} when merging. */
   coverageReport: { relPath: string; xml: string } | null
 }
 
@@ -958,15 +961,14 @@ const runtimeEmptyStateMessage = computed(() => {
 /**
  * Workspace key drives every overlay-store row id. Mirrors the active tab's `key` (so
  * `"sbt:scala-examples/animal-fruit"` and `"packages:scala-examples/animal-fruit"` keep
- * their own user state even though they're the same example). Empty string when no tab
- * is active — overlay reads/writes are no-ops in that case.
+ * their own user state even though they're the same example). Includes runtime tabs
+ * (`triton-runtime-home`, `runtime-sbt:…`, `runtime-packages:…`) so scaladoc / coverage /
+ * test overlays persist while those diagrams are open. Empty string when no tab is active.
  *
  * Provided downward so leaf node components (`FlowProjectNode`, `FlowPackageNode`, …) can
  * persist user edits without prop-drilling the key through every layer.
  */
-const activeWorkspaceKey = computed<string>(() =>
-  activeTab.value?.kind === 'runtime' ? '' : activeTab.value?.key ?? '',
-)
+const activeWorkspaceKey = computed<string>(() => activeTab.value?.key ?? '')
 provide('tritonWorkspaceKey', activeWorkspaceKey)
 
 /** `(root, dir)` of the example backing the active tab; `null` for builtin / file uploads / runtime. */
@@ -1279,6 +1281,15 @@ async function fetchRuntimeWorkspaceBundle(
             text: String(body.testLog.text ?? ''),
           }
         : null,
+    coverageReports: Array.isArray(body.coverageReports)
+      ? body.coverageReports
+          .filter((x) => x && typeof x === 'object')
+          .map((x: Record<string, unknown>) => ({
+            relPath: String(x.relPath ?? ''),
+            xml: String(x.xml ?? ''),
+          }))
+          .filter((x) => x.xml.trim())
+      : [],
     coverageReport:
       body.coverageReport && typeof body.coverageReport === 'object'
         ? {
@@ -1287,6 +1298,28 @@ async function fetchRuntimeWorkspaceBundle(
           }
         : null,
   }
+}
+
+function mergeParsedCoverageFromRuntimeBundle(
+  bundle: RuntimeWorkspaceBundle,
+): ReturnType<typeof parseScoverageXml> | undefined {
+  const entries =
+    bundle.coverageReports?.length
+      ? bundle.coverageReports
+      : bundle.coverageReport?.xml?.trim()
+        ? [bundle.coverageReport]
+        : []
+  if (!entries.length) return undefined
+  const parses = entries
+    .map((e) => parseScoverageXml(e.xml))
+    .filter(
+      (p) =>
+        p.classRates.length > 0 ||
+        p.packageRates.length > 0 ||
+        (typeof p.documentStatementRate === 'number' && Number.isFinite(p.documentStatementRate)),
+    )
+  if (!parses.length) return undefined
+  return parses.length === 1 ? parses[0]! : mergeParsedScoverageXml(parses)
 }
 
 async function selectExample(id: string) {
@@ -1580,6 +1613,10 @@ async function openOrActivateTab(
   if (existing) {
     await activateTabById(existing.id)
     reorderRuntimeHomeFirst()
+    if (spec.key.startsWith('runtime-sbt:') || spec.key.startsWith('runtime-packages:')) {
+      await loader()
+      snapshotActiveTab()
+    }
     return
   }
   snapshotActiveTab()
@@ -3273,11 +3310,19 @@ async function loadScalaPackagesForExample(root: string, dir: string, projectId?
       title: projectScope ? `Scala packages: ${dir}:${projectScope.id}` : `Scala packages: ${dir}`,
       sourcePath: sourceLabel,
     })
+    const coverageProjectDoc = sbtProjectsToIlographDocument(
+      projectScope ? projects.filter((p) => p.id === projectScope.id) : projects,
+      {
+        title: `sbt projects: ${dir}`,
+        sourcePath: `${root}/${dir}/build.sbt`,
+      },
+    )
     const payload = buildScalaWorkspacePayload({
       sourcePath: sourceLabel,
       title: projectScope ? `Scala packages: ${dir}:${projectScope.id}` : `Scala packages: ${dir}`,
       graph,
       ilographDocument: ilographDoc,
+      coverageProjectDocument: coverageProjectDoc,
       ...(parsedTestLog ? { parsedTestLog } : {}),
       ...(parsedCoverage ? { parsedCoverage } : {}),
     })
@@ -3350,20 +3395,20 @@ async function loadSbtBuildForRuntimeWorkspace(workspacePath: string, workspaceN
       sourcePath: `${workspacePath}/build.sbt`,
       projectsWithScalaSources,
     })
-    if (bundle.scalaFiles.length && bundle.coverageReport?.xml) {
+    const mergedRuntimeCoverage = mergeParsedCoverageFromRuntimeBundle(bundle)
+    if (bundle.scalaFiles.length && mergedRuntimeCoverage) {
       const graph = await buildScalaPackageGraph(bundle.scalaFiles.map((f) => ({
         root: '',
         exampleDir: '',
         relPath: f.relPath,
         source: f.source,
       })))
-      const parsedCoverage = parseScoverageXml(bundle.coverageReport.xml)
       const payload = buildScalaWorkspacePayload({
         sourcePath: `${workspacePath}/build.sbt`,
         title: `sbt build: ${workspaceName}`,
         graph,
         ilographDocument: doc,
-        parsedCoverage,
+        parsedCoverage: mergedRuntimeCoverage,
       })
       await whenOverlayStoreReady()
       const ws = activeWorkspaceKey.value
@@ -3414,18 +3459,26 @@ async function loadScalaPackagesForRuntimeWorkspace(workspacePath: string, works
       : `${workspacePath}/`
     sourcePath.value = sourceLabel
     const parsedTestLog = bundle.testLog?.text ? parseSbtTestLog(bundle.testLog.text) : undefined
-    const parsedCoverage = bundle.coverageReport?.xml ? parseScoverageXml(bundle.coverageReport.xml) : undefined
+    const mergedRuntimeCoverage = mergeParsedCoverageFromRuntimeBundle(bundle)
     const ilographDoc = scalaPackageGraphToIlographDocument(graph, {
       title: projectScope ? `Scala packages: ${workspaceName}:${projectScope.id}` : `Scala packages: ${workspaceName}`,
       sourcePath: sourceLabel,
     })
+    const coverageProjectDoc = sbtProjectsToIlographDocument(
+      projectScope ? projects.filter((p) => p.id === projectScope.id) : projects,
+      {
+        title: `sbt projects: ${workspaceName}`,
+        sourcePath: `${workspacePath}/build.sbt`,
+      },
+    )
     const payload = buildScalaWorkspacePayload({
       sourcePath: sourceLabel,
       title: projectScope ? `Scala packages: ${workspaceName}:${projectScope.id}` : `Scala packages: ${workspaceName}`,
       graph,
       ilographDocument: ilographDoc,
+      coverageProjectDocument: coverageProjectDoc,
       ...(parsedTestLog ? { parsedTestLog } : {}),
-      ...(parsedCoverage ? { parsedCoverage } : {}),
+      ...(mergedRuntimeCoverage ? { parsedCoverage: mergedRuntimeCoverage } : {}),
     })
     await whenOverlayStoreReady()
     const ws = activeWorkspaceKey.value
@@ -3467,15 +3520,22 @@ async function loadScalaPackagesForRuntimeWorkspace(workspacePath: string, works
  */
 function runtimeBundleSignature(bundle: RuntimeWorkspaceBundle): string {
   const log = bundle.testLog?.text ?? ''
-  const cov = bundle.coverageReport?.xml ?? ''
-  return [
+  const covParts: string[] = [
     bundle.testLog?.relPath ?? '',
     String(log.length),
     String(hashString(log)),
-    bundle.coverageReport?.relPath ?? '',
-    String(cov.length),
-    String(hashString(cov)),
-  ].join('|')
+  ]
+  const covEntries =
+    bundle.coverageReports?.length
+      ? bundle.coverageReports
+      : bundle.coverageReport?.xml
+        ? [bundle.coverageReport]
+        : []
+  for (const c of covEntries) {
+    const cov = c.xml ?? ''
+    covParts.push(c.relPath ?? '', String(cov.length), String(hashString(cov)))
+  }
+  return covParts.join('|')
 }
 
 function hashString(s: string): number {

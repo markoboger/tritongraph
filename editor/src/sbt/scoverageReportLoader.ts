@@ -58,6 +58,7 @@ function preferHigherWeight<T extends { statementCount?: number }>(a: T, b: T): 
 export function mergeParsedScoverageXml(parses: ParsedScoverageXml[]): ParsedScoverageXml {
   const classByName = new Map<string, ScoverageClassRate>()
   const pkgByName = new Map<string, ScoveragePackageRate>()
+  const docRates: number[] = []
   for (const p of parses) {
     for (const c of p.classRates ?? []) {
       const key = String(c.fullName ?? '').trim()
@@ -71,10 +72,15 @@ export function mergeParsedScoverageXml(parses: ParsedScoverageXml[]): ParsedSco
       const prev = pkgByName.get(key)
       pkgByName.set(key, prev ? preferHigherWeight(prev, pkg) : pkg)
     }
+    const dr = p.documentStatementRate
+    if (typeof dr === 'number' && Number.isFinite(dr)) docRates.push(dr)
   }
+  const documentStatementRate =
+    docRates.length > 0 ? docRates.reduce((a, b) => a + b, 0) / docRates.length : undefined
   return {
     classRates: [...classByName.values()],
     packageRates: [...pkgByName.values()],
+    ...(documentStatementRate != null ? { documentStatementRate } : {}),
   }
 }
 
