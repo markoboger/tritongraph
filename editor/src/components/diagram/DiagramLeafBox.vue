@@ -3,6 +3,7 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import BoxMetricStrip, { type BoxIssueLevel } from '../common/BoxMetricStrip.vue'
 import KindBadge from './KindBadge.vue'
 import {
+  DIAGRAM_LOGO_BOX_PX,
   nextCompactLayout,
   nextFlatLayout,
   nextMetricsBreakLayout,
@@ -126,7 +127,7 @@ onUnmounted(() => {
       'diagram-leaf-box--slim-layout': metricsBreakLayout && slimLayout,
       'diagram-leaf-box--superslim-layout': superslimLayout,
     }"
-    :style="{ '--box-accent': accent }"
+    :style="{ '--box-accent': accent, '--triton-diagram-logo-box': `${DIAGRAM_LOGO_BOX_PX}px` }"
   >
     <div class="diagram-leaf-box__metrics">
       <BoxMetricStrip
@@ -178,9 +179,10 @@ onUnmounted(() => {
 
 <style scoped>
 .diagram-leaf-box {
+  --triton-diagram-logo-box: 40px;
   position: relative;
   flex: 1 1 0;
-  min-width: 0;
+  min-width: var(--triton-diagram-logo-box);
   min-height: 0;
   width: 100%;
   box-sizing: border-box;
@@ -222,7 +224,7 @@ onUnmounted(() => {
   align-items: center;
   align-self: stretch;
   width: 100%;
-  min-height: 40px;
+  min-height: var(--triton-diagram-logo-box);
   max-height: 48px;
   margin: 0;
   flex-shrink: 0;
@@ -230,8 +232,8 @@ onUnmounted(() => {
 }
 
 .diagram-leaf-box__icon-img {
-  height: 40px;
-  max-height: 40px;
+  height: var(--triton-diagram-logo-box);
+  max-height: var(--triton-diagram-logo-box);
   width: auto;
 }
 
@@ -291,43 +293,44 @@ onUnmounted(() => {
   padding-top: 12px;
 }
 
+/* Superflat drops default padding; keep left inset so the 5px accent strip does not paint over the logo. */
 .diagram-leaf-box--superflat-layout,
 .diagram-leaf-box--has-metrics.diagram-leaf-box--superflat-layout {
-  padding: 0;
+  padding: 2px 6px 2px 8px;
 }
 
 .diagram-leaf-box--flat-layout .diagram-leaf-box__icon {
   flex: 0 0 auto;
   align-self: center;
   width: auto;
-  min-width: 0;
-  height: 40px;
-  min-height: 40px;
-  max-height: 40px;
+  min-width: var(--triton-diagram-logo-box);
+  height: var(--triton-diagram-logo-box);
+  min-height: var(--triton-diagram-logo-box);
+  max-height: var(--triton-diagram-logo-box);
   margin-right: 8px;
 }
 
 .diagram-leaf-box--superflat-layout .diagram-leaf-box__icon {
   flex: 0 0 auto;
   align-self: stretch;
-  width: 40px;
-  min-width: 40px;
-  height: 40px;
-  min-height: 40px;
-  max-height: 40px;
+  width: var(--triton-diagram-logo-box);
+  min-width: var(--triton-diagram-logo-box);
+  height: var(--triton-diagram-logo-box);
+  min-height: var(--triton-diagram-logo-box);
+  max-height: var(--triton-diagram-logo-box);
   margin: 0;
   justify-content: flex-start;
 }
 
 .diagram-leaf-box--flat-layout .diagram-leaf-box__icon-img {
-  max-width: 40px;
+  max-width: var(--triton-diagram-logo-box);
 }
 
 .diagram-leaf-box--superflat-layout .diagram-leaf-box__icon-img {
-  width: 40px;
-  height: 40px;
-  max-width: 40px;
-  max-height: 40px;
+  width: var(--triton-diagram-logo-box);
+  height: var(--triton-diagram-logo-box);
+  max-width: var(--triton-diagram-logo-box);
+  max-height: var(--triton-diagram-logo-box);
 }
 
 .diagram-leaf-box--flat-layout .diagram-leaf-box__text,
@@ -352,7 +355,7 @@ onUnmounted(() => {
 
 .diagram-leaf-box--metrics-break:not(.diagram-leaf-box--flat-layout):not(.diagram-leaf-box--compact-layout)
   .diagram-leaf-box__metrics {
-  max-width: 40px;
+  max-width: var(--triton-diagram-logo-box);
 }
 
 .diagram-leaf-box--slim-layout,
@@ -363,7 +366,7 @@ onUnmounted(() => {
 .diagram-leaf-box--slim-layout .diagram-leaf-box__icon,
 .diagram-leaf-box--superslim-layout .diagram-leaf-box__icon {
   align-self: center;
-  min-height: 40px;
+  min-height: var(--triton-diagram-logo-box);
   max-height: 48px;
 }
 

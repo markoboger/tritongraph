@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, useSlots, watch } from 'vue'
 import BoxMetricStrip from './BoxMetricStrip.vue'
-import { nextCompactLayout, nextFlatLayout, nextMetricsBreakLayout, nextSuperflatLayout, nextSuperslimLayout } from '../diagram/boxChromeLayout'
+import {
+  DIAGRAM_LOGO_BOX_PX,
+  nextCompactLayout,
+  nextFlatLayout,
+  nextMetricsBreakLayout,
+  nextSuperflatLayout,
+  nextSuperslimLayout,
+} from '../diagram/boxChromeLayout'
 
 const props = defineProps<{
   accent: string
@@ -203,7 +210,7 @@ onUnmounted(() => {
       'general-focused-box--slim-layout': metricsBreakLayout && !superslimLayout && slimLayout,
       'general-focused-box--inner-diagram-host': innerDiagramHost,
     }"
-    :style="{ '--box-accent': accent }"
+    :style="{ '--box-accent': accent, '--triton-diagram-logo-box': `${DIAGRAM_LOGO_BOX_PX}px` }"
   >
     <div class="general-focused-box__tools" @pointerdown.stop>
       <BoxMetricStrip
@@ -282,6 +289,7 @@ onUnmounted(() => {
 <style scoped>
 .general-focused-box {
   --box-accent: steelblue;
+  --triton-diagram-logo-box: 40px;
   --box-fill: color-mix(in srgb, var(--box-accent) 8%, #ffffff);
   --triton-focused-box-pad-x: clamp(6px, 1.35vmin, 14px);
   --triton-focused-box-pad-y: clamp(6px, 1.2vmin, 14px);
@@ -382,9 +390,9 @@ onUnmounted(() => {
 
 .general-focused-box--flat-layout .general-focused-box__header-icon {
   align-self: center;
-  height: 40px;
-  min-height: 40px;
-  max-height: 40px;
+  height: var(--triton-diagram-logo-box);
+  min-height: var(--triton-diagram-logo-box);
+  max-height: var(--triton-diagram-logo-box);
 }
 
 .general-focused-box--flat-layout .general-focused-box__head-text {
@@ -418,11 +426,11 @@ onUnmounted(() => {
 }
 
 .general-focused-box--superflat-layout .general-focused-box__header-icon {
-  width: 40px;
-  min-width: 40px;
-  height: 40px;
-  min-height: 40px;
-  max-height: 40px;
+  width: var(--triton-diagram-logo-box);
+  min-width: var(--triton-diagram-logo-box);
+  height: var(--triton-diagram-logo-box);
+  min-height: var(--triton-diagram-logo-box);
+  max-height: var(--triton-diagram-logo-box);
   align-self: stretch;
   align-items: stretch;
   justify-content: flex-start;
@@ -430,10 +438,10 @@ onUnmounted(() => {
 
 .general-focused-box--superflat-layout .general-focused-box__header-icon :deep(.lang-svg),
 .general-focused-box--superflat-layout .general-focused-box__header-icon :deep(svg) {
-  width: 40px;
-  height: 40px;
-  max-width: 40px;
-  max-height: 40px;
+  width: var(--triton-diagram-logo-box);
+  height: var(--triton-diagram-logo-box);
+  max-width: var(--triton-diagram-logo-box);
+  max-height: var(--triton-diagram-logo-box);
 }
 
 .general-focused-box--superflat-layout .general-focused-box__head-text {
@@ -470,14 +478,14 @@ onUnmounted(() => {
   align-self: center;
   width: 100%;
   height: 44px;
-  min-height: 40px;
+  min-height: var(--triton-diagram-logo-box);
   max-height: 48px;
 }
 
 .general-focused-box--compact-layout .general-focused-box__header-icon :deep(.lang-svg),
 .general-focused-box--compact-layout .general-focused-box__header-icon :deep(svg) {
-  height: 40px;
-  max-height: 40px;
+  height: var(--triton-diagram-logo-box);
+  max-height: var(--triton-diagram-logo-box);
   width: auto;
 }
 
@@ -504,7 +512,7 @@ onUnmounted(() => {
   z-index: 3;
   width: auto;
   height: 44px;
-  min-height: 40px;
+  min-height: var(--triton-diagram-logo-box);
   max-height: 48px;
   align-items: flex-start;
   justify-content: flex-start;
@@ -521,7 +529,7 @@ onUnmounted(() => {
 
 .general-focused-box--metrics-break:not(.general-focused-box--superslim-layout) .general-focused-box__head-text,
 .general-focused-box--metrics-break.general-focused-box--superslim-layout .general-focused-box__head-text {
-  padding-left: clamp(40px, 12cqw, 52px);
+  padding-left: clamp(var(--triton-diagram-logo-box), 12cqw, 52px);
 }
 
 .general-focused-box--slim-layout .general-focused-box__head-text,

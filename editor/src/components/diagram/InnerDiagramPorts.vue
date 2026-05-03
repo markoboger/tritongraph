@@ -10,6 +10,21 @@ defineProps<{
   externalEndpoints: { left: readonly ExternalEndpoint[]; right: readonly ExternalEndpoint[] }
   bindSlotEl: (id: string, el: unknown) => void
 }>()
+
+const emit = defineEmits<{
+  /** True while pointer is over a cross-package endpoint chip (parent lifts `inner-port-layer` z-index). */
+  endpointChipHover: [hovered: boolean]
+}>()
+
+function onEndpointChipEnter() {
+  emit('endpointChipHover', true)
+}
+
+function onEndpointChipLeave(ev: MouseEvent) {
+  const rel = ev.relatedTarget as HTMLElement | null
+  if (rel?.closest('.package-box__external-endpoint-chip')) return
+  emit('endpointChipHover', false)
+}
 </script>
 
 <template>
@@ -30,7 +45,13 @@ defineProps<{
       class="package-box__external-endpoint"
       :data-triton-foreign-package-id="ep.foreignPackageId"
     >
-      <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
+      <div
+        class="package-box__external-endpoint-chip"
+        @mouseenter="onEndpointChipEnter"
+        @mouseleave="onEndpointChipLeave"
+      >
+        {{ ep.label }}
+      </div>
       <span
         :ref="(el) => bindSlotEl(ep.id, el)"
         class="package-box__port package-box__port--external package-box__port--right"
@@ -56,7 +77,13 @@ defineProps<{
       class="package-box__external-endpoint package-box__external-endpoint--right"
       :data-triton-foreign-package-id="ep.foreignPackageId"
     >
-      <div class="package-box__external-endpoint-chip">{{ ep.label }}</div>
+      <div
+        class="package-box__external-endpoint-chip"
+        @mouseenter="onEndpointChipEnter"
+        @mouseleave="onEndpointChipLeave"
+      >
+        {{ ep.label }}
+      </div>
       <span
         :ref="(el) => bindSlotEl(ep.id, el)"
         class="package-box__port package-box__port--external package-box__port--left"
@@ -79,6 +106,7 @@ defineProps<{
   align-items: center;
   gap: 10px;
   pointer-events: none;
+  /** Above external chips so root package ports stay easy to target for edges. */
   z-index: 2;
 }
 .package-box__root-ports--left {
@@ -123,7 +151,7 @@ defineProps<{
   justify-content: center;
   gap: 10px;
   min-width: 0;
-  z-index: 2;
+  z-index: 0;
   pointer-events: none;
 }
 .package-box__external-endpoints--left {
@@ -171,7 +199,7 @@ defineProps<{
   overflow: hidden;
   text-overflow: ellipsis;
   position: relative;
-  z-index: 2;
+  z-index: 0;
   transform: none;
   pointer-events: auto;
   transition:
@@ -182,7 +210,7 @@ defineProps<{
 .package-box__external-endpoint-chip:hover {
   max-width: min(360px, 70vw);
   overflow: visible;
-  z-index: 81;
+  z-index: 5;
   background: color-mix(in srgb, var(--box-accent, #64748b) 16%, #ffffff);
   box-shadow:
     0 0 0 1px rgb(255 255 255 / 0.98),

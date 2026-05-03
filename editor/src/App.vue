@@ -124,6 +124,7 @@ const requestedTabKey = runtimeQuery?.get('tab')?.trim() ?? ''
 const requestedDojo = runtimeQuery?.get('dojo')?.trim() ?? ''
 const initialRequestedPerspectiveName = runtimeQuery?.get('perspective')?.trim() ?? ''
 const initialRequestedDojoDepth = Number.parseInt(runtimeQuery?.get('dojoDepth')?.trim() ?? '', 10)
+const initialDojoMembersParam = Number.parseInt(runtimeQuery?.get('dojoMembers')?.trim() ?? '', 10)
 
 /** Pinned first tab: local runtime repo picker (replaces visiting triton-runtime HTML on :4317). */
 const RUNTIME_HOME_TAB_KEY = 'triton-runtime-home'
@@ -221,9 +222,24 @@ function visibleInnerArtefactsForPreferredSize(
 }
 
 function preferredFocusWidthForVisibleInnerContent(data: Record<string, unknown>): number | undefined {
+  const innerArtefacts = visibleInnerArtefactsForPreferredSize(data)
+  const idSet = new Set(
+    innerArtefacts
+      .map((a) => String((a as Record<string, unknown> | undefined)?.id ?? '').trim())
+      .filter((id) => id.length > 0),
+  )
+  const rawRels = Array.isArray(data.innerArtefactRelations) ? data.innerArtefactRelations : []
+  const innerArtefactRelations = rawRels.filter((rel) => {
+    if (!rel || typeof rel !== 'object') return false
+    const r = rel as Record<string, unknown>
+    const from = String(r.from ?? '').trim()
+    const to = String(r.to ?? '').trim()
+    return from && to && idSet.has(from) && idSet.has(to)
+  })
   return preferredPackageFocusWidth({
     ...data,
-    innerArtefacts: visibleInnerArtefactsForPreferredSize(data),
+    innerArtefacts,
+    innerArtefactRelations,
   })
 }
 
@@ -450,9 +466,11 @@ async function openPackageInnerDiagramTab(packageId: string): Promise<void> {
     return
   }
   const parentKey = activeTab.value?.key ?? 'diagram'
+  const parentTab = tabs.value.find((t) => t.key === parentKey)
+  const innerTabKey = `package-inner:${parentKey}#${encodeURIComponent(packageId)}`
   await openOrActivateTab(
     {
-      key: `package-inner:${parentKey}#${encodeURIComponent(packageId)}`,
+      key: innerTabKey,
       title: data.name,
       iconUrl: folderIconUrl,
     },
@@ -482,6 +500,24 @@ async function openPackageInnerDiagramTab(packageId: string): Promise<void> {
       })
     },
   )
+  const innerTab = tabs.value.find((t) => t.key === innerTabKey)
+  if (innerTab) {
+    if (typeof parentTab?.dojoDepth === 'number') innerTab.dojoDepth = parentTab.dojoDepth
+    else if (parentKey === `dojo:${CLASS_STACKING_DOJO_ID}` && packageId === CLASS_STACKING_INNER_PACKAGE_ID) {
+      innerTab.dojoDepth = dojoClassStackCount.value
+    } else if (
+      parentKey === `dojo:${CLASS_INHERITANCE_CHAIN_DOJO_ID}` &&
+      packageId === CLASS_INHERITANCE_INNER_PACKAGE_ID
+    ) {
+      innerTab.dojoDepth = dojoInheritanceChainCount.value
+    }
+  }
+  if (parentKey === `dojo:${CLASS_STACKING_DOJO_ID}` && packageId === CLASS_STACKING_INNER_PACKAGE_ID) {
+    sidePanelTab.value = 'dojo'
+  }
+  if (parentKey === `dojo:${CLASS_INHERITANCE_CHAIN_DOJO_ID}` && packageId === CLASS_INHERITANCE_INNER_PACKAGE_ID) {
+    sidePanelTab.value = 'dojo'
+  }
 }
 
 const showYamlEditor = ref(false)
@@ -489,21 +525,19 @@ const showYamlEditor = ref(false)
 /** Which sub-panel is visible in the right column (YAML diff, AI prompt, or canvas templates). */
 const sidePanelTab = ref<'yaml' | 'prompt' | 'templates' | 'dojo'>('yaml')
 
-const PACKAGE_NESTING_DOJO_ID = 'package-nesting'
 const PACKAGE_STACKING_DOJO_ID = 'package-stacking'
+const CLASS_STACKING_DOJO_ID = 'class-stacking'
+/** Package opened as `package-inner:dojo:class-stacking#…` — same id as in {@link buildClassStackingDojoDocument}. */
+const CLASS_STACKING_INNER_PACKAGE_ID = 'class-stack-demo'
 const PACKAGE_IMPORT_CHAIN_DOJO_ID = 'package-import-chain'
+const CLASS_INHERITANCE_CHAIN_DOJO_ID = 'class-inheritance-chain'
+/** Package in {@link buildClassInheritanceChainDojoDocument} — same id when opened as `package-inner:…`. */
+const CLASS_INHERITANCE_INNER_PACKAGE_ID = 'inherit-chain-demo'
 const PACKAGE_TREE_DOJO_ID = 'package-tree'
 const ARTEFACT_HIERARCHY_DOJO_ID = 'artefact-hierarchy'
-const ABSTRACTION_LAYERS_DOJO_ID = 'abstraction-layers'
 const BREAKPOINT_LAYOUTS_DOJO_ID = 'breakpoint-layouts'
-
-const ABSTRACTION_RESIZE_NODE_IDS: readonly string[] = [
-  'abstraction-general',
-  'abstraction-project',
-  'abstraction-module',
-  'abstraction-package',
-  'abstraction-artefact',
-]
+/** N Scala packages in a depth chain, each with M inner members — controls layer drill and inner layout. */
+const PACKAGE_MEMBER_MATRIX_DOJO_ID = 'package-member-matrix'
 
 type BreakpointDojoKind = 'general' | 'project' | 'module' | 'package' | 'artefact'
 type BreakpointDojoBand = 'min' | 'max'
@@ -602,11 +636,6 @@ function pascalFromLayoutState(state: string): string {
     .join('')
 }
 
-function clampDojoDepth(raw: number): number {
-  if (!Number.isFinite(raw)) return 4
-  return Math.min(20, Math.max(1, Math.round(raw)))
-}
-
 function clampDojoStackCount(raw: number): number {
   if (!Number.isFinite(raw)) return 8
   return Math.min(40, Math.max(1, Math.round(raw)))
@@ -627,14 +656,36 @@ function clampDojoArtefactWidth(raw: number): number {
   return Math.min(20, Math.max(1, Math.round(raw)))
 }
 
-const dojoNestingDepth = ref(clampDojoDepth(initialRequestedDojoDepth))
+function clampDojoMatrixPackages(raw: number): number {
+  if (!Number.isFinite(raw)) return 3
+  return Math.min(5, Math.max(1, Math.round(raw)))
+}
+
+function clampDojoMatrixArtefacts(raw: number): number {
+  if (!Number.isFinite(raw)) return 0
+  return Math.min(10, Math.max(0, Math.round(raw)))
+}
+
 const dojoStackCount = ref(clampDojoStackCount(initialRequestedDojoDepth))
+const dojoClassStackCount = ref(clampDojoStackCount(initialRequestedDojoDepth))
 const dojoImportChainLength = ref(clampDojoStackCount(initialRequestedDojoDepth))
+const dojoInheritanceChainCount = ref(clampDojoStackCount(initialRequestedDojoDepth))
 const dojoTreeCount = ref(clampDojoTreeCount(initialRequestedDojoDepth))
 const dojoArtefactLayers = ref(clampDojoArtefactLayers(initialRequestedDojoDepth))
 const dojoArtefactWidth = ref(1)
-/** Abstraction dojo: when true, resizing any one box applies the new size to every demo node. */
+/** Breakpoint-layouts dojo: when true, resizing any one demo box applies the new size to every breakpoint sample. */
 const dojoAbstractionLinkedResize = ref(false)
+
+const dojoMatrixPackageCount = ref(
+  requestedDojo === PACKAGE_MEMBER_MATRIX_DOJO_ID && Number.isFinite(initialRequestedDojoDepth)
+    ? clampDojoMatrixPackages(initialRequestedDojoDepth)
+    : clampDojoMatrixPackages(3),
+)
+const dojoMatrixArtefactCount = ref(
+  requestedDojo === PACKAGE_MEMBER_MATRIX_DOJO_ID && Number.isFinite(initialDojoMembersParam)
+    ? clampDojoMatrixArtefacts(initialDojoMembersParam)
+    : 0,
+)
 
 /** All bundled examples (`build.sbt` files) across every registered examples-root. */
 const sbtExamplesAll = listSbtExamples()
@@ -682,12 +733,13 @@ const sbtExamplesLargeOss = sbtExamplesAll.filter(
 const scalaExamples = sbtExamplesAll.filter((e) => e.root === 'scala-examples')
 const tsExamples = tsExamplesAll.filter((e) => e.root === 'ts-examples')
 const dojoExamples = computed(() => [
-  { id: PACKAGE_NESTING_DOJO_ID, title: 'Package nesting' },
   { id: PACKAGE_STACKING_DOJO_ID, title: 'Package stacking' },
+  { id: CLASS_STACKING_DOJO_ID, title: 'Class Stacking' },
+  { id: CLASS_INHERITANCE_CHAIN_DOJO_ID, title: 'Class inheritance chain' },
   { id: PACKAGE_IMPORT_CHAIN_DOJO_ID, title: 'Package import chain' },
   { id: PACKAGE_TREE_DOJO_ID, title: 'Package tree' },
   { id: ARTEFACT_HIERARCHY_DOJO_ID, title: 'Artefact hierarchy' },
-  { id: ABSTRACTION_LAYERS_DOJO_ID, title: 'Abstraction layers' },
+  { id: PACKAGE_MEMBER_MATRIX_DOJO_ID, title: 'Package × members matrix' },
   { id: BREAKPOINT_LAYOUTS_DOJO_ID, title: 'Breakpoint layouts' },
   ...dojoFixtures.map((fixture) => ({ id: fixture.id, title: fixture.title })),
 ])
@@ -792,6 +844,8 @@ interface DiagramTab {
   nodes: any[]
   edges: any[]
   dojoDepth?: number
+  /** {@link PACKAGE_MEMBER_MATRIX_DOJO_ID}: Scala artefacts per package (0–10). */
+  dojoMemberCount?: number
   sourceContent?: string
   sourceLanguage?: string
   sourceLine?: number
@@ -872,6 +926,36 @@ function baseTabKey(tabKey: string): string {
   const body = k.slice('package-inner:'.length)
   const hash = body.indexOf('#')
   return hash >= 0 ? body.slice(0, hash) : body
+}
+
+function parsePackageInnerTabKey(key: string | undefined): { parentKey: string; packageId: string } | null {
+  const k = String(key ?? '')
+  if (!k.startsWith('package-inner:')) return null
+  const body = k.slice('package-inner:'.length)
+  const hash = body.indexOf('#')
+  if (hash < 0) return null
+  return {
+    parentKey: body.slice(0, hash),
+    packageId: decodeURIComponent(body.slice(hash + 1)),
+  }
+}
+
+function isClassStackingPackageInnerKey(key: string | undefined): boolean {
+  const inner = parsePackageInnerTabKey(key)
+  return (
+    !!inner &&
+    inner.parentKey === `dojo:${CLASS_STACKING_DOJO_ID}` &&
+    inner.packageId === CLASS_STACKING_INNER_PACKAGE_ID
+  )
+}
+
+function isClassInheritanceChainPackageInnerKey(key: string | undefined): boolean {
+  const inner = parsePackageInnerTabKey(key)
+  return (
+    !!inner &&
+    inner.parentKey === `dojo:${CLASS_INHERITANCE_CHAIN_DOJO_ID}` &&
+    inner.packageId === CLASS_INHERITANCE_INNER_PACKAGE_ID
+  )
 }
 
 function parseRuntimeTabKey(
@@ -1657,35 +1741,6 @@ async function openBuiltinTab(): Promise<void> {
   )
 }
 
-function buildPackageNestingDojoDocument(depth: number): IlographDocument {
-  const normalizedDepth = clampDojoDepth(depth)
-
-  function buildLevel(level: number): NonNullable<IlographDocument['resources']>[number] {
-    return {
-      id: `package-${level}`,
-      name: `package-${level}`,
-      subtitle: `depth ${level}`,
-      'x-triton-package-scope': true,
-      ...(level === 1 ? { 'x-triton-package-language': 'scala' } : {}),
-      ...(level < normalizedDepth ? { children: [buildLevel(level + 1)] } : {}),
-    }
-  }
-
-  return {
-    description:
-      'Dojo for nested package containers. Increase depth with the dojo slider to inspect how nested package scopes resize and reflow.',
-    resources: [buildLevel(1)],
-    perspectives: [
-      {
-        id: 'dependencies',
-        name: 'dependencies',
-        orientation: 'leftToRight',
-        relations: [],
-      },
-    ],
-  }
-}
-
 /**
  * Linear chain: `import-link-1` → … → `import-link-n` with `imports` edges (dependent on the left,
  * imported symbol on the right), matching {@link layoutDependencyLayers} classpath semantics.
@@ -1728,95 +1783,103 @@ function buildPackageImportChainDojoDocument(chainLen: number): IlographDocument
   }
 }
 
-function buildAbstractionDojoDocument(): IlographDocument {
-  const W = 248
-  const H = 116
-  /** Vertical gap between stacked rows — generous so resize handles are easy to grab. */
-  const ROW_GAP = 52
-  /** Horizontal gap between the two columns. */
-  const COL_GAP = 88
-  const LEFT = 56
-  const TOP = 56
-  const COL2 = LEFT + W + COL_GAP
-  const gridMidX = LEFT + (2 * W + COL_GAP) / 2
-  const artefactX = Math.round(gridMidX - W / 2)
-  const positions: NonNullable<NonNullable<IlographDocument['x-triton-editor']>['positions']> = {
-    'abstraction-general': { x: LEFT, y: TOP },
-    'abstraction-project': { x: COL2, y: TOP },
-    'abstraction-module': { x: LEFT, y: TOP + H + ROW_GAP },
-    'abstraction-package': { x: COL2, y: TOP + H + ROW_GAP },
-    'abstraction-artefact': { x: artefactX, y: TOP + 2 * (H + ROW_GAP) },
-  }
-  const sizes: NonNullable<NonNullable<IlographDocument['x-triton-editor']>['sizes']> = {
-    'abstraction-general': { w: W, h: H },
-    'abstraction-project': { w: W, h: H },
-    'abstraction-module': { w: W, h: H },
-    'abstraction-package': { w: W, h: H },
-    'abstraction-artefact': { w: W, h: H },
-  }
+/**
+ * Linear `imports` chain of Scala packages (depth columns), each holding the same number of
+ * inner artefacts linked by `x-triton-inner-artefact-relations` (chain + a few crossing edges).
+ */
+function buildPackageMemberMatrixDojoDocument(packageCount: number, artefactsPerPackage: number): IlographDocument {
+  const n = clampDojoMatrixPackages(packageCount)
+  const m = clampDojoMatrixArtefacts(artefactsPerPackage)
+  const kinds = ['object', 'enum', 'class'] as const
+  const resources = Array.from({ length: n }, (_, index) => {
+    const pkgIndex = index + 1
+    const pkgId = `member-matrix-pkg-${pkgIndex}`
+    const innerIds: string[] = []
+    const innerArtefacts =
+      m > 0
+        ? Array.from({ length: m }, (_, j) => {
+            const level = j + 1
+            const kind = kinds[j % 3]!
+            const name =
+              kind === 'object' ? `M${pkgIndex}Obj${level}` : kind === 'enum' ? `M${pkgIndex}En${level}` : `M${pkgIndex}Cls${level}`
+            const artefactId = `${pkgId}::${kind}:${name}`
+            innerIds.push(artefactId)
+            if (kind === 'object') {
+              return {
+                id: artefactId,
+                name,
+                subtitle: 'object',
+                declaration: `object ${name}`,
+                methodSignatures: [{ signature: `def tag: Int = ${level}`, startRow: 1 }],
+              }
+            }
+            if (kind === 'enum') {
+              return {
+                id: artefactId,
+                name,
+                subtitle: 'enum',
+                declaration: `enum ${name} { case North, South }`,
+                methodSignatures: [{ signature: 'def ordinal: Int', startRow: 1 }],
+              }
+            }
+            return {
+              id: artefactId,
+              name,
+              subtitle: 'class',
+              declaration: `class ${name}(val id: Int)`,
+              methodSignatures: [{ signature: 'def describe(): String', startRow: 1 }],
+            }
+          })
+        : []
+    const innerRels: TritonInnerArtefactRelationSpec[] = []
+    if (innerIds.length >= 2) {
+      const chainLabels: TritonInnerArtefactRelationSpec['label'][] = ['imports', 'extends', 'with']
+      for (let j = 0; j < innerIds.length - 1; j++) {
+        innerRels.push({
+          from: innerIds[j]!,
+          to: innerIds[j + 1]!,
+          label: chainLabels[j % chainLabels.length]!,
+        })
+      }
+      if (innerIds.length >= 4) {
+        innerRels.push({ from: innerIds[0]!, to: innerIds[3]!, label: 'creates' })
+      }
+      if (innerIds.length >= 6) {
+        innerRels.push({ from: innerIds[4]!, to: innerIds[1]!, label: 'imports' })
+      }
+    }
+    return {
+      id: pkgId,
+      name: pkgId,
+      subtitle: `${m} inner member${m === 1 ? '' : 's'}`,
+      'x-triton-node-type': 'package' as const,
+      'x-triton-package-language': 'scala' as const,
+      'x-triton-package-scope': true,
+      ...(innerArtefacts.length ? { 'x-triton-inner-artefacts': innerArtefacts } : {}),
+      ...(innerRels.length ? { 'x-triton-inner-artefact-relations': innerRels } : {}),
+    }
+  })
+  const relations =
+    n >= 2
+      ? Array.from({ length: n - 1 }, (_, index) => {
+          const i = index + 1
+          return {
+            from: `member-matrix-pkg-${i}`,
+            to: `member-matrix-pkg-${i + 1}`,
+            label: 'imports',
+          }
+        })
+      : []
   return {
     description:
-      'Dojo comparing Triton leaf chrome across abstraction layers (generic box, project, module, package, Scala artefact). Drag resize handles; toggle linked mode so one resize updates every box.',
-    'x-triton-editor': { positions, sizes },
-    resources: [
-      {
-        id: 'abstraction-general',
-        name: 'General box',
-        subtitle: 'Neutral leaf shell (`x-triton-project-kind: general`)',
-        'x-triton-project-kind': 'general',
-        'x-triton-layout-frozen': true,
-      },
-      {
-        id: 'abstraction-project',
-        name: 'Acme build',
-        subtitle: 'Root aggregate (`x-triton-project-kind: project`)',
-        'x-triton-project-kind': 'project',
-        'x-triton-layout-frozen': true,
-        'x-triton-project-compartments': [
-          {
-            id: 'scala',
-            title: 'Scala',
-            rows: [{ label: 'binary', value: '3.8.3' }],
-          },
-        ],
-      },
-      {
-        id: 'abstraction-module',
-        name: 'ingestion',
-        subtitle: 'JVM module boundary (`x-triton-project-kind: module`)',
-        'x-triton-project-kind': 'module',
-        'x-triton-layout-frozen': true,
-      },
-      {
-        id: 'abstraction-package',
-        name: 'com.acme.core',
-        subtitle: 'Scala package container (`x-triton-node-type: package`)',
-        'x-triton-node-type': 'package',
-        'x-triton-package-language': 'scala',
-        'x-triton-layout-frozen': true,
-        description: 'Holds domain model sources and public facades.',
-      },
-      {
-        id: 'abstraction-artefact',
-        name: 'TelemetryRouter',
-        subtitle: 'Scala class',
-        'x-triton-node-type': 'artefact',
-        'x-triton-declaration': 'final class TelemetryRouter(config: RouterConfig)(using Telemetry)',
-        'x-triton-method-signatures': [
-          { signature: 'def route(batch: Batch): RoutePlan', startRow: 1 },
-          { signature: 'def shutdown(): Unit', startRow: 2 },
-        ],
-        'x-triton-source-file': 'TelemetryRouter.scala',
-        'x-triton-source-row': 4,
-        'x-triton-layout-frozen': true,
-      },
-    ],
+      'Dojo: 1–5 Scala packages in a dependency chain, each with 0–10 inner artefacts wired with inner imports / extends / with plus crossing creates and imports edges. Use the sliders for package drill and inner relation layout.',
+    resources,
     perspectives: [
       {
         id: 'dependencies',
         name: 'dependencies',
         orientation: 'leftToRight',
-        relations: [],
+        relations,
       },
     ],
   }
@@ -1946,6 +2009,136 @@ function buildPackageStackingDojoDocument(count: number): IlographDocument {
         ...(level === 1 ? { 'x-triton-package-language': 'scala' } : {}),
       }
     }),
+    perspectives: [
+      {
+        id: 'dependencies',
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        relations: [],
+      },
+    ],
+  }
+}
+
+function buildClassStackingDojoDocument(count: number): IlographDocument {
+  const n = clampDojoStackCount(count)
+  const pkgId = CLASS_STACKING_INNER_PACKAGE_ID
+  const kinds = ['object', 'enum', 'class'] as const
+  const innerArtefacts = Array.from({ length: n }, (_, index) => {
+    const level = index + 1
+    const kind = kinds[index % 3]!
+    const name =
+      kind === 'object' ? `DemoObject${level}` : kind === 'enum' ? `DemoEnum${level}` : `DemoClass${level}`
+    const id = `${pkgId}::${kind}:${name}`
+    if (kind === 'object') {
+      return {
+        id,
+        name,
+        subtitle: 'object',
+        declaration: `object ${name}`,
+        methodSignatures: [{ signature: `def tag: Int = ${level}`, startRow: 1 }],
+      }
+    }
+    if (kind === 'enum') {
+      return {
+        id,
+        name,
+        subtitle: 'enum',
+        declaration: `enum ${name} { case North, South }`,
+        methodSignatures: [{ signature: 'def ordinal: Int', startRow: 1 }],
+      }
+    }
+    return {
+      id,
+      name,
+      subtitle: 'class',
+      declaration: `class ${name}(val id: Int)`,
+      methodSignatures: [{ signature: 'def describe(): String', startRow: 1 }],
+    }
+  })
+  return {
+    description:
+      'Dojo for a single Scala package whose member list mixes independent objects, enums, and classes (no imports or inheritance edges between them). Increase the count to stress inner-artefact layout and reflow.',
+    resources: [
+      {
+        id: pkgId,
+        name: pkgId,
+        subtitle: `${n} independent member${n === 1 ? '' : 's'}`,
+        'x-triton-node-type': 'package',
+        'x-triton-package-language': 'scala',
+        'x-triton-package-scope': true,
+        'x-triton-inner-artefacts': innerArtefacts,
+      },
+    ],
+    perspectives: [
+      {
+        id: 'dependencies',
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        relations: [],
+      },
+    ],
+  }
+}
+
+/**
+ * One Scala package whose members form a linear `extends` chain (child → … → root trait),
+ * same inner-relation direction as the artefact-hierarchy dojo and {@link scalaPackagesToIlograph}.
+ */
+function buildClassInheritanceChainDojoDocument(count: number): IlographDocument {
+  const n = clampDojoStackCount(count)
+  const pkgId = CLASS_INHERITANCE_INNER_PACKAGE_ID
+  const linkName = (i: number) => `InheritLink${i + 1}`
+
+  const innerArtefacts = Array.from({ length: n }, (_, i) => {
+    const nm = linkName(i)
+    const isRoot = i === n - 1
+    if (isRoot) {
+      return {
+        id: `${pkgId}::trait:${nm}`,
+        name: nm,
+        subtitle: 'trait',
+        declaration: `trait ${nm}`,
+        methodSignatures: [{ signature: 'def lineageTag: Int', startRow: 1 }],
+      }
+    }
+    const parentNm = linkName(i + 1)
+    return {
+      id: `${pkgId}::abstract class:${nm}`,
+      name: nm,
+      subtitle: 'abstract class',
+      declaration: `abstract class ${nm} extends ${parentNm}`,
+      methodSignatures: [{ signature: 'def describe(): String', startRow: 1 }],
+    }
+  })
+
+  const innerRels =
+    n >= 2
+      ? Array.from({ length: n - 1 }, (_, i) => {
+          const childNm = linkName(i)
+          const parentNm = linkName(i + 1)
+          const fromId = `${pkgId}::abstract class:${childNm}`
+          const toKind = i + 2 === n ? 'trait' : 'abstract class'
+          const toId = `${pkgId}::${toKind}:${parentNm}`
+          return { from: fromId, to: toId, label: 'extends' as const }
+        })
+      : []
+
+  return {
+    description:
+      'Dojo for a single Scala package whose members are one linear inheritance chain (`extends`). Increase the count to stress inner-artefact columns, inheritance edge routing, and reflow.',
+    resources: [
+      {
+        id: pkgId,
+        name: pkgId,
+        subtitle: `${n} chained member${n === 1 ? '' : 's'}`,
+        'x-triton-node-type': 'package',
+        'x-triton-package-language': 'scala',
+        'x-triton-package-scope': true,
+        'x-triton-inner-artefacts': innerArtefacts,
+        ...(innerRels.length ? { 'x-triton-inner-artefact-relations': innerRels } : {}),
+      },
+    ],
     perspectives: [
       {
         id: 'dependencies',
@@ -2551,20 +2744,6 @@ function buildArtefactHierarchyDojoDocument(layers: number, width: number): Ilog
   }
 }
 
-async function loadPackageNestingDojo(depth: number) {
-  const normalizedDepth = clampDojoDepth(depth)
-  dojoNestingDepth.value = normalizedDepth
-  sourcePath.value = `dojo/${PACKAGE_NESTING_DOJO_ID}.ilograph.yaml`
-  await applyDoc(
-    stringifyIlographYaml(buildPackageNestingDojoDocument(normalizedDepth)),
-    `${PACKAGE_NESTING_DOJO_ID}.ilograph.yaml`,
-    false,
-    { moduleNodeType: 'package' },
-  )
-  if (activeTab.value) activeTab.value.dojoDepth = normalizedDepth
-  status.value = `Loaded dojo fixture ${PACKAGE_NESTING_DOJO_ID} at depth ${normalizedDepth}.`
-}
-
 async function loadPackageStackingDojo(count: number) {
   const normalizedCount = clampDojoStackCount(count)
   dojoStackCount.value = normalizedCount
@@ -2577,6 +2756,109 @@ async function loadPackageStackingDojo(count: number) {
   )
   if (activeTab.value) activeTab.value.dojoDepth = normalizedCount
   status.value = `Loaded dojo fixture ${PACKAGE_STACKING_DOJO_ID} with ${normalizedCount} packages.`
+}
+
+async function loadPackageMemberMatrixDojo(packages: number, artefactsPerPackage: number) {
+  const p = clampDojoMatrixPackages(packages)
+  const a = clampDojoMatrixArtefacts(artefactsPerPackage)
+  dojoMatrixPackageCount.value = p
+  dojoMatrixArtefactCount.value = a
+  sourcePath.value = `dojo/${PACKAGE_MEMBER_MATRIX_DOJO_ID}.ilograph.yaml`
+  await applyDoc(
+    stringifyIlographYaml(buildPackageMemberMatrixDojoDocument(p, a)),
+    `${PACKAGE_MEMBER_MATRIX_DOJO_ID}.ilograph.yaml`,
+    false,
+    { moduleNodeType: 'package' },
+  )
+  if (activeTab.value) {
+    activeTab.value.dojoDepth = p
+    activeTab.value.dojoMemberCount = a
+  }
+  status.value = `Loaded dojo ${PACKAGE_MEMBER_MATRIX_DOJO_ID}: ${p} package${p === 1 ? '' : 's'}, ${a} Scala artefact${a === 1 ? '' : 's'} per package.`
+}
+
+async function loadClassStackingDojo(count: number) {
+  const normalizedCount = clampDojoStackCount(count)
+  dojoClassStackCount.value = normalizedCount
+  sourcePath.value = `dojo/${CLASS_STACKING_DOJO_ID}.ilograph.yaml`
+
+  const parentKey = `dojo:${CLASS_STACKING_DOJO_ID}`
+  const parentTab = tabs.value.find((t) => t.key === parentKey)
+
+  await applyDoc(
+    stringifyIlographYaml(buildClassStackingDojoDocument(normalizedCount)),
+    `${CLASS_STACKING_DOJO_ID}.ilograph.yaml`,
+    false,
+    { moduleNodeType: 'package' },
+  )
+
+  if (parentTab) {
+    parentTab.dojoDepth = normalizedCount
+    parentTab.nodes = nodes.value
+    parentTab.edges = edges.value
+    parentTab.perspectiveName = perspectiveName.value
+    parentTab.sourcePath = sourcePath.value
+    parentTab.fileName = fileName.value
+    parentTab.yamlBaseline = yamlBaseline.value
+  }
+
+  const innerView = isClassStackingPackageInnerKey(activeTab.value?.key)
+  if (innerView) {
+    const data = packageDiagramDataForNode(CLASS_STACKING_INNER_PACKAGE_ID)
+    if (data) {
+      sourcePath.value = `${sourcePath.value || parentKey}#${encodeURIComponent(CLASS_STACKING_INNER_PACKAGE_ID)}`
+      await applyDoc(stringifyIlographYaml(packageDiagramDocument(data)), `${data.name}.ilograph.yaml`, false, {
+        moduleNodeType: 'package',
+        initialLayerDrillId: data.id,
+      })
+    }
+  }
+
+  if (activeTab.value) activeTab.value.dojoDepth = normalizedCount
+
+  status.value = `Loaded dojo fixture ${CLASS_STACKING_DOJO_ID} with ${normalizedCount} Scala artefacts.`
+}
+
+async function loadClassInheritanceChainDojo(count: number) {
+  const normalizedCount = clampDojoStackCount(count)
+  dojoInheritanceChainCount.value = normalizedCount
+  sourcePath.value = `dojo/${CLASS_INHERITANCE_CHAIN_DOJO_ID}.ilograph.yaml`
+
+  const parentKey = `dojo:${CLASS_INHERITANCE_CHAIN_DOJO_ID}`
+  const parentTab = tabs.value.find((t) => t.key === parentKey)
+
+  await applyDoc(
+    stringifyIlographYaml(buildClassInheritanceChainDojoDocument(normalizedCount)),
+    `${CLASS_INHERITANCE_CHAIN_DOJO_ID}.ilograph.yaml`,
+    false,
+    { moduleNodeType: 'package' },
+  )
+
+  if (parentTab) {
+    parentTab.dojoDepth = normalizedCount
+    parentTab.nodes = nodes.value
+    parentTab.edges = edges.value
+    parentTab.perspectiveName = perspectiveName.value
+    parentTab.sourcePath = sourcePath.value
+    parentTab.fileName = fileName.value
+    parentTab.yamlBaseline = yamlBaseline.value
+  }
+
+  const innerView = isClassInheritanceChainPackageInnerKey(activeTab.value?.key)
+  if (innerView) {
+    const data = packageDiagramDataForNode(CLASS_INHERITANCE_INNER_PACKAGE_ID)
+    if (data) {
+      sourcePath.value = `${sourcePath.value || parentKey}#${encodeURIComponent(CLASS_INHERITANCE_INNER_PACKAGE_ID)}`
+      await applyDoc(stringifyIlographYaml(packageDiagramDocument(data)), `${data.name}.ilograph.yaml`, false, {
+        moduleNodeType: 'package',
+        initialLayerDrillId: data.id,
+      })
+    }
+  }
+
+  if (activeTab.value) activeTab.value.dojoDepth = normalizedCount
+
+  status.value = `Loaded dojo fixture ${CLASS_INHERITANCE_CHAIN_DOJO_ID} with ${normalizedCount} Scala artefacts.`
 }
 
 async function loadPackageImportChainDojo(chainLen: number) {
@@ -2624,17 +2906,6 @@ async function loadArtefactHierarchyDojo(layers: number, width: number) {
   status.value = `Loaded dojo fixture ${ARTEFACT_HIERARCHY_DOJO_ID} at ${n} layer${n !== 1 ? 's' : ''}, width ${w}.`
 }
 
-async function loadAbstractionLayersDojo() {
-  sourcePath.value = `dojo/${ABSTRACTION_LAYERS_DOJO_ID}.ilograph.yaml`
-  await applyDoc(
-    stringifyIlographYaml(buildAbstractionDojoDocument()),
-    `${ABSTRACTION_LAYERS_DOJO_ID}.ilograph.yaml`,
-    true,
-    { moduleNodeType: 'module' },
-  )
-  status.value = `Loaded dojo fixture ${ABSTRACTION_LAYERS_DOJO_ID}.`
-}
-
 async function loadBreakpointLayoutsDojo() {
   sourcePath.value = `dojo/${BREAKPOINT_LAYOUTS_DOJO_ID}.ilograph.yaml`
   await applyDoc(
@@ -2647,12 +2918,16 @@ async function loadBreakpointLayoutsDojo() {
 }
 
 async function loadDojoFixture(id: string) {
-  if (id === PACKAGE_NESTING_DOJO_ID) {
-    await loadPackageNestingDojo(dojoNestingDepth.value)
-    return
-  }
   if (id === PACKAGE_STACKING_DOJO_ID) {
     await loadPackageStackingDojo(dojoStackCount.value)
+    return
+  }
+  if (id === CLASS_STACKING_DOJO_ID) {
+    await loadClassStackingDojo(dojoClassStackCount.value)
+    return
+  }
+  if (id === CLASS_INHERITANCE_CHAIN_DOJO_ID) {
+    await loadClassInheritanceChainDojo(dojoInheritanceChainCount.value)
     return
   }
   if (id === PACKAGE_IMPORT_CHAIN_DOJO_ID) {
@@ -2667,8 +2942,8 @@ async function loadDojoFixture(id: string) {
     await loadArtefactHierarchyDojo(dojoArtefactLayers.value, dojoArtefactWidth.value)
     return
   }
-  if (id === ABSTRACTION_LAYERS_DOJO_ID) {
-    await loadAbstractionLayersDojo()
+  if (id === PACKAGE_MEMBER_MATRIX_DOJO_ID) {
+    await loadPackageMemberMatrixDojo(dojoMatrixPackageCount.value, dojoMatrixArtefactCount.value)
     return
   }
   if (id === BREAKPOINT_LAYOUTS_DOJO_ID) {
@@ -2689,32 +2964,35 @@ async function loadDojoFixture(id: string) {
 async function openDojoTab(id: string): Promise<void> {
   const fixture = getDojoFixture(id)
   const title =
-    id === PACKAGE_NESTING_DOJO_ID
-      ? `${PACKAGE_NESTING_DOJO_ID}.ilograph.yaml`
-      : id === PACKAGE_STACKING_DOJO_ID
-        ? `${PACKAGE_STACKING_DOJO_ID}.ilograph.yaml`
+    id === PACKAGE_STACKING_DOJO_ID
+      ? `${PACKAGE_STACKING_DOJO_ID}.ilograph.yaml`
+      : id === CLASS_STACKING_DOJO_ID
+        ? `${CLASS_STACKING_DOJO_ID}.ilograph.yaml`
+        : id === CLASS_INHERITANCE_CHAIN_DOJO_ID
+          ? `${CLASS_INHERITANCE_CHAIN_DOJO_ID}.ilograph.yaml`
         : id === PACKAGE_IMPORT_CHAIN_DOJO_ID
-          ? `${PACKAGE_IMPORT_CHAIN_DOJO_ID}.ilograph.yaml`
-          : id === PACKAGE_TREE_DOJO_ID
-            ? `${PACKAGE_TREE_DOJO_ID}.ilograph.yaml`
-            : id === ARTEFACT_HIERARCHY_DOJO_ID
-              ? `${ARTEFACT_HIERARCHY_DOJO_ID}.ilograph.yaml`
-              : id === ABSTRACTION_LAYERS_DOJO_ID
-                ? `${ABSTRACTION_LAYERS_DOJO_ID}.ilograph.yaml`
-                : id === BREAKPOINT_LAYOUTS_DOJO_ID
-                  ? `${BREAKPOINT_LAYOUTS_DOJO_ID}.ilograph.yaml`
-                  : fixture?.fileName ?? `${id}.ilograph.yaml`
+        ? `${PACKAGE_IMPORT_CHAIN_DOJO_ID}.ilograph.yaml`
+        : id === PACKAGE_TREE_DOJO_ID
+          ? `${PACKAGE_TREE_DOJO_ID}.ilograph.yaml`
+          : id === ARTEFACT_HIERARCHY_DOJO_ID
+            ? `${ARTEFACT_HIERARCHY_DOJO_ID}.ilograph.yaml`
+            : id === PACKAGE_MEMBER_MATRIX_DOJO_ID
+              ? `${PACKAGE_MEMBER_MATRIX_DOJO_ID}.ilograph.yaml`
+              : id === BREAKPOINT_LAYOUTS_DOJO_ID
+                ? `${BREAKPOINT_LAYOUTS_DOJO_ID}.ilograph.yaml`
+                : fixture?.fileName ?? `${id}.ilograph.yaml`
   await openOrActivateTab(
     { key: `dojo:${id}`, title, iconUrl: cubeIconUrl },
     () => loadDojoFixture(id),
   )
   if (
-    id === PACKAGE_NESTING_DOJO_ID ||
     id === PACKAGE_STACKING_DOJO_ID ||
+    id === CLASS_STACKING_DOJO_ID ||
+    id === CLASS_INHERITANCE_CHAIN_DOJO_ID ||
     id === PACKAGE_IMPORT_CHAIN_DOJO_ID ||
     id === PACKAGE_TREE_DOJO_ID ||
     id === ARTEFACT_HIERARCHY_DOJO_ID ||
-    id === ABSTRACTION_LAYERS_DOJO_ID ||
+    id === PACKAGE_MEMBER_MATRIX_DOJO_ID ||
     id === BREAKPOINT_LAYOUTS_DOJO_ID
   ) {
     sidePanelTab.value = 'dojo'
@@ -2748,6 +3026,7 @@ function syncUrlFromState(): void {
   params.delete('tab')
   params.delete('perspective')
   params.delete('dojoDepth')
+  params.delete('dojoMembers')
 
   const key = activeTab.value?.key?.trim() ?? ''
   const rtWs = activeRuntimeWorkspace.value
@@ -2763,17 +3042,40 @@ function syncUrlFromState(): void {
   if (key && isRestorableTabKey(key)) params.set('tab', key)
   const perspective = perspectiveName.value?.trim() ?? ''
   if (perspective) params.set('perspective', perspective)
-  if (key === `dojo:${PACKAGE_NESTING_DOJO_ID}`) {
-    params.set('dojoDepth', String(clampDojoDepth(activeTab.value?.dojoDepth ?? dojoNestingDepth.value)))
-  }
   if (key === `dojo:${PACKAGE_STACKING_DOJO_ID}`) {
     params.set('dojoDepth', String(clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoStackCount.value)))
+  }
+  if (key === `dojo:${CLASS_STACKING_DOJO_ID}`) {
+    params.set('dojoDepth', String(clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoClassStackCount.value)))
+  }
+  if (key === `dojo:${CLASS_INHERITANCE_CHAIN_DOJO_ID}`) {
+    params.set('dojoDepth', String(clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoInheritanceChainCount.value)))
+  }
+  {
+    const innerClass = parsePackageInnerTabKey(key)
+    if (
+      innerClass &&
+      innerClass.parentKey === `dojo:${CLASS_STACKING_DOJO_ID}` &&
+      innerClass.packageId === CLASS_STACKING_INNER_PACKAGE_ID
+    ) {
+      params.set('dojoDepth', String(clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoClassStackCount.value)))
+    } else if (
+      innerClass &&
+      innerClass.parentKey === `dojo:${CLASS_INHERITANCE_CHAIN_DOJO_ID}` &&
+      innerClass.packageId === CLASS_INHERITANCE_INNER_PACKAGE_ID
+    ) {
+      params.set('dojoDepth', String(clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoInheritanceChainCount.value)))
+    }
   }
   if (key === `dojo:${PACKAGE_IMPORT_CHAIN_DOJO_ID}`) {
     params.set('dojoDepth', String(clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoImportChainLength.value)))
   }
   if (key === `dojo:${PACKAGE_TREE_DOJO_ID}`) {
     params.set('dojoDepth', String(clampDojoTreeCount(activeTab.value?.dojoDepth ?? dojoTreeCount.value)))
+  }
+  if (key === `dojo:${PACKAGE_MEMBER_MATRIX_DOJO_ID}`) {
+    params.set('dojoDepth', String(clampDojoMatrixPackages(activeTab.value?.dojoDepth ?? dojoMatrixPackageCount.value)))
+    params.set('dojoMembers', String(clampDojoMatrixArtefacts(activeTab.value?.dojoMemberCount ?? dojoMatrixArtefactCount.value)))
   }
 
   const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}${window.location.hash}`
@@ -4048,6 +4350,16 @@ const activeDojoId = computed(() => {
   return key.startsWith('dojo:') ? key.slice('dojo:'.length) : ''
 })
 
+const showClassStackingDojoControls = computed(
+  () => activeDojoId.value === CLASS_STACKING_DOJO_ID || isClassStackingPackageInnerKey(activeTab.value?.key),
+)
+
+const showClassInheritanceChainDojoControls = computed(
+  () =>
+    activeDojoId.value === CLASS_INHERITANCE_CHAIN_DOJO_ID ||
+    isClassInheritanceChainPackageInnerKey(activeTab.value?.key),
+)
+
 /** Edge control to show/hide the YAML side panel (not on Triton or source tabs). */
 const showYamlSideToggle = computed(
   () => !!activeTab.value && !activeSourceTab.value && activeTab.value.kind !== 'runtime',
@@ -4055,29 +4367,45 @@ const showYamlSideToggle = computed(
 
 const showDojoPanel = computed(
   () =>
-    activeDojoId.value === PACKAGE_NESTING_DOJO_ID ||
     activeDojoId.value === PACKAGE_STACKING_DOJO_ID ||
+    showClassStackingDojoControls.value ||
+    showClassInheritanceChainDojoControls.value ||
     activeDojoId.value === PACKAGE_IMPORT_CHAIN_DOJO_ID ||
     activeDojoId.value === PACKAGE_TREE_DOJO_ID ||
     activeDojoId.value === ARTEFACT_HIERARCHY_DOJO_ID ||
-    activeDojoId.value === ABSTRACTION_LAYERS_DOJO_ID ||
+    activeDojoId.value === PACKAGE_MEMBER_MATRIX_DOJO_ID ||
     activeDojoId.value === BREAKPOINT_LAYOUTS_DOJO_ID,
 )
 
 const abstractionDojoResizeForGraph = computed(() =>
-  activeTab.value?.key === `dojo:${ABSTRACTION_LAYERS_DOJO_ID}`
-    ? { linked: dojoAbstractionLinkedResize.value, nodeIds: ABSTRACTION_RESIZE_NODE_IDS }
-    : activeTab.value?.key === `dojo:${BREAKPOINT_LAYOUTS_DOJO_ID}`
-      ? { linked: dojoAbstractionLinkedResize.value, nodeIds: BREAKPOINT_LAYOUT_RESIZE_NODE_IDS }
+  activeTab.value?.key === `dojo:${BREAKPOINT_LAYOUTS_DOJO_ID}`
+    ? { linked: dojoAbstractionLinkedResize.value, nodeIds: BREAKPOINT_LAYOUT_RESIZE_NODE_IDS }
     : null,
 )
 
 watch(activeTabId, () => {
-  if (activeDojoId.value === PACKAGE_NESTING_DOJO_ID) {
-    dojoNestingDepth.value = clampDojoDepth(activeTab.value?.dojoDepth ?? dojoNestingDepth.value)
-  }
   if (activeDojoId.value === PACKAGE_STACKING_DOJO_ID) {
     dojoStackCount.value = clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoStackCount.value)
+  }
+  if (activeDojoId.value === CLASS_STACKING_DOJO_ID) {
+    dojoClassStackCount.value = clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoClassStackCount.value)
+  }
+  if (isClassStackingPackageInnerKey(activeTab.value?.key)) {
+    const innerParsed = parsePackageInnerTabKey(activeTab.value?.key)
+    const parentTab = innerParsed ? tabs.value.find((t) => t.key === innerParsed.parentKey) : undefined
+    const d = activeTab.value?.dojoDepth ?? parentTab?.dojoDepth ?? dojoClassStackCount.value
+    dojoClassStackCount.value = clampDojoStackCount(d)
+  }
+  if (activeDojoId.value === CLASS_INHERITANCE_CHAIN_DOJO_ID) {
+    dojoInheritanceChainCount.value = clampDojoStackCount(
+      activeTab.value?.dojoDepth ?? dojoInheritanceChainCount.value,
+    )
+  }
+  if (isClassInheritanceChainPackageInnerKey(activeTab.value?.key)) {
+    const innerParsed = parsePackageInnerTabKey(activeTab.value?.key)
+    const parentTab = innerParsed ? tabs.value.find((t) => t.key === innerParsed.parentKey) : undefined
+    const d = activeTab.value?.dojoDepth ?? parentTab?.dojoDepth ?? dojoInheritanceChainCount.value
+    dojoInheritanceChainCount.value = clampDojoStackCount(d)
   }
   if (activeDojoId.value === PACKAGE_IMPORT_CHAIN_DOJO_ID) {
     dojoImportChainLength.value = clampDojoStackCount(activeTab.value?.dojoDepth ?? dojoImportChainLength.value)
@@ -4086,20 +4414,12 @@ watch(activeTabId, () => {
   if (activeDojoId.value === PACKAGE_TREE_DOJO_ID) {
     dojoTreeCount.value = clampDojoTreeCount(activeTab.value?.dojoDepth ?? dojoTreeCount.value)
   }
-})
-
-watch(dojoNestingDepth, (depth, prev) => {
-  const normalized = clampDojoDepth(depth)
-  if (normalized !== depth) {
-    dojoNestingDepth.value = normalized
-    return
+  if (activeDojoId.value === PACKAGE_MEMBER_MATRIX_DOJO_ID) {
+    dojoMatrixPackageCount.value = clampDojoMatrixPackages(activeTab.value?.dojoDepth ?? dojoMatrixPackageCount.value)
+    dojoMatrixArtefactCount.value = clampDojoMatrixArtefacts(
+      activeTab.value?.dojoMemberCount ?? dojoMatrixArtefactCount.value,
+    )
   }
-  if (normalized === prev) return
-  if (activeDojoId.value !== PACKAGE_NESTING_DOJO_ID) return
-  void loadPackageNestingDojo(normalized).then(() => {
-    snapshotActiveTab()
-    syncUrlFromState()
-  })
 })
 
 watch(dojoStackCount, (count, prev) => {
@@ -4111,6 +4431,39 @@ watch(dojoStackCount, (count, prev) => {
   if (normalized === prev) return
   if (activeDojoId.value !== PACKAGE_STACKING_DOJO_ID) return
   void loadPackageStackingDojo(normalized).then(() => {
+    snapshotActiveTab()
+    syncUrlFromState()
+  })
+})
+
+watch(dojoClassStackCount, (count, prev) => {
+  const normalized = clampDojoStackCount(count)
+  if (normalized !== count) {
+    dojoClassStackCount.value = normalized
+    return
+  }
+  if (normalized === prev) return
+  const classStackingInteractive =
+    activeDojoId.value === CLASS_STACKING_DOJO_ID || isClassStackingPackageInnerKey(activeTab.value?.key)
+  if (!classStackingInteractive) return
+  void loadClassStackingDojo(normalized).then(() => {
+    snapshotActiveTab()
+    syncUrlFromState()
+  })
+})
+
+watch(dojoInheritanceChainCount, (count, prev) => {
+  const normalized = clampDojoStackCount(count)
+  if (normalized !== count) {
+    dojoInheritanceChainCount.value = normalized
+    return
+  }
+  if (normalized === prev) return
+  const interactive =
+    activeDojoId.value === CLASS_INHERITANCE_CHAIN_DOJO_ID ||
+    isClassInheritanceChainPackageInnerKey(activeTab.value?.key)
+  if (!interactive) return
+  void loadClassInheritanceChainDojo(normalized).then(() => {
     snapshotActiveTab()
     syncUrlFromState()
   })
@@ -4143,6 +4496,29 @@ watch(dojoTreeCount, (count, prev) => {
     syncUrlFromState()
   })
 })
+
+watch(
+  () => [dojoMatrixPackageCount.value, dojoMatrixArtefactCount.value] as const,
+  (next, prev) => {
+    const [p, a] = next
+    const pN = clampDojoMatrixPackages(p)
+    const aN = clampDojoMatrixArtefacts(a)
+    if (pN !== p) {
+      dojoMatrixPackageCount.value = pN
+      return
+    }
+    if (aN !== a) {
+      dojoMatrixArtefactCount.value = aN
+      return
+    }
+    if (prev !== undefined && prev[0] === pN && prev[1] === aN) return
+    if (activeDojoId.value !== PACKAGE_MEMBER_MATRIX_DOJO_ID) return
+    void loadPackageMemberMatrixDojo(pN, aN).then(() => {
+      snapshotActiveTab()
+      syncUrlFromState()
+    })
+  },
+)
 
 watch(dojoArtefactLayers, (layers, prev) => {
   const normalized = clampDojoArtefactLayers(layers)
@@ -4348,10 +4724,7 @@ onUnmounted(() => {
             :relation-type-visibility="relationTypeVisibility"
             :abstraction-dojo-resize="abstractionDojoResizeForGraph"
             :focus-relation-depth="focusRelationDepth"
-            :nodes-draggable="
-              activeTab?.key === `dojo:${ABSTRACTION_LAYERS_DOJO_ID}` ||
-              activeTab?.key === `dojo:${BREAKPOINT_LAYOUTS_DOJO_ID}`
-            "
+            :nodes-draggable="activeTab?.key === `dojo:${BREAKPOINT_LAYOUTS_DOJO_ID}`"
             @status="(s) => (status = s)"
             @link-action="onNodeLinkAction"
           />
@@ -4508,33 +4881,7 @@ onUnmounted(() => {
             class="side-panel-pane side-panel-pane--dojo"
             role="tabpanel"
           >
-            <div v-if="activeDojoId === PACKAGE_NESTING_DOJO_ID" class="dojo-panel">
-              <div class="dojo-panel__header">
-                <div class="dojo-panel__title">Package Nesting</div>
-                <div class="dojo-panel__meta">Depth {{ dojoNestingDepth }}</div>
-              </div>
-              <p class="dojo-panel__hint">
-                Increase the nesting depth to inspect how package-scope containers resize and how much readable space remains at each level.
-              </p>
-              <label class="dojo-panel__control" for="dojo-package-depth">
-                <span class="dojo-panel__label">Nesting depth</span>
-                <input
-                  id="dojo-package-depth"
-                  v-model.number="dojoNestingDepth"
-                  class="dojo-panel__slider"
-                  type="range"
-                  min="1"
-                  max="20"
-                  step="1"
-                  aria-label="Package nesting depth"
-                />
-              </label>
-              <div class="dojo-panel__scale">
-                <span>1</span>
-                <span>20</span>
-              </div>
-            </div>
-            <div v-else-if="activeDojoId === PACKAGE_STACKING_DOJO_ID" class="dojo-panel">
+            <div v-if="activeDojoId === PACKAGE_STACKING_DOJO_ID" class="dojo-panel">
               <div class="dojo-panel__header">
                 <div class="dojo-panel__title">Package Stacking</div>
                 <div class="dojo-panel__meta">Count {{ dojoStackCount }}</div>
@@ -4553,6 +4900,58 @@ onUnmounted(() => {
                   max="40"
                   step="1"
                   aria-label="Package stacking count"
+                />
+              </label>
+              <div class="dojo-panel__scale">
+                <span>1</span>
+                <span>40</span>
+              </div>
+            </div>
+            <div v-else-if="showClassStackingDojoControls" class="dojo-panel">
+              <div class="dojo-panel__header">
+                <div class="dojo-panel__title">Class Stacking</div>
+                <div class="dojo-panel__meta">Count {{ dojoClassStackCount }}</div>
+              </div>
+              <p class="dojo-panel__hint">
+                Increase the artefact count to inspect how independent objects, enums, and classes stack and reflow inside one Scala package (no edges between members).
+              </p>
+              <label class="dojo-panel__control" for="dojo-class-stack-count">
+                <span class="dojo-panel__label">Artefact count</span>
+                <input
+                  id="dojo-class-stack-count"
+                  v-model.number="dojoClassStackCount"
+                  class="dojo-panel__slider"
+                  type="range"
+                  min="1"
+                  max="40"
+                  step="1"
+                  aria-label="Class stacking count"
+                />
+              </label>
+              <div class="dojo-panel__scale">
+                <span>1</span>
+                <span>40</span>
+              </div>
+            </div>
+            <div v-else-if="showClassInheritanceChainDojoControls" class="dojo-panel">
+              <div class="dojo-panel__header">
+                <div class="dojo-panel__title">Class inheritance chain</div>
+                <div class="dojo-panel__meta">Count {{ dojoInheritanceChainCount }}</div>
+              </div>
+              <p class="dojo-panel__hint">
+                One Scala package with a linear <code>extends</code> chain (concrete types on the left, root trait on the right). Increase the count to stress inner inheritance columns and edge routing.
+              </p>
+              <label class="dojo-panel__control" for="dojo-class-inheritance-chain-count">
+                <span class="dojo-panel__label">Artefact count</span>
+                <input
+                  id="dojo-class-inheritance-chain-count"
+                  v-model.number="dojoInheritanceChainCount"
+                  class="dojo-panel__slider"
+                  type="range"
+                  min="1"
+                  max="40"
+                  step="1"
+                  aria-label="Class inheritance chain artefact count"
                 />
               </label>
               <div class="dojo-panel__scale">
@@ -4657,30 +5056,56 @@ onUnmounted(() => {
                 <span>20</span>
               </div>
             </div>
-            <div v-else-if="activeDojoId === ABSTRACTION_LAYERS_DOJO_ID" class="dojo-panel">
+            <div v-else-if="activeDojoId === PACKAGE_MEMBER_MATRIX_DOJO_ID" class="dojo-panel">
               <div class="dojo-panel__header">
-                <div class="dojo-panel__title">Abstraction layers</div>
-                <div class="dojo-panel__meta">Resize + layout parity</div>
+                <div class="dojo-panel__title">Package × members matrix</div>
+                <div class="dojo-panel__meta">
+                  {{ dojoMatrixPackageCount }} package{{ dojoMatrixPackageCount !== 1 ? 's' : '' }}, {{ dojoMatrixArtefactCount }} artefact{{
+                    dojoMatrixArtefactCount !== 1 ? 's' : ''
+                  }}
+                  each
+                </div>
               </div>
               <p class="dojo-panel__hint">
-                Each tile is a different Triton abstraction (general box, project, module, package, Scala artefact) with
-                the same subtitle + metric strip affordances. Drag the blue handles to resize; compare how inner layout
-                behaves at different sizes.
+                Packages form a linear <code>imports</code> chain (dependency columns). Every package gets the same number of
+                inner Scala members (objects, enums, classes) with a small inner relation graph: a mixed
+                <code>imports</code>/<code>extends</code>/<code>with</code> chain, optional <code>creates</code> and extra
+                <code>imports</code> when there are enough members — use this to tune layer drill and inner relation lanes.
               </p>
-              <label class="dojo-panel__control dojo-panel__control--switch" for="dojo-abstraction-linked-resize">
-                <span class="dojo-panel__label">Linked resize</span>
+              <label class="dojo-panel__control" for="dojo-matrix-package-count">
+                <span class="dojo-panel__label">Packages</span>
                 <input
-                  id="dojo-abstraction-linked-resize"
-                  v-model="dojoAbstractionLinkedResize"
-                  class="dojo-panel__checkbox"
-                  type="checkbox"
-                  aria-label="When enabled, resizing one box updates every abstraction demo box to the same width and height"
+                  id="dojo-matrix-package-count"
+                  v-model.number="dojoMatrixPackageCount"
+                  class="dojo-panel__slider"
+                  type="range"
+                  min="1"
+                  max="5"
+                  step="1"
+                  aria-label="Number of packages in the matrix dojo"
                 />
               </label>
-              <p class="dojo-panel__hint dojo-panel__hint--compact">
-                Off: each handle only resizes its own box. On: dragging any handle applies the new size to all five
-                boxes (positions stay put).
-              </p>
+              <div class="dojo-panel__scale">
+                <span>1</span>
+                <span>5</span>
+              </div>
+              <label class="dojo-panel__control" for="dojo-matrix-artefact-count">
+                <span class="dojo-panel__label">Scala artefacts per package</span>
+                <input
+                  id="dojo-matrix-artefact-count"
+                  v-model.number="dojoMatrixArtefactCount"
+                  class="dojo-panel__slider"
+                  type="range"
+                  min="0"
+                  max="10"
+                  step="1"
+                  aria-label="Number of Scala artefacts inside each package"
+                />
+              </label>
+              <div class="dojo-panel__scale">
+                <span>0</span>
+                <span>10</span>
+              </div>
             </div>
             <div v-else-if="activeDojoId === BREAKPOINT_LAYOUTS_DOJO_ID" class="dojo-panel">
               <div class="dojo-panel__header">
@@ -4702,8 +5127,7 @@ onUnmounted(() => {
                 />
               </label>
               <p class="dojo-panel__hint dojo-panel__hint--compact">
-                Uses the same resize handles as the abstraction dojo. Off: resize one sample. On: apply the dragged
-                size to every breakpoint sample while positions stay fixed.
+                Off: resize one sample. On: apply the dragged size to every breakpoint sample while positions stay fixed.
               </p>
             </div>
           </div>

@@ -104,7 +104,8 @@
 .project-box--superslim-layout .lang-icon-slot,
 .package-box--superslim-layout .lang-icon-slot,
 .general-focused-box--superslim-layout .general-focused-box__header-icon,
-.diagram-leaf-box--superslim-layout .diagram-leaf-box__icon {
+.diagram-leaf-box--superslim-layout .diagram-leaf-box__icon,
+.diagram-leaf-box--superflat-layout .diagram-leaf-box__icon {
   flex: 0 0 40px !important;
   width: 40px !important;
   min-width: 40px !important;
@@ -120,7 +121,8 @@
 .package-box--superslim-layout .lang-icon-slot svg,
 .general-focused-box--superslim-layout .general-focused-box__header-icon .lang-svg,
 .general-focused-box--superslim-layout .general-focused-box__header-icon svg,
-.diagram-leaf-box--superslim-layout .diagram-leaf-box__icon-img {
+.diagram-leaf-box--superslim-layout .diagram-leaf-box__icon-img,
+.diagram-leaf-box--superflat-layout .diagram-leaf-box__icon-img {
   flex: 0 0 40px !important;
   width: 40px !important;
   min-width: 40px !important;
@@ -129,6 +131,18 @@
   min-height: 40px !important;
   max-height: 40px !important;
   object-fit: contain !important;
+}
+
+.diagram-leaf-box--superslim-layout .diagram-leaf-box__icon .kind-badge,
+.diagram-leaf-box--superflat-layout .diagram-leaf-box__icon .kind-badge {
+  flex: 0 0 40px !important;
+  width: 40px !important;
+  min-width: 40px !important;
+  max-width: 40px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  max-height: 40px !important;
+  font-size: clamp(0.65rem, 2.5cqh, 0.95rem) !important;
 }
 
 .triton-vertical-subtitle-rail.triton-vertical-subtitle-rail {

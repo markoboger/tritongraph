@@ -40,6 +40,7 @@ import BoxCompartments from '../common/BoxCompartments.vue'
 import type { BoxCompartment } from '../../diagram/boxCompartments'
 import { shouldHideEdgeForRelationFilter } from '../../graph/relationVisibility'
 import { useInnerDiagramScroll } from './useInnerDiagramScroll'
+import { useInnerArtefactVerticalFit } from './useInnerArtefactVerticalFit'
 import PackageInnerDiagram from './PackageInnerDiagram.vue'
 import { useInnerArtefactRouting } from './useInnerArtefactRouting'
 import { useInnerArtefactEdges } from './useInnerArtefactEdges'
@@ -433,7 +434,7 @@ const {
   innerVScrollRatio,
   innerVThumbStyle,
   innerHThumbStyle,
-  updateInnerScrollMetrics,
+  updateInnerScrollMetrics: updateInnerScrollMetricsBare,
   onInnerWheel,
   onInnerPointerDown,
   onInnerHSliderInput,
@@ -443,6 +444,30 @@ const {
   containerRef: innerArtefactDiagramRef,
   colsRef: innerDiagramColsRef,
 })
+
+const { scheduleApplyInnerArtefactVerticalFit } = useInnerArtefactVerticalFit({
+  colsRef: innerDiagramColsRef,
+  containerRef: innerArtefactDiagramRef,
+  enabled: () =>
+    props.focused &&
+    !innerArtefactFocusActive.value &&
+    visibleInnerArtefacts.value.length > 0,
+  columns: () => innerArtefactLayerColumns.value,
+  labelForArtId: (id) => innerArtefactCell(id)?.name,
+  onAfterSlotHeights: () => {
+    void nextTick(async () => {
+      updateInnerScrollMetricsBare()
+      await nextTick()
+      if (!innerVScrollNeeded.value) resetInnerScroll()
+    })
+  },
+})
+
+function refreshInnerArtefactDiagramGeometry() {
+  scheduleApplyInnerArtefactVerticalFit()
+  updateInnerScrollMetricsBare()
+}
+
 function bindInnerArtefactDiagramEl(el: unknown) {
   innerArtefactDiagramRef.value = el instanceof HTMLElement ? el : null
 }
@@ -508,7 +533,7 @@ const {
   routedCrossPackageBridgeRelations: () => routedCrossPackageBridgeRelations.value,
   crossPackageBoundaryStubRelations: () => crossPackageBoundaryStubRelations.value,
   innerArtefactRelationList: () => innerArtefactRelationList.value,
-  updateScrollMetrics: updateInnerScrollMetrics,
+  updateScrollMetrics: refreshInnerArtefactDiagramGeometry,
 })
 
 watch(innerArtefactDiagramRef, observeInnerArtefactDiagram)
@@ -563,7 +588,7 @@ watch(
   { deep: true },
 )
 
-watch(innerDiagramColsRef, () => void nextTick(() => updateInnerScrollMetrics()))
+watch(innerDiagramColsRef, () => void nextTick(() => refreshInnerArtefactDiagramGeometry()))
 
 watch([innerArtefactLayerColumns, () => props.focusedInnerArtefactId], () => {
   resetInnerScroll()
@@ -1217,7 +1242,8 @@ function onHeaderDblClick() {
 }
 
 .package-box--has-metrics.package-box--metrics-break {
-  padding-top: clamp(36px, 7.5vmin, 52px);
+  /** `cqh` caps top reserve when the node is shallow so title + subtitle stay above `overflow:hidden`. */
+  padding-top: clamp(22px, min(7.5vmin, 40cqh), 52px);
 }
 /**
  * Tight (narrow vertical) boxes: coverage bar lives in the top-right corner, but reserving
@@ -1287,7 +1313,7 @@ function onHeaderDblClick() {
   top: 17px;
 }
 .package-box--has-metrics.package-box--metrics-break .package-box__tools {
-  top: 40px;
+  top: clamp(26px, 36cqh, 44px);
 }
 
 /**
@@ -1393,7 +1419,7 @@ function onHeaderDblClick() {
  * break); reserve vertical space for the floating strip instead of in-flow stacking.
  */
 .package-box--has-metrics.package-box--metrics-break.package-box--superslim-layout {
-  padding-top: clamp(36px, 7.5vmin, 52px);
+  padding-top: clamp(22px, min(7.5vmin, 40cqh), 52px);
 }
 
 /**
@@ -1479,8 +1505,8 @@ function onHeaderDblClick() {
 }
 
 .package-box--has-metrics.package-box--flat-layout {
-  padding-top: 12px;
-  padding-bottom: 2px;
+  padding-top: clamp(6px, min(12px, 12cqh), 12px);
+  padding-bottom: clamp(1px, 2cqh, 2px);
 }
 
 .package-box--flat-layout .lang-icon-slot {
@@ -1495,11 +1521,24 @@ function onHeaderDblClick() {
   margin-right: 8px;
   justify-content: center;
 }
+
+.package-box--has-metrics.package-box--flat-layout .lang-icon-slot {
+  height: clamp(32px, 38cqh, 40px);
+  min-height: 32px;
+  max-height: 40px;
+}
+
 .package-box--flat-layout .lang-icon-slot :deep(.lang-svg) {
   height: 40px;
   max-height: 40px;
   max-width: 40px;
   width: auto;
+}
+
+.package-box--has-metrics.package-box--flat-layout .lang-icon-slot :deep(.lang-svg) {
+  height: clamp(28px, 34cqh, 40px);
+  max-height: 40px;
+  max-width: 40px;
 }
 .package-box--flat-layout .package-box__body {
   flex: 1 1 0;

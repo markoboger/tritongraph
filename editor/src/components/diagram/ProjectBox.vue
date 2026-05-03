@@ -593,7 +593,7 @@ const { editing, draftLabel, draftDescription, startEditing, commitEdit, cancelE
 }
 
 .project-box--has-metrics.project-box--metrics-break {
-  padding-top: clamp(36px, 7.5vmin, 52px);
+  padding-top: clamp(22px, min(7.5vmin, 40cqh), 52px);
 }
 
 .project-box__metrics {
@@ -686,8 +686,8 @@ const { editing, draftLabel, draftDescription, startEditing, commitEdit, cancelE
 }
 
 .project-box--has-metrics.project-box--flat-layout {
-  padding-top: 12px;
-  padding-bottom: 2px;
+  padding-top: clamp(6px, min(12px, 12cqh), 12px);
+  padding-bottom: clamp(1px, 2cqh, 2px);
 }
 
 .project-box--flat-layout .lang-icon-slot {
@@ -703,12 +703,25 @@ const { editing, draftLabel, draftDescription, startEditing, commitEdit, cancelE
   justify-content: center;
 }
 
+.project-box--has-metrics.project-box--flat-layout .lang-icon-slot {
+  height: clamp(32px, 38cqh, 40px);
+  min-height: 32px;
+  max-height: 40px;
+}
+
 .project-box--flat-layout .lang-icon-slot :deep(.lang-svg),
 .project-box--flat-layout .lang-icon-slot :deep(svg) {
   height: 40px;
   max-height: 40px;
   max-width: 40px;
   width: auto;
+}
+
+.project-box--has-metrics.project-box--flat-layout .lang-icon-slot :deep(.lang-svg),
+.project-box--has-metrics.project-box--flat-layout .lang-icon-slot :deep(svg) {
+  height: clamp(28px, 34cqh, 40px);
+  max-height: 40px;
+  max-width: 40px;
 }
 
 .project-box--flat-layout .project-box__body {
@@ -868,7 +881,7 @@ const { editing, draftLabel, draftDescription, startEditing, commitEdit, cancelE
 
 /** Superslim: keep metric strip + tools in the top-right corner; reserve the same top band as non-superslim break. */
 .project-box--has-metrics.project-box--metrics-break.project-box--superslim-layout {
-  padding-top: clamp(36px, 7.5vmin, 52px);
+  padding-top: clamp(22px, min(7.5vmin, 40cqh), 52px);
 }
 
 .project-box--slim-layout:not(.project-box--superslim-layout) .project-box__header {
@@ -939,7 +952,7 @@ const { editing, draftLabel, draftDescription, startEditing, commitEdit, cancelE
   top: 17px;
 }
 .project-box--has-metrics.project-box--metrics-break .project-box__tools {
-  top: 40px;
+  top: clamp(26px, 36cqh, 44px);
 }
 .project-box--pinned:not(.project-box--focused) {
   box-shadow:

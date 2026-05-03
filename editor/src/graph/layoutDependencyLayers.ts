@@ -1,15 +1,26 @@
 import {
+  DIAGRAM_ARTEFACT_PREFERRED_HEIGHT_PX,
+  DIAGRAM_ARTEFACT_PREFERRED_WIDTH_PX,
+  DIAGRAM_LEAF_MIN_HEIGHT_PX,
+  DIAGRAM_LEAF_MIN_WIDTH_PX,
+} from '../components/diagram/boxChromeLayout'
+import {
+  innerArtefactColumnPressure01,
+  innerArtefactEdgeDensityPressure01,
+} from '../components/diagram/innerArtefactRelationLayout'
+import {
   AGG_TARGET_HANDLE,
   aggregateSourceHandleId,
   aggregateTargetHandleId,
   DEP_SOURCE_HANDLE,
 } from './handles'
+import { assignInnerArtefactLayers } from './innerArtefactLayerLayout'
 import { isLayerDrillBoxNode, isLeafBoxNode } from './nodeKinds'
 import { edgeContributesToClasspathDepth } from './relationKinds'
 
 /** Top + bottom gutter inside each layout region for smoothstep edges that skip ≥1 depth column. */
 const CROSS_LAYER_LANE_MAX = 28
-const MIN_STACK_BAND = 44
+const MIN_STACK_BAND = DIAGRAM_LEAF_MIN_HEIGHT_PX
 
 /**
  * Layout: columns = dependency depth. Each column gets an equal share of viewport width;
@@ -19,8 +30,8 @@ const MIN_STACK_BAND = 44
 
 const MODULE_W = 200
 const MODULE_H = 72
-const LEAF_MIN_W = 44
-const LEAF_MIN_H = 40
+const LEAF_MIN_W = DIAGRAM_LEAF_MIN_WIDTH_PX
+const LEAF_MIN_H = DIAGRAM_LEAF_MIN_HEIGHT_PX
 const GROUP_MIN_W = 220
 const GROUP_MIN_H = 160
 
@@ -81,17 +92,24 @@ function nodeIsCrossPackagePreview(node: { type?: string; data?: unknown }): boo
 /**
  * Fit natural column heights into `avail` vertical pixels with per-row minimums, keeping taller
  * rows proportionally larger when possible.
+ *
+ * Used by dependency-column layout for stacked groups and by {@link useInnerArtefactVerticalFit}
+ * for Scala artefact stacks inside package boxes.
  */
-function distributeHeightsToBand(avail: number, natural: readonly number[], mins: readonly number[]): number[] {
+export function distributeHeightsToBand(avail: number, natural: readonly number[], mins: readonly number[]): number[] {
   const n = natural.length
   if (!n) return []
   if (!Number.isFinite(avail) || avail <= 0) {
-    return Array.from({ length: n }, () => 32)
+    return Array.from({ length: n }, (_, i) => mins[i] ?? 0)
   }
   const sumMin = mins.reduce((a, b) => a + b, 0)
+  /**
+   * When the band cannot fit every row at its floor, never shrink below `mins` (equal split
+   * across rows used to violate floors — e.g. inner artefact slots at 33px with a 40px logo).
+   * Callers rely on overflow / scroll when the sum exceeds `avail`.
+   */
   if (avail <= sumMin) {
-    const h = Math.max(28, Math.floor(avail / n))
-    return Array.from({ length: n }, () => h)
+    return Array.from({ length: n }, (_, i) => mins[i] ?? 0)
   }
   const flex = natural.map((h, i) => Math.max(0, h - mins[i]!))
   const sumFlex = flex.reduce((a, b) => a + b, 0)
@@ -263,15 +281,23 @@ function sizeOf(n: {
   return { w: MODULE_W, h: MODULE_H }
 }
 
-function preferredLeafHeight(n: { data?: unknown }): number {
+function isArtefactLeafNode(n: { type?: unknown }): boolean {
+  return String(n.type ?? '') === 'artefact'
+}
+
+function preferredLeafHeight(n: { type?: unknown; data?: unknown }): number {
   const raw =
     n.data && typeof n.data === 'object'
       ? (n.data as Record<string, unknown>).preferredLeafHeight
       : undefined
-  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : MODULE_H
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return raw
+  return isArtefactLeafNode(n) ? DIAGRAM_ARTEFACT_PREFERRED_HEIGHT_PX : MODULE_H
 }
 
-function preferredLeafWidth(n: { data?: unknown }): number {
+function preferredLeafWidth(n: { type?: unknown; data?: unknown }): number {
+  if (isArtefactLeafNode(n)) {
+    return explicitPreferredLeafWidth(n) ?? DIAGRAM_ARTEFACT_PREFERRED_WIDTH_PX
+  }
   return explicitPreferredLeafWidth(n) ?? MODULE_W
 }
 
@@ -427,6 +453,59 @@ export function relationLaneGutters(
   return gutters
 }
 
+/** Min relation-lane width under viewport pressure (still wide enough for a smoothstep edge + label). */
+export const RELATION_LANE_MIN_PX = 44
+
+/**
+ * Compress {@link relationLaneGutters} so the **lane band** + a per-column floor track does not
+ * exceed `availableBandW`. Each gutter is scaled toward {@link RELATION_LANE_MIN_PX} only while
+ * the requested band overshoots; gutters never grow above their preferred value.
+ *
+ * Why this exists: `relationLaneWidthForBoundary` is **column-pressure-blind** — a long
+ * `package-import-chain` (each pair has 1 import edge → 128 px gutter) requests gutters totaling
+ * many hundreds of pixels regardless of viewport width, so column tracks collapse to the floor
+ * (`LEAF_MIN_W ≈ 44 px`) and packages render unreadably narrow. With this helper, lanes yield
+ * **first** (down to {@link RELATION_LANE_MIN_PX}) so artefact / package tracks keep enough
+ * pixels for body chrome before the layout has to overflow into pannable territory.
+ */
+export function compressRelationLaneGuttersForBand(
+  baseGutters: readonly number[],
+  numCols: number,
+  availableBandW: number,
+  opts: { minLanePx?: number; minColumnInnerW?: number; colInset?: number } = {},
+): number[] {
+  if (baseGutters.length === 0) return []
+  const minLane = Math.max(0, Number(opts.minLanePx ?? RELATION_LANE_MIN_PX))
+  const minInner = Math.max(0, Number(opts.minColumnInnerW ?? LEAF_MIN_W))
+  const inset = Math.max(0, Number(opts.colInset ?? COL_INSET))
+  const cols = Math.max(1, Number(numCols) || 1)
+  const minTracksSum = cols * (minInner + 2 * inset)
+  const minLanesSum = Math.max(0, cols - 1) * minLane
+  const sumBase = baseGutters.reduce((a, b) => a + b, 0)
+  if (!Number.isFinite(availableBandW) || availableBandW <= 0) return baseGutters.slice()
+  const roomForLanes = Math.max(0, availableBandW - minTracksSum)
+  if (sumBase <= roomForLanes) return baseGutters.slice()
+  const target = Math.max(minLanesSum, roomForLanes)
+  if (sumBase <= 0) return baseGutters.slice()
+  const scale = target / sumBase
+  const compressed = baseGutters.map((g) => Math.max(minLane, Math.round(g * scale)))
+  let s = compressed.reduce((a, b) => a + b, 0)
+  while (s > target) {
+    let pick = -1
+    let best = -1
+    for (let i = 0; i < compressed.length; i++) {
+      if (compressed[i]! > minLane && compressed[i]! > best) {
+        best = compressed[i]!
+        pick = i
+      }
+    }
+    if (pick === -1) break
+    compressed[pick] = compressed[pick]! - 1
+    s -= 1
+  }
+  return compressed
+}
+
 function nestDepth(id: string, byId: Map<string, { parentNode?: string }>): number {
   let d = 0
   let cur = byId.get(id)
@@ -569,8 +648,15 @@ function layoutOneParent(
 
   const originX = parentId ? INNER_PAD_X : MARGIN_X
   const numCols = maxD + 1
-  const columnGutters = relationLaneGutters(maxD, depths, internal)
+  const baseColumnGutters = relationLaneGutters(maxD, depths, internal)
   const usableW = Math.max(numCols * (LEAF_MIN_W + 2 * COL_INSET), viewport.width - originX - MARGIN_X)
+  /**
+   * Pressure-aware narrowing: when the chain of `relationLaneWidthForBoundary`-sized gutters
+   * exceeds the band remaining after each column reserves its `LEAF_MIN_W + insets` track,
+   * lanes shrink toward {@link RELATION_LANE_MIN_PX} so columns keep readable widths instead of
+   * collapsing to the floor (regression seen on `package-import-chain` with chain length ≥ 6).
+   */
+  const columnGutters = compressRelationLaneGuttersForBand(baseColumnGutters, numCols, usableW)
   const columnInner = distributeColumnInners(maxD, usableW, columnGutters)
 
   let xCursor = originX
@@ -619,9 +705,20 @@ function layoutOneParent(
     const slotHeights: number[] = visibleLayerNodes.map((node, i) => {
       if (!isLeafBoxNode(node)) return childSizes[i]!.h
       const preferredH = childSizes[i]!.h
-      if (nodeIsCrossPackagePreview(node)) return Math.max(leafH, preferredH)
-      if (nodeIsRelationFocusPackage(node)) return leafH
-      return preferredH > MODULE_H ? Math.max(leafH, preferredH) : leafH
+      let h: number
+      if (nodeIsCrossPackagePreview(node)) h = Math.max(leafH, preferredH)
+      else if (nodeIsRelationFocusPackage(node)) h = leafH
+      else if (preferredH > MODULE_H) h = Math.max(leafH, preferredH)
+      else h = leafH
+      if (isArtefactLeafNode(node)) {
+        const yaml =
+          node.data && typeof node.data === 'object'
+            ? (node.data as Record<string, unknown>).preferredLeafHeight
+            : undefined
+        const hasYaml = typeof yaml === 'number' && Number.isFinite(yaml) && yaml > 0
+        if (!hasYaml) h = Math.min(h, DIAGRAM_ARTEFACT_PREFERRED_HEIGHT_PX)
+      }
+      return Math.max(LEAF_MIN_H, h)
     })
     if (numLeaves === 0 && n > 0) {
       const sumSlots = slotHeights.reduce((a, b) => a + b, 0) + totalGaps
@@ -645,11 +742,17 @@ function layoutOneParent(
         yCursor += slotHeights[i]! + stackGap
         continue
       }
-      const x = xCursor + COL_INSET
-      const y = yCursor
       const isLeaf = isLeafBoxNode(node)
       const childH = slotHeights[i]!
-      const childW = isLeaf ? boxW : Math.max(boxW, childSizes[i]!.w)
+      let childW = isLeaf ? boxW : Math.max(boxW, childSizes[i]!.w)
+      if (isLeaf && isArtefactLeafNode(node)) {
+        const prefW = explicitPreferredLeafWidth(node) ?? DIAGRAM_ARTEFACT_PREFERRED_WIDTH_PX
+        childW = Math.max(LEAF_MIN_W, Math.min(boxW, prefW))
+      }
+      const baseX = xCursor + COL_INSET
+      const x =
+        isLeaf && isArtefactLeafNode(node) && childW < boxW ? baseX + (boxW - childW) / 2 : baseX
+      const y = yCursor
 
       const prevStyle = out[idx].style && typeof out[idx].style === 'object' ? { ...out[idx].style } : {}
       out[idx] = {
@@ -774,6 +877,41 @@ export type LayerDrillLayoutRect = {
   style?: Record<string, string | number>
 }
 
+/**
+ * When layer drill focuses a **package**, other visible package cards in the same region still
+ * receive column geometry sized for their natural footprint; shrink them **horizontally only**
+ * and recenter inside the layout cell so the focused package dominates (see
+ * `GraphDrillIn.applyLayerDrill`).
+ *
+ * The two axes carry different pressures during drill: the focused package competes with peers
+ * for **horizontal** track space (it grows wide via `preferredFocusWidth`), while it grows
+ * **vertically** inside its own diagram band — peers never have to give up vertical room. So
+ * peers keep their full preferred height regardless of pressure; only width responds to the
+ * outer-drill pressure ramp.
+ */
+const LAYER_DRILL_UNFOCUSED_PACKAGE_W_SCALE = 0.68
+
+export function shrinkLayerDrillUnfocusedPackageRect(
+  rect: LayerDrillLayoutRect,
+  outerDrillPressure01 = 0,
+): LayerDrillLayoutRect {
+  const p = Math.min(1, Math.max(0, Number(outerDrillPressure01) || 0))
+  const wScale = LAYER_DRILL_UNFOCUSED_PACKAGE_W_SCALE - p * 0.2
+  let nw = Math.max(LEAF_MIN_W, Math.round(rect.width * wScale))
+  nw = Math.min(nw, rect.width)
+  /** Height belongs to the peer — leave it (and `position.y`) untouched at the preferred footprint. */
+  const nh = rect.height
+  const nx = Math.round(rect.position.x + (rect.width - nw) / 2)
+  const ny = rect.position.y
+  const prevStyle = rect.style && typeof rect.style === 'object' ? { ...rect.style } : {}
+  return {
+    position: { x: nx, y: ny },
+    width: nw,
+    height: nh,
+    style: { ...prevStyle, width: `${nw}px`, height: `${nh}px` },
+  }
+}
+
 type PackageContentLike = {
   label?: unknown
   subtitle?: unknown
@@ -821,6 +959,61 @@ export function packageContentWeight(data: PackageContentLike | undefined): numb
   return Math.max(1, 1 + chromeWeight + packageWeight + artefactWeight + relationWeight + longNameWeight)
 }
 
+/**
+ * Per-column compact width for an inner-artefact stack in the focused package: enough for the
+ * 40px logo + a short rotated/superslim title, **not** the full ~220px max-width each column
+ * can grow to under flex (columns are responsive — they fill the host width via `flex: 1 1 0`,
+ * so the focus host does not need to budget the maximum per column).
+ */
+const FOCUS_INNER_ARTEFACT_COLUMN_W_PX = 64
+/** Default per-gap width between inner-artefact columns. */
+const FOCUS_INNER_ARTEFACT_GAP_W_PX = 28
+/** Per-gap width when inner-member relations are drawn (compressed lane — actual gap is set by {@link innerArtefactRelationLaneGapPx}). */
+const FOCUS_INNER_ARTEFACT_RELATION_GAP_W_PX = 48
+/** Lateral chrome (port lanes, scroll rails, host padding) included on top of the column band. */
+const FOCUS_INNER_CHROME_LATERAL_PX = 80
+/** Floor for a focused package whose hosting node renders inner artefacts. */
+const FOCUS_INNER_ARTEFACT_MIN_W_PX = 380
+/** Cap for the inner-artefact contribution so chained members never request near-viewport widths. */
+const FOCUS_INNER_ARTEFACT_MAX_W_PX = 1200
+/** Floor for a focused package whose hosting node renders inner sub-packages. */
+const FOCUS_INNER_PACKAGE_MIN_W_PX = 540
+
+/**
+ * Filter inner relations down to **member↔member** edges (drop foreign / cross-package endpoints).
+ * Same membership rule as {@link assignInnerArtefactLayers} and {@link packageInnerLayoutPressure01ForOuterDrill}.
+ */
+function memberOnlyInnerEdges(
+  innerArtefacts: unknown,
+  innerArtefactRelations: unknown,
+): { ids: string[]; edges: { from: string; to: string }[] } {
+  const ids = Array.isArray(innerArtefacts)
+    ? innerArtefacts
+        .map((a) => String((a as Record<string, unknown> | undefined)?.id ?? '').trim())
+        .filter((id) => id.length > 0)
+    : []
+  const idSet = new Set(ids)
+  const edges = Array.isArray(innerArtefactRelations)
+    ? (innerArtefactRelations as readonly unknown[])
+        .map((r) => {
+          const rec = r && typeof r === 'object' ? (r as Record<string, unknown>) : {}
+          return { from: String(rec.from ?? '').trim(), to: String(rec.to ?? '').trim() }
+        })
+        .filter((r) => r.from && r.to && idSet.has(r.from) && idSet.has(r.to))
+    : []
+  return { ids, edges }
+}
+
+/**
+ * Preferred horizontal pixels for a focused package node so its inner-artefact / inner-package
+ * diagram has room to breathe **without** stretching to the viewport.
+ *
+ * Sizing is driven by the **actual column count** ({@link assignInnerArtefactLayers}) instead of
+ * the raw artefact count: chained members produce many narrow columns, independent members all
+ * stack into one column. Cross-package outer edges (`crossArtefactRelations`) are intentionally
+ * excluded from inner gap budgeting — they are routed through the package boundary, not between
+ * inner columns.
+ */
 export function preferredPackageFocusWidth(data: PackageContentLike | undefined): number | undefined {
   if (!data) return undefined
   const innerPackageCount = arrayLength(data.innerPackages)
@@ -828,13 +1021,74 @@ export function preferredPackageFocusWidth(data: PackageContentLike | undefined)
   if (!innerPackageCount && !innerArtefactCount) return undefined
 
   const longestArtefactName = maxArtefactNameLength(data.innerArtefacts)
-  const relationCount = arrayLength(data.innerArtefactRelations) + arrayLength(data.crossArtefactRelations)
-  const relationLaneWidth = relationCount > 0 ? Math.min(720, Math.max(120, relationCount * 18)) : 0
-  const artefactWidth = innerArtefactCount
-    ? Math.max(720, innerArtefactCount * 170 + relationLaneWidth + Math.max(0, longestArtefactName - 14) * 10)
-    : 0
-  const packageWidth = innerPackageCount ? Math.max(760, innerPackageCount * 220 + relationLaneWidth) : 0
+
+  let artefactWidth = 0
+  if (innerArtefactCount) {
+    const { ids, edges } = memberOnlyInnerEdges(data.innerArtefacts, data.innerArtefactRelations)
+    const layers = ids.length ? assignInnerArtefactLayers(ids, edges) : []
+    /**
+     * `assignInnerArtefactLayers` may emit empty buckets (back-edges push members across many
+     * empty intermediate layers). Width should follow the **occupied** column count, capped by
+     * the actual artefact count — we never need more columns than members.
+     */
+    const occupiedLayers = layers.reduce((acc, layer) => acc + (layer.length ? 1 : 0), 0)
+    const columnCount = Math.max(1, Math.min(ids.length || 1, occupiedLayers || 1))
+    const hasInnerRelations = edges.length > 0
+    const gapW = hasInnerRelations ? FOCUS_INNER_ARTEFACT_RELATION_GAP_W_PX : FOCUS_INNER_ARTEFACT_GAP_W_PX
+    const longNameBoost = Math.min(24, Math.max(0, longestArtefactName - 14) * 2)
+    const columnsBand = columnCount * (FOCUS_INNER_ARTEFACT_COLUMN_W_PX + longNameBoost) + Math.max(0, columnCount - 1) * gapW
+    const raw = Math.max(FOCUS_INNER_ARTEFACT_MIN_W_PX, columnsBand + FOCUS_INNER_CHROME_LATERAL_PX)
+    artefactWidth = Math.min(FOCUS_INNER_ARTEFACT_MAX_W_PX, raw)
+  }
+
+  let packageWidth = 0
+  if (innerPackageCount) {
+    /** Sub-packages get a generous per-tile target since their inner chrome is full module-card sized. */
+    const innerEdgeCount = arrayLength(data.innerArtefactRelations)
+    const subPackageRelationGap = innerEdgeCount > 0 ? Math.min(160, 64 + innerEdgeCount * 8) : 36
+    const tilesBand = innerPackageCount * 200 + Math.max(0, innerPackageCount - 1) * subPackageRelationGap
+    packageWidth = Math.max(FOCUS_INNER_PACKAGE_MIN_W_PX, tilesBand + FOCUS_INNER_CHROME_LATERAL_PX)
+  }
+
   return Math.min(6400, Math.max(artefactWidth, packageWidth))
+}
+
+/**
+ * Maps the focused package's **inner** artefact columns + inner edges to [0, 1] pressure so
+ * outer layer drill can compress gutters / peers when the inner diagram is crowded — same
+ * metaphor as {@link innerArtefactRelationLaneGapPx}.
+ */
+export function packageInnerLayoutPressure01ForOuterDrill(
+  innerArtefacts: readonly { id?: string }[] | undefined,
+  innerRelations: readonly { from?: string; to?: string }[] | undefined,
+): number {
+  const ids = (innerArtefacts ?? []).map((a) => String(a?.id ?? '').trim()).filter(Boolean)
+  const idSet = new Set(ids)
+  /** Same membership rule as {@link assignInnerArtefactLayers} — cross-boundary / foreign edges must not inflate pressure. */
+  const edges = (innerRelations ?? [])
+    .map((r) => ({ from: String(r?.from ?? '').trim(), to: String(r?.to ?? '').trim() }))
+    .filter((r) => r.from && r.to && idSet.has(r.from) && idSet.has(r.to))
+  if (!ids.length) {
+    return 0
+  }
+  const layers = assignInnerArtefactLayers(ids, edges)
+  const colCount = Math.max(1, layers.length)
+  const colP = innerArtefactColumnPressure01(colCount)
+  const edgeP = innerArtefactEdgeDensityPressure01(edges.length)
+  return Math.min(1, colP * 0.72 + edgeP * 0.34)
+}
+
+/**
+ * Tightens outer dependency **relation lane** gutters during layer drill when inner pressure is high.
+ */
+export function scaleRelationLaneGuttersForInnerDrillPressure(
+  baseGutters: readonly number[],
+  innerDrillPressure01: number,
+): number[] {
+  const t = Math.min(1, Math.max(0, Number(innerDrillPressure01) || 0))
+  const scale = 1 - t * 0.34
+  const floor = 44
+  return baseGutters.map((g) => Math.max(floor, Math.round(g * scale)))
 }
 
 /**
@@ -852,6 +1106,8 @@ export function computeLayerDrillColumnLayout(input: {
     style?: unknown
     contentWeight?: number
     preferredFocusWidth?: number
+    /** When set, non-focus `package` peers at non-focus depths can share the sibling cap (inner drill). */
+    nodeType?: string
   }>
   focusId: string
   focusWidth: number
@@ -864,6 +1120,11 @@ export function computeLayerDrillColumnLayout(input: {
    */
   allowFocusTrackExpansion?: boolean
   depthGutters?: readonly number[]
+  /**
+   * Inner-diagram pressure of the **focused** package (0 roomy, 1 crowded). Tightens reserved
+   * width for non-focus depth tracks so the focus column can widen, and shrinks weighted peer tracks.
+   */
+  innerDrillPressure01?: number
 }): Map<string, LayerDrillLayoutRect> {
   const {
     regionModules,
@@ -873,7 +1134,13 @@ export function computeLayerDrillColumnLayout(input: {
     wideAtFocusDepthIds,
     allowFocusTrackExpansion,
     depthGutters: inputDepthGutters,
+    innerDrillPressure01: rawInnerDrillP,
   } = input
+  const innerDrillPeerLayout =
+    rawInnerDrillP !== undefined && rawInnerDrillP !== null && Number.isFinite(Number(rawInnerDrillP))
+  const drillP = innerDrillPeerLayout ? Math.min(1, Math.max(0, Number(rawInnerDrillP))) : 0
+  const peerReserveTighten = 1 - drillP * 0.26
+  const peerWeightTighten = 1 - drillP * 0.14
   const out = new Map<string, LayerDrillLayoutRect>()
   if (!regionModules.length) return out
 
@@ -934,7 +1201,9 @@ export function computeLayerDrillColumnLayout(input: {
     const contentReserveBoost = Math.min(0.34, Math.max(0, (maxWeight - 1) * 0.018))
     reservedOtherTracksTotal += Math.max(
       minTrack,
-      Math.round((track0.get(d) ?? minTrack) * Math.min(0.86, reserveScale + contentReserveBoost)),
+      Math.round(
+        (track0.get(d) ?? minTrack) * Math.min(0.86, reserveScale + contentReserveBoost) * peerReserveTighten,
+      ),
     )
   }
   const requestedFocusTrack = Math.max(minTrack, Math.round(focusWReq + 2 * DRILL_COL_INSET))
@@ -959,7 +1228,7 @@ export function computeLayerDrillColumnLayout(input: {
   const weightedTrack = (d: number): number => {
     const ms = byDepth.get(d) ?? []
     const maxWeight = ms.length ? Math.max(...ms.map((m) => m.contentWeight ?? 1)) : 1
-    return track0.get(d)! * Math.min(1.55, 0.72 + maxWeight * 0.055)
+    return track0.get(d)! * Math.min(1.55, 0.72 + maxWeight * 0.055) * peerWeightTighten
   }
   let weightedSumOtherTracks = 0
   for (let d = 0; d <= maxD; d++) {
@@ -1020,6 +1289,17 @@ export function computeLayerDrillColumnLayout(input: {
       if (m.id === focusId) nw = inner
       else if (m.depth === fd && m.id !== focusId) {
         nw = wideAtFocusDepthIds?.has(m.id) ? inner : Math.min(wSib, inner)
+      } else if (innerDrillPeerLayout && String(m.nodeType ?? '') === 'package') {
+        /**
+         * Same-depth non-focus peers already use `wSib`; other depths used to stay `inner` wide.
+         * When the focus shows an inner diagram, outer **package** columns inherit that pressure
+         * so unfocused packages compress instead of keeping a full track while the focus grows.
+         */
+        const packagePeerCap = Math.max(
+          DRILL_MIN_BOX_W,
+          Math.round(wSib * (0.34 + (1 - drillP) * 0.36)),
+        )
+        nw = Math.min(packagePeerCap, inner)
       } else nw = inner
       nw = Math.max(DRILL_MIN_BOX_W, Math.min(nw, inner))
       const nx = trackLeft + DRILL_COL_INSET + (inner - nw) / 2
@@ -1475,7 +1755,10 @@ export function focusedModuleWidthForDrill(
   parentNode: string | undefined,
   allNodes: readonly any[],
   preferredWidth?: number,
+  innerDrillPressure01?: number,
 ): number {
+  const hasPressure = innerDrillPressure01 !== undefined && Number.isFinite(innerDrillPressure01)
+  const drillP = hasPressure ? Math.min(1, Math.max(0, Number(innerDrillPressure01))) : 0
   let innerW = viewportRoot.width
   if (parentNode) {
     const p = allNodes.find((n) => n.id === parentNode)
@@ -1498,7 +1781,12 @@ export function focusedModuleWidthForDrill(
         ? Math.round(Math.max(baseW * 1.8, 500))
         : span)
   if (preferredWidth !== undefined) {
-    return Math.round(Math.max(baseW, Math.min(6400, preferredWidth)))
+    let w = Math.round(Math.max(baseW, Math.min(6400, preferredWidth)))
+    if (hasPressure) {
+      const breathe = (1 - drillP) * 0.085
+      w = Math.round(w * (1 + breathe))
+    }
+    return Math.min(6400, w)
   }
   return Math.round(Math.max(baseW, Math.min(span, preferred)))
 }
@@ -1636,21 +1924,41 @@ export function layoutDepthInViewport(
    */
   const singletonRootLeaf = topVisible.length === 1 && isLeafBoxNode(topVisible[0]!) ? topVisible[0]! : null
   if (singletonRootLeaf) {
-    const innerW = Math.max(LEAF_MIN_W, viewport.width - 2 * MARGIN_X)
-    const innerH = Math.max(80, viewport.height - 2 * MARGIN_Y)
     const idx = out.findIndex((n) => n.id === singletonRootLeaf.id)
     if (idx !== -1) {
       const prevStyle = out[idx].style && typeof out[idx].style === 'object' ? { ...out[idx].style } : {}
-      out[idx] = {
-        ...out[idx],
-        position: { x: MARGIN_X, y: MARGIN_Y },
-        width: innerW,
-        height: innerH,
-        style: {
-          ...prevStyle,
-          width: `${innerW}px`,
-          height: `${innerH}px`,
-        },
+      if (isArtefactLeafNode(singletonRootLeaf)) {
+        const innerW = Math.max(LEAF_MIN_W, DIAGRAM_ARTEFACT_PREFERRED_WIDTH_PX)
+        const innerH = Math.max(LEAF_MIN_H, DIAGRAM_ARTEFACT_PREFERRED_HEIGHT_PX)
+        const availW = Math.max(0, viewport.width - 2 * MARGIN_X)
+        const availH = Math.max(0, viewport.height - 2 * MARGIN_Y)
+        const posX = MARGIN_X + Math.max(0, (availW - innerW) / 2)
+        const posY = MARGIN_Y + Math.max(0, (availH - innerH) / 2)
+        out[idx] = {
+          ...out[idx],
+          position: { x: posX, y: posY },
+          width: innerW,
+          height: innerH,
+          style: {
+            ...prevStyle,
+            width: `${innerW}px`,
+            height: `${innerH}px`,
+          },
+        }
+      } else {
+        const innerW = Math.max(LEAF_MIN_W, viewport.width - 2 * MARGIN_X)
+        const innerH = Math.max(80, viewport.height - 2 * MARGIN_Y)
+        out[idx] = {
+          ...out[idx],
+          position: { x: MARGIN_X, y: MARGIN_Y },
+          width: innerW,
+          height: innerH,
+          style: {
+            ...prevStyle,
+            width: `${innerW}px`,
+            height: `${innerH}px`,
+          },
+        }
       }
     }
     return out

@@ -8,6 +8,12 @@ export type InnerArtefactEdge = { from: string; to: string }
 /**
  * Longest-path layering on a DAG fragment. Bounded relaxation so cycles (invalid Scala but
  * possible in hand-edited YAML) do not spin.
+ *
+ * Empty intermediate layers are **compacted** before returning: when back-edges (e.g. an
+ * `imports` relation pointing earlier in a chain) inflate layer indices via the bounded
+ * relaxation loop, the result would otherwise contain large holes (e.g. layer 0 occupied,
+ * layers 1–9 empty, layer 10 occupied). Those empty layers would render as full flex-grow
+ * columns in {@link PackageInnerDiagram}, blowing the visible inner gap up by 5–10× per hole.
  */
 export function assignInnerArtefactLayers(
   artefactIds: readonly string[],
@@ -39,10 +45,11 @@ export function assignInnerArtefactLayers(
     if (!changed) break
   }
   const maxL = Math.max(0, ...sortedIds.map((id) => layerOf.get(id) ?? 0))
-  const layers: string[][] = Array.from({ length: maxL + 1 }, () => [])
+  const sparseLayers: string[][] = Array.from({ length: maxL + 1 }, () => [])
   for (const id of sortedIds) {
     const L = layerOf.get(id) ?? 0
-    layers[L]!.push(id)
+    sparseLayers[L]!.push(id)
   }
-  return layers
+  /** Drop empty buckets so consumer columns reflect the **occupied** depth, not bounded-relaxation noise. */
+  return sparseLayers.filter((layer) => layer.length > 0)
 }

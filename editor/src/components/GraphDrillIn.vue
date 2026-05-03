@@ -6,13 +6,17 @@
 import { useVueFlow, type GraphEdge, type GraphNode, type Styles } from '@vue-flow/core'
 import { inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import {
+  compressRelationLaneGuttersForBand,
   computeLayerDrillColumnLayout,
   dependencyDepthsInRegion,
   focusedModuleWidthForDrill,
   fullWidthFocusBoundsForLayerDrill,
   packageContentWeight,
+  packageInnerLayoutPressure01ForOuterDrill,
   relationLaneGutters,
   relayoutSubtreeIntoBounds,
+  scaleRelationLaneGuttersForInnerDrillPressure,
+  shrinkLayerDrillUnfocusedPackageRect,
   verticalBandForLayerDrill,
 } from '../graph/layoutDependencyLayers'
 import { edgeContributesToClasspathDepth } from '../graph/relationKinds'
@@ -309,6 +313,19 @@ function readFlowViewport(): { width: number; height: number } {
     width: Math.max(480, r?.width ?? 960),
     height: Math.max(420, r?.height ?? 720),
   }
+}
+
+/** True when a package node will render the inner package / artefact diagram after layer drill. */
+function packageShowsExpandedInnerDiagram(n: GraphNode): boolean {
+  if (String(n.type) !== 'package') return false
+  const d = n.data
+  if (!d || typeof d !== 'object') return false
+  const rec = d as Record<string, unknown>
+  const nonempty = (k: string) => Array.isArray(rec[k]) && (rec[k] as unknown[]).length > 0
+  if (nonempty('innerPackages') || nonempty('innerArtefacts')) return true
+  if (nonempty('innerArtefactRelations') || nonempty('crossArtefactRelations')) return true
+  const pfw = rec.preferredFocusWidth
+  return typeof pfw === 'number' && Number.isFinite(pfw) && pfw >= 480
 }
 
 /**
@@ -666,6 +683,7 @@ function collectRegionParticipants(
   style?: unknown
   contentWeight?: number
   preferredFocusWidth?: number
+  nodeType: string
 }[] {
   return nodes
     .filter((n) => {
@@ -684,6 +702,7 @@ function collectRegionParticipants(
       style: n.style,
       contentWeight: numericDataValue(n.data, 'contentWeight') ?? packageContentWeight(n.data as Record<string, unknown> | undefined),
       preferredFocusWidth: numericDataValue(n.data, 'preferredFocusWidth'),
+      nodeType: String(n.type ?? ''),
     }))
 }
 
@@ -756,8 +775,12 @@ async function applyLayerDrill(moduleId: string) {
    * dependency columns stay visible in other layers, and the focused box should grow tall + wide
    * for text-heavy detail (like a drilled package / project), not stay clipped to the pre-stack Y span.
    *
-   * Other leaves (sbt `module`, `package`) keep `diagramModuleVerticalSpan` so pinned-row drills
-   * do not stretch every sibling to the full parent height.
+   * **Package** with an inner diagram (members / relations / large `preferredFocusWidth`) also
+   * uses that band so the focused card is not capped to the shallow union of sibling row heights
+   * while other depth columns still show compact packages.
+   *
+   * Plain packages without inner chrome keep `diagramModuleVerticalSpan` so pinned-row drills do
+   * not stretch every sibling to the full parent height.
    */
   let diagramTop: number
   let diagramH: number
@@ -766,6 +789,10 @@ async function applyLayerDrill(moduleId: string) {
     diagramTop = band.padTop
     diagramH = band.usable
   } else if (targetIsArtefact) {
+    const band = verticalBandForLayerDrill(nodes, regionParent, vp.height)
+    diagramTop = band.padTop
+    diagramH = band.usable
+  } else if (packageShowsExpandedInnerDiagram(target)) {
     const band = verticalBandForLayerDrill(nodes, regionParent, vp.height)
     diagramTop = band.padTop
     diagramH = band.usable
@@ -789,7 +816,29 @@ async function applyLayerDrill(moduleId: string) {
   const fullFocusBounds = isolatedGroupFocus
     ? fullWidthFocusBoundsForLayerDrill(vp, regionParent, nodes)
     : null
-  const focusW = fullFocusBounds?.width ?? focusedModuleWidthForDrill(vp, numCols, baseW, regionParent, nodes, preferredFocusWidth)
+
+  const innerExpanded = packageShowsExpandedInnerDiagram(target)
+  const td = target.data && typeof target.data === 'object' ? (target.data as Record<string, unknown>) : null
+  const innerArtsRaw = td?.innerArtefacts
+  const innerRelsRaw = td?.innerArtefactRelations
+  const innerDrillPressure = innerExpanded
+    ? packageInnerLayoutPressure01ForOuterDrill(
+        Array.isArray(innerArtsRaw) ? (innerArtsRaw as { id?: string }[]) : undefined,
+        Array.isArray(innerRelsRaw) ? (innerRelsRaw as { from?: string; to?: string }[]) : undefined,
+      )
+    : 0
+
+  const focusW =
+    fullFocusBounds?.width ??
+    focusedModuleWidthForDrill(
+      vp,
+      numCols,
+      baseW,
+      regionParent,
+      nodes,
+      preferredFocusWidth,
+      innerExpanded ? innerDrillPressure : undefined,
+    )
 
   const fd = depths.get(moduleId) ?? 0
 
@@ -840,32 +889,48 @@ async function applyLayerDrill(moduleId: string) {
     }
   }
 
+  /** High inner pressure → narrower outer peers; low pressure → roomier siblings + wider focus (see {@link packageInnerLayoutPressure01ForOuterDrill}). */
+  const siblingWidthScale = innerExpanded ? Math.max(0.16, 0.42 - innerDrillPressure * 0.28) : 0.42
+
+  const baseDepthGutters = relationLaneGutters(
+    maxD,
+    depths,
+    edges
+      .filter((edge) => {
+        const source = String(edge.source)
+        const target = String(edge.target)
+        return regionParticipantIds.has(source) &&
+          regionParticipantIds.has(target) &&
+          !hiddenSiblingIds.has(source) &&
+          !hiddenSiblingIds.has(target) &&
+          edgeContributesToClasspathDepth(edge)
+      })
+      .map((edge) => ({
+        source: String(edge.source),
+        target: String(edge.target),
+        label: edge.label,
+      })),
+  )
+  /**
+   * Pressure-aware narrowing for the drilled column band: long import / dependency chains used
+   * to keep `relationLaneWidthForBoundary`-sized lanes regardless of viewport, so non-focus
+   * columns collapsed to their floor and the focus track had no room to grow. Compress the
+   * band first; then layer the inner-diagram drill scale on top so both effects stack.
+   */
+  const compressedBaseGutters = compressRelationLaneGuttersForBand(baseDepthGutters, numCols, vp.width)
+  const depthGutters = innerExpanded
+    ? scaleRelationLaneGuttersForInnerDrillPressure(compressedBaseGutters, innerDrillPressure)
+    : compressedBaseGutters
+
   const geoMap = computeLayerDrillColumnLayout({
     regionModules: layoutParticipants,
     focusId: moduleId,
     focusWidth: focusW,
-    siblingWidthScale: 0.42,
+    siblingWidthScale,
     wideAtFocusDepthIds,
     allowFocusTrackExpansion: typeof preferredFocusWidth === 'number',
-    depthGutters: relationLaneGutters(
-      maxD,
-      depths,
-      edges
-        .filter((edge) => {
-          const source = String(edge.source)
-          const target = String(edge.target)
-          return regionParticipantIds.has(source) &&
-            regionParticipantIds.has(target) &&
-            !hiddenSiblingIds.has(source) &&
-            !hiddenSiblingIds.has(target) &&
-            edgeContributesToClasspathDepth(edge)
-        })
-        .map((edge) => ({
-          source: String(edge.source),
-          target: String(edge.target),
-          label: edge.label,
-        })),
-    ),
+    depthGutters,
+    innerDrillPressure01: innerExpanded ? innerDrillPressure : undefined,
   })
   if (fullFocusBounds) {
     const geo = geoMap.get(moduleId)
@@ -883,6 +948,16 @@ async function applyLayerDrill(moduleId: string) {
         height: `${typeof target.height === 'number' ? target.height : 72}px`,
       },
     })
+  }
+
+  /** Peer packages stay visually smaller than the drilled package so the focus reads clearly. */
+  if (String(target.type ?? '') === 'package') {
+    for (const [peerId, peerGeo] of geoMap) {
+      if (peerId === moduleId || pinnedIds.has(peerId)) continue
+      const peerNode = nodes.find((x) => x.id === peerId)
+      if (!peerNode || String(peerNode.type ?? '') !== 'package') continue
+      geoMap.set(peerId, shrinkLayerDrillUnfocusedPackageRect(peerGeo, innerExpanded ? innerDrillPressure : 0))
+    }
   }
 
   let nextNodes = nodes.map((n) => {

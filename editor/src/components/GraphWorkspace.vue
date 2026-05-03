@@ -35,11 +35,16 @@ import { languageIconForId } from '../graph/languages'
 import { strokeColorForFlowEdge } from '../graph/relationKinds'
 import { drillNoteForModuleId } from '../graph/sbtStyleDrillNotes'
 import { assignInnerArtefactLayers } from '../graph/innerArtefactLayerLayout'
+import {
+  DIAGRAM_LEAF_MIN_HEIGHT_PX,
+  DIAGRAM_LEAF_MIN_WIDTH_PX,
+  DIAGRAM_LOGO_BOX_PX,
+} from './diagram/boxChromeLayout'
 
 const MODULE_LAYOUT_W = 200
 const MODULE_LAYOUT_H = 72
-const LEAF_MIN_LAYOUT_H = 40
-const PACKAGE_SCOPE_GROUP_MIN_LAYOUT_H = 40
+const LEAF_MIN_LAYOUT_H = DIAGRAM_LEAF_MIN_HEIGHT_PX
+const PACKAGE_SCOPE_GROUP_MIN_LAYOUT_H = DIAGRAM_LOGO_BOX_PX
 const OTHER_GROUP_MIN_LAYOUT_H = 76
 const CROSS_PACKAGE_PREVIEW_HEADER_H = 92
 const CROSS_PACKAGE_PREVIEW_COL_W = 200
@@ -53,6 +58,11 @@ const CROSS_PACKAGE_PREVIEW_MIN_H = 220
 
 /** Subpixel / border slack so a graph that visually fits does not enable pan rails. */
 const PAN_RAIL_FIT_SLACK_PX = 8
+/**
+ * When the laid-out graph is still much wider than the pane even before every box hits its
+ * layout floor, allow horizontal pan anyway (avoids a dead-end where rails never appear).
+ */
+const PAN_RAIL_WIDTH_ESCAPE_RATIO = 1.28
 
 const nodes = defineModel<any[]>('nodes', { required: true })
 const edges = defineModel<any[]>('edges', { required: true })
@@ -64,11 +74,11 @@ const props = withDefaults(
     nodeTypeVisibility?: Record<string, boolean>
     /** When a key is `false`, edges with that relation label are hidden (merged into `hidden`). */
     relationTypeVisibility?: Record<string, boolean>
-    /** Abstraction dojo: show resize handles and optional linked resize across listed node ids. */
+    /** Breakpoint-layouts dojo: show resize handles and optional linked resize across listed node ids. */
     abstractionDojoResize?: AbstractionDojoResizeConfig | null
     /** Relation distance shown around a focused Scala artefact. */
     focusRelationDepth?: number
-    /** When true, nodes can be dragged on the pane (abstraction-layers dojo only). */
+    /** When true, nodes can be dragged on the pane (breakpoint-layouts dojo only). */
     nodesDraggable?: boolean
   }>(),
   { focusRelationDepth: 1, nodesDraggable: false },
@@ -196,6 +206,13 @@ function nodePixelHeight(node: any): number {
   return isLeafBoxNode(node) ? MODULE_LAYOUT_H : OTHER_GROUP_MIN_LAYOUT_H
 }
 
+function nodePixelWidth(node: any): number {
+  const styleWidth = Number(node?.style?.width)
+  if (Number.isFinite(styleWidth) && styleWidth > 0) return styleWidth
+  if (typeof node?.width === 'number' && Number.isFinite(node.width) && node.width > 0) return node.width
+  return isLeafBoxNode(node) ? MODULE_LAYOUT_W : MODULE_LAYOUT_W
+}
+
 function nodeMinHeight(node: any): number {
   if (isLeafBoxNode(node)) {
     return LEAF_MIN_LAYOUT_H
@@ -204,6 +221,14 @@ function nodeMinHeight(node: any): number {
   return data && typeof data === 'object' && (data as Record<string, unknown>).packageScope === true
     ? PACKAGE_SCOPE_GROUP_MIN_LAYOUT_H
     : OTHER_GROUP_MIN_LAYOUT_H
+}
+
+/** Floor widths for “pressure spent” — mirror {@link nodeMinHeight}: defer pan until layout is tight. */
+function nodeMinWidth(node: any): number {
+  if (isLeafBoxNode(node)) return DIAGRAM_LEAF_MIN_WIDTH_PX
+  const t = String(node?.type ?? '')
+  if (t === 'group') return MODULE_LAYOUT_W
+  return DIAGRAM_LEAF_MIN_WIDTH_PX
 }
 
 const hoveredNodeId = ref<string | null>(null)
@@ -785,8 +810,16 @@ async function relayoutViewport(opts?: { skipDrillReapply?: boolean }) {
    * stays sized for the previous viewport (e.g. wider when the YAML side panel was visible),
    * so toggling the panel leaves the focused container overflowing the canvas. The drill itself
    * runs its FLIP animation and fits the camera to the new bounds.
+   *
+   * `skipDrillReapply` skips the **re-apply** only when no drill is active (callers such as
+   * package-relation visibility want to avoid a no-op). When a drill **is** active, we must still
+   * re-apply after `layoutDepthInViewport` — otherwise that pass overwrites peer compression and
+   * focused inner-diagram widths from {@link applyLayerDrill}.
    */
-  const reapplied = opts?.skipDrillReapply ? false : ((await drillRef.value?.reapplyLayerDrill?.()) ?? false)
+  const reapplied =
+    opts?.skipDrillReapply && !layerDrillActive()
+      ? false
+      : ((await drillRef.value?.reapplyLayerDrill?.()) ?? false)
   if (reapplied) return
   /** Keep the full graph anchored after geometry changes; skip while drill is active or pending. */
   if (!layerDrillBusy()) {
@@ -1497,80 +1530,30 @@ function resetNavigationAfterDocReplace() {
 }
 
 /**
- * Fit graph to the current pane after layout (does not clear layer drill).
+ * After depth layout / layer drill, either anchor the graph at the diagram margin (zoom 1) or
+ * enable pan rails + translateExtent when the laid-out bounds exceed the pane.
  *
- * Camera rule: after a full document replace, use {@link resetNavigationAfterDocReplace} plus
- * one `fitToViewport` — do not chain `fitView` / `fitOverviewCamera` first (avoids a visible
- * zoom-out-then-correct). Vue Flow’s MiniMap uses a translucent viewport mask (`maskColor`);
- * the vertical rail slider follows that same transparent aesthetic.
- *
+ * Horizontal pan mirrors vertical: defer until **pressure is largely spent** (boxes near their
+ * layout floor widths), so {@link layoutDepthInViewport} can keep shrinking gutters/tracks first.
+ * A width escape ratio still turns pan on when the graph is far wider than the pane so we never
+ * trap the user without rails.
  */
-async function fitToViewport(opts?: {
-  duration?: number
-}) {
-  await nextTick()
-  await doubleRaf()
-  const duration = opts?.duration ?? 220
-  const vp = readFlowViewport()
-  // Layer drill owns geometry while it is active. The camera still follows the same top-left
-  // rule as overview: root bounds appear at the shared diagram margin.
-  if (layerDrillBusy()) {
-    // When only pending (click timer started, drill not yet active), hold the camera steady.
-    if (!layerDrillActive()) return
-    resetVerticalScrollChrome()
-    const visibleRoots = nodes.value.filter((n) => !n.parentNode && !(n as { hidden?: boolean }).hidden)
-    if (!visibleRoots.length) {
-      await setViewport({ x: 0, y: 0, zoom: 1 }, { duration })
-      return
-    }
-    const rect = getRectOfNodes(visibleRoots as any)
-    if (
-      !Number.isFinite(rect.width) ||
-      rect.width <= 2 ||
-      !Number.isFinite(rect.height) ||
-      rect.height <= 2 ||
-      !Number.isFinite(rect.x) ||
-      !Number.isFinite(rect.y)
-    ) {
-      await setViewport({ x: 0, y: 0, zoom: 1 }, { duration })
-      return
-    }
-    const x = DIAGRAM_MARGIN_X - rect.x
-    const y = DIAGRAM_MARGIN_Y - rect.y
-    await setViewport({ x, y, zoom: 1 }, { duration })
-    return
-  }
-
-  const roots = nodes.value.filter((n) => !n.parentNode && !(n as { hidden?: boolean }).hidden)
-  if (!roots.length) {
-    resetVerticalScrollChrome()
-    await fitView({ padding: 0.05, duration, maxZoom: 2.2, minZoom: 0.05 })
-    return
-  }
-
-  const rect = getRectOfNodes(roots as any)
-  if (
-    !Number.isFinite(rect.width) ||
-    rect.width <= 2 ||
-    !Number.isFinite(rect.height) ||
-    rect.height <= 2 ||
-    !Number.isFinite(rect.x) ||
-    !Number.isFinite(rect.y)
-  ) {
-    resetVerticalScrollChrome()
-    await fitView({ padding: 0.05, duration, maxZoom: 2.2, minZoom: 0.05 })
-    return
-  }
-
+async function applyPanRailsOrAnchorCamera(
+  vp: { width: number; height: number },
+  rect: { x: number; y: number; width: number; height: number },
+  visibleNodes: any[],
+  duration: number,
+): Promise<void> {
   const px = DIAGRAM_MARGIN_X * 2
   const py = DIAGRAM_MARGIN_Y * 2
   const usableW = Math.max(80, vp.width - px)
   const usableH = Math.max(80, vp.height - py)
   const widthOverflow = rect.width > usableW + PAN_RAIL_FIT_SLACK_PX
   const heightOverflow = rect.height > usableH + PAN_RAIL_FIT_SLACK_PX
-  const visibleNodes = nodes.value.filter((n) => !(n as { hidden?: boolean }).hidden)
   const heightMinReached = visibleNodes.some((node) => nodePixelHeight(node) <= nodeMinHeight(node) + 1)
-  const useHorizontalPanRail = widthOverflow
+  const widthMinReached = visibleNodes.some((node) => nodePixelWidth(node) <= nodeMinWidth(node) + 1)
+  const widthEscape = rect.width > usableW * PAN_RAIL_WIDTH_ESCAPE_RATIO + PAN_RAIL_FIT_SLACK_PX
+  const useHorizontalPanRail = widthOverflow && (widthMinReached || widthEscape)
   const useVerticalPanRail = heightOverflow && heightMinReached
 
   const zoom = 1
@@ -1607,7 +1590,6 @@ async function fitToViewport(opts?: {
   verticalScrollChrome.value = useVerticalPanRail
   horizontalScrollSlider.value = hSlider
   verticalScrollSlider.value = vSlider
-  // Thumb size = fraction of diagram visible at once in each axis.
   verticalThumbFraction.value = vSpan > 0 ? vp.height / (vp.height + vSpan) : 1
   horizontalThumbFraction.value = hSpan > 0 ? vp.width / (vp.width + hSpan) : 1
 
@@ -1615,6 +1597,77 @@ async function fitToViewport(opts?: {
   const xViewport = useHorizontalPanRail ? startX : anchorCamX
   const yViewport = useVerticalPanRail ? startY : anchorCamY
   await setViewport({ x: xViewport, y: yViewport, zoom }, { duration })
+}
+
+/**
+ * Fit graph to the current pane after layout (does not clear layer drill).
+ *
+ * Camera rule: after a full document replace, use {@link resetNavigationAfterDocReplace} plus
+ * one `fitToViewport` — do not chain `fitView` / `fitOverviewCamera` first (avoids a visible
+ * zoom-out-then-correct). Vue Flow’s MiniMap uses a translucent viewport mask (`maskColor`);
+ * the vertical rail slider follows that same transparent aesthetic.
+ *
+ */
+async function fitToViewport(opts?: {
+  duration?: number
+}) {
+  await nextTick()
+  await doubleRaf()
+  const duration = opts?.duration ?? 220
+  const vp = readFlowViewport()
+  // Layer drill owns geometry while it is active. The camera still follows the same top-left
+  // rule as overview: root bounds appear at the shared diagram margin.
+  if (layerDrillBusy()) {
+    // When only pending (click timer started, drill not yet active), hold the camera steady.
+    if (!layerDrillActive()) return
+    const visibleRoots = nodes.value.filter((n) => !n.parentNode && !(n as { hidden?: boolean }).hidden)
+    if (!visibleRoots.length) {
+      resetVerticalScrollChrome()
+      await setViewport({ x: 0, y: 0, zoom: 1 }, { duration })
+      return
+    }
+    const rect = getRectOfNodes(visibleRoots as any)
+    if (
+      !Number.isFinite(rect.width) ||
+      rect.width <= 2 ||
+      !Number.isFinite(rect.height) ||
+      rect.height <= 2 ||
+      !Number.isFinite(rect.x) ||
+      !Number.isFinite(rect.y)
+    ) {
+      resetVerticalScrollChrome()
+      await setViewport({ x: 0, y: 0, zoom: 1 }, { duration })
+      return
+    }
+    const visibleNodes = nodes.value.filter((n) => !(n as { hidden?: boolean }).hidden)
+    resetVerticalScrollChrome()
+    await applyPanRailsOrAnchorCamera(vp, rect, visibleNodes, duration)
+    return
+  }
+
+  const roots = nodes.value.filter((n) => !n.parentNode && !(n as { hidden?: boolean }).hidden)
+  if (!roots.length) {
+    resetVerticalScrollChrome()
+    await fitView({ padding: 0.05, duration, maxZoom: 2.2, minZoom: 0.05 })
+    return
+  }
+
+  const rect = getRectOfNodes(roots as any)
+  if (
+    !Number.isFinite(rect.width) ||
+    rect.width <= 2 ||
+    !Number.isFinite(rect.height) ||
+    rect.height <= 2 ||
+    !Number.isFinite(rect.x) ||
+    !Number.isFinite(rect.y)
+  ) {
+    resetVerticalScrollChrome()
+    await fitView({ padding: 0.05, duration, maxZoom: 2.2, minZoom: 0.05 })
+    return
+  }
+
+  const visibleNodes = nodes.value.filter((n) => !(n as { hidden?: boolean }).hidden)
+  await applyPanRailsOrAnchorCamera(vp, rect, visibleNodes, duration)
 }
 
 function onVerticalScrollSliderInput(ev: Event) {

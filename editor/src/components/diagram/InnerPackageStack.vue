@@ -122,6 +122,8 @@ const emit = defineEmits<{
 
 <style scoped>
 .package-box__inner-package-stack {
+  position: relative;
+  z-index: 1;
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;

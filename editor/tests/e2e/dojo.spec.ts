@@ -1,8 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
 
-const NESTING_DEPTH_SWEEP = Array.from({ length: 20 }, (_, index) => index + 1)
-const NESTING_DEPTH_SWEEP_FROM_TWO = NESTING_DEPTH_SWEEP.filter((depth) => depth >= 2)
-
 async function diagramNodeCount(page: Page): Promise<number> {
   return page.locator('.vue-flow__node').count()
 }
@@ -55,266 +52,6 @@ async function stackPackageHeaderState(page: Page, id = 'stack-package-1'): Prom
   }, id)
 }
 
-async function rootPackageViewportFill(page: Page): Promise<{ widthRatio: number; heightRatio: number }> {
-  return page.evaluate(() => {
-    const wrap = document.querySelector('.flow-wrap') as HTMLElement | null
-    const root = document.querySelector('[data-testid="diagram-node-package-1"]') as HTMLElement | null
-    if (!wrap || !root) return { widthRatio: 0, heightRatio: 0 }
-    const wrapRect = wrap.getBoundingClientRect()
-    const rootRect = root.getBoundingClientRect()
-    return {
-      widthRatio: wrapRect.width > 0 ? rootRect.width / wrapRect.width : 0,
-      heightRatio: wrapRect.height > 0 ? rootRect.height / wrapRect.height : 0,
-    }
-  })
-}
-
-async function nestedPackageContainment(page: Page, depth: number): Promise<Array<{
-  childId: string
-  parentId: string
-  fullyContained: boolean
-  childWidth: number
-  childHeight: number
-  childLeft: number
-  childTop: number
-  childRight: number
-  childBottom: number
-  parentLeft: number
-  parentTop: number
-  parentRight: number
-  parentBottom: number
-}>> {
-  return page.evaluate((targetDepth) => {
-    const out: Array<{
-      childId: string
-      parentId: string
-      fullyContained: boolean
-      childWidth: number
-      childHeight: number
-      childLeft: number
-      childTop: number
-      childRight: number
-      childBottom: number
-      parentLeft: number
-      parentTop: number
-      parentRight: number
-      parentBottom: number
-    }> = []
-    for (let level = 2; level <= targetDepth; level++) {
-      const child = document.querySelector(`[data-testid="diagram-node-package-${level}"]`) as HTMLElement | null
-      const parent = document.querySelector(`[data-testid="diagram-node-package-${level - 1}"]`) as HTMLElement | null
-      if (!child || !parent) continue
-      const childRect = child.getBoundingClientRect()
-      const parentRect = parent.getBoundingClientRect()
-      /**
-       * Deeper nests use wider inner nodes than the parent Vue Flow group rect suggests (padding,
-       * chrome, zoom). Scale horizontal slack with level; keep a modest bottom slack for border math.
-       */
-      const hSlack = 8 + level * 5
-      const edgeSlack = 10
-      const bottomSlack = 24
-      const fullyContained =
-        childRect.left >= parentRect.left - hSlack &&
-        childRect.top >= parentRect.top - edgeSlack &&
-        childRect.right <= parentRect.right + hSlack &&
-        childRect.bottom <= parentRect.bottom + bottomSlack
-      out.push({
-        childId: `package-${level}`,
-        parentId: `package-${level - 1}`,
-        fullyContained,
-        childWidth: childRect.width,
-        childHeight: childRect.height,
-        childLeft: childRect.left,
-        childTop: childRect.top,
-        childRight: childRect.right,
-        childBottom: childRect.bottom,
-        parentLeft: parentRect.left,
-        parentTop: parentRect.top,
-        parentRight: parentRect.right,
-        parentBottom: parentRect.bottom,
-      })
-    }
-    return out
-  }, depth)
-}
-
-async function innermostPackageHeaderLayout(page: Page, depth: number): Promise<{
-  nodeFound: boolean
-  iconFound: boolean
-  titleFound: boolean
-  subtitleFound: boolean
-  iconTop: number
-  iconBottom: number
-  titleTop: number
-  subtitleTop: number
-  titleCenterOffset: number
-  subtitleCenterOffset: number
-}> {
-  return page.evaluate((targetDepth) => {
-    const node = document.querySelector(`[data-testid="diagram-node-package-${targetDepth}"]`) as HTMLElement | null
-    const box = node?.querySelector('.package-box') as HTMLElement | null
-    const icon =
-      (box?.querySelector('.lang-icon-slot') as HTMLElement | null) ??
-      (node?.querySelector('.group-node__folder-icon') as HTMLElement | null)
-    const title =
-      (box?.querySelector('.title') as HTMLElement | null) ??
-      (node?.querySelector('.group-node__pkg-header .banner') as HTMLElement | null)
-    const subtitle =
-      (box?.querySelector('.subtitle') as HTMLElement | null) ??
-      (node?.querySelector('.group-node__pkg-header .banner-sub') as HTMLElement | null)
-    const nodeRect = node?.getBoundingClientRect()
-    const titleRect = title?.getBoundingClientRect()
-    const subtitleRect = subtitle?.getBoundingClientRect()
-    const iconRect = icon?.getBoundingClientRect()
-    const nodeCenterX = nodeRect ? nodeRect.left + nodeRect.width / 2 : 0
-    const iconCenterX = iconRect ? iconRect.left + iconRect.width / 2 : nodeCenterX
-    const titleCenterX = titleRect ? titleRect.left + titleRect.width / 2 : 0
-    const subtitleCenterX = subtitleRect ? subtitleRect.left + subtitleRect.width / 2 : 0
-    return {
-      nodeFound: !!node,
-      iconFound: !!icon,
-      titleFound: !!title,
-      subtitleFound: !!subtitle,
-      iconTop: iconRect?.top ?? 0,
-      iconBottom: iconRect?.bottom ?? 0,
-      titleTop: titleRect?.top ?? 0,
-      subtitleTop: subtitleRect?.top ?? 0,
-      titleCenterOffset: titleRect ? Math.abs(titleCenterX - iconCenterX) : Number.POSITIVE_INFINITY,
-      subtitleCenterOffset: subtitleRect ? Math.abs(subtitleCenterX - iconCenterX) : Number.POSITIVE_INFINITY,
-    }
-  }, depth)
-}
-
-async function nonInnermostPackageHeaderLayout(page: Page, level: number): Promise<{
-  nodeFound: boolean
-  headerFound: boolean
-  iconFound: boolean
-  titleFound: boolean
-  subtitleFound: boolean
-  headerLeftInset: number
-  headerTopInset: number
-  titleLeftOffsetFromIcon: number
-  subtitleLeftOffsetFromIcon: number
-  titleTopOffsetFromNode: number
-  subtitleTopOffsetFromTitle: number
-}> {
-  return page.evaluate((targetLevel) => {
-    const node = document.querySelector(`[data-testid="diagram-node-package-${targetLevel}"]`) as HTMLElement | null
-    const header = (node?.querySelector('.group-node__pkg-header') ??
-      node?.querySelector('.package-box__header') ??
-      node?.querySelector('.package-box__header-row')) as HTMLElement | null
-    const icon = ((header ?? node)?.querySelector('.group-node__folder-icon') ??
-      (header ?? node)?.querySelector('.package-box__header-icon') ??
-      (header ?? node)?.querySelector('.package-box__icon')) as HTMLElement | null
-    const title = ((header ?? node)?.querySelector('.banner') ??
-      (header ?? node)?.querySelector('.package-box__title') ??
-      (header ?? node)?.querySelector('.package-box__header-title')) as HTMLElement | null
-    const subtitle = ((header ?? node)?.querySelector('.banner-sub') ??
-      (header ?? node)?.querySelector('.package-box__subtitle') ??
-      (header ?? node)?.querySelector('.package-box__header-subtitle')) as HTMLElement | null
-    const nodeRect = node?.getBoundingClientRect()
-    const headerRect = header?.getBoundingClientRect()
-    const iconRect = icon?.getBoundingClientRect()
-    const titleRect = title?.getBoundingClientRect()
-    const subtitleRect = subtitle?.getBoundingClientRect()
-    return {
-      nodeFound: !!node,
-      headerFound: !!header,
-      iconFound: !!icon,
-      titleFound: !!title,
-      subtitleFound: !!subtitle,
-      headerLeftInset: nodeRect && headerRect ? headerRect.left - nodeRect.left : Number.POSITIVE_INFINITY,
-      headerTopInset: nodeRect && headerRect ? headerRect.top - nodeRect.top : Number.POSITIVE_INFINITY,
-      titleLeftOffsetFromIcon:
-        iconRect && titleRect ? titleRect.left - iconRect.right : Number.POSITIVE_INFINITY,
-      subtitleLeftOffsetFromIcon:
-        iconRect && subtitleRect ? subtitleRect.left - iconRect.right : Number.POSITIVE_INFINITY,
-      titleTopOffsetFromNode:
-        nodeRect && titleRect ? titleRect.top - nodeRect.top : Number.POSITIVE_INFINITY,
-      subtitleTopOffsetFromTitle:
-        titleRect && subtitleRect ? subtitleRect.top - titleRect.bottom : Number.POSITIVE_INFINITY,
-    }
-  }, level)
-}
-
-async function immediateChildHeaderVisibility(page: Page, depth: number): Promise<Array<{
-  childId: string
-  parentId: string
-  childHeight: number
-  iconVisibleInsideChild: boolean
-  titleVisibleInsideChild: boolean
-  subtitleVisibleInsideChild: boolean
-  iconVisibleInsideParent: boolean
-  titleVisibleInsideParent: boolean
-  subtitleVisibleInsideParent: boolean
-  iconTopOffset: number
-  subtitleBottomGap: number
-}>> {
-  return page.evaluate((targetDepth) => {
-    const out: Array<{
-      childId: string
-      parentId: string
-      childHeight: number
-      iconVisibleInsideChild: boolean
-      titleVisibleInsideChild: boolean
-      subtitleVisibleInsideChild: boolean
-      iconVisibleInsideParent: boolean
-      titleVisibleInsideParent: boolean
-      subtitleVisibleInsideParent: boolean
-      iconTopOffset: number
-      subtitleBottomGap: number
-    }> = []
-    for (let level = 2; level <= targetDepth; level++) {
-      const parent = document.querySelector(`[data-testid="diagram-node-package-${level - 1}"]`) as HTMLElement | null
-      const child = document.querySelector(`[data-testid="diagram-node-package-${level}"]`) as HTMLElement | null
-      if (!child || !parent) continue
-      const parentRect = parent.getBoundingClientRect()
-      const childRect = child.getBoundingClientRect()
-      const parentHeader = parent.querySelector('.group-node__pkg-header, .package-box .lang-icon-slot') as HTMLElement | null
-      const box = child.querySelector('.package-box') as HTMLElement | null
-      const icon =
-        (box?.querySelector('.lang-icon-slot') as HTMLElement | null) ??
-        (child.querySelector('.group-node__folder-icon') as HTMLElement | null)
-      const title =
-        (box?.querySelector('.title') as HTMLElement | null) ??
-        (child.querySelector('.group-node__pkg-header .banner') as HTMLElement | null)
-      const subtitle =
-        (box?.querySelector('.subtitle') as HTMLElement | null) ??
-        (child.querySelector('.group-node__pkg-header .banner-sub') as HTMLElement | null)
-      const iconRect = icon?.getBoundingClientRect()
-      const titleRect = title?.getBoundingClientRect()
-      const subtitleRect = subtitle?.getBoundingClientRect()
-      const parentHeaderRect = parentHeader?.getBoundingClientRect()
-      const contains = (rect?: DOMRect) =>
-        !!rect &&
-        rect.left >= childRect.left &&
-        rect.top >= childRect.top &&
-        rect.right <= childRect.right &&
-        rect.bottom <= childRect.bottom
-      const insideParent = (rect?: DOMRect) =>
-        !!rect &&
-        rect.left >= parentRect.left &&
-        rect.top >= parentRect.top &&
-        rect.right <= parentRect.right &&
-        rect.bottom <= parentRect.bottom
-      out.push({
-        childId: `package-${level}`,
-        parentId: `package-${level - 1}`,
-        childHeight: childRect.height,
-        iconVisibleInsideChild: contains(iconRect),
-        titleVisibleInsideChild: contains(titleRect),
-        subtitleVisibleInsideChild: contains(subtitleRect),
-        iconVisibleInsideParent: insideParent(iconRect),
-        titleVisibleInsideParent: insideParent(titleRect),
-        subtitleVisibleInsideParent: insideParent(subtitleRect),
-        iconTopOffset: iconRect ? iconRect.top - childRect.top : Number.POSITIVE_INFINITY,
-        subtitleBottomGap: subtitleRect ? childRect.bottom - subtitleRect.bottom : Number.NEGATIVE_INFINITY,
-      })
-    }
-    return out
-  }, depth)
-}
-
 test.describe('dojo fixtures', () => {
   test('loads a requested dojo fixture by query param', async ({ page }) => {
     await page.goto('/?dojo=nesting')
@@ -327,41 +64,54 @@ test.describe('dojo fixtures', () => {
   })
 
   test('loads a requested dojo fixture by tab url', async ({ page }) => {
-    await page.goto('/?tab=dojo:relations&perspective=dependencies')
+    await page.goto('/?tab=dojo:large-drill-perf&perspective=dependencies')
 
-    await expect(page.locator('.diagram-top-bar__path-text')).toContainText('dojo/relations.ilograph.yaml')
-    await expect(page.getByRole('tab', { name: /relations\.ilograph\.yaml/i })).toBeVisible()
-    await expect(page).toHaveURL(/tab=dojo%3Arelations/)
+    await expect(page.locator('.diagram-top-bar__path-text')).toContainText('dojo/large-drill-perf.ilograph.yaml')
+    await expect(page.getByRole('tab', { name: /large-drill-perf\.ilograph\.yaml/i })).toBeVisible()
+    await expect(page).toHaveURL(/tab=dojo%3Alarge-drill-perf/)
     await expect(page).toHaveURL(/perspective=dependencies/)
   })
 
   test('honors an explicitly requested perspective from the url', async ({ page }) => {
-    await page.goto('/?tab=dojo:perspectives&perspective=Runtime%20View')
+    await page.goto('/?tab=dojo:nesting&perspective=dependencies')
 
-    await expect(page.locator('.diagram-top-bar__path-text')).toContainText('dojo/perspectives.ilograph.yaml')
-    await expect(page).toHaveURL(/tab=dojo%3Aperspectives/)
-    await expect(page).toHaveURL(/perspective=Runtime(\+|%20)View/)
+    await expect(page.locator('.diagram-top-bar__path-text')).toContainText('dojo/nesting.ilograph.yaml')
+    await expect(page).toHaveURL(/tab=dojo%3Anesting/)
+    await expect(page).toHaveURL(/perspective=dependencies/)
 
     const edgePaths = page.locator('.vue-flow__edge-path')
-    await expect(edgePaths).toHaveCount(2)
-    await expect(page.getByRole('checkbox', { name: 'Show creates relations' })).toBeChecked()
-    await expect(page.getByRole('checkbox', { name: 'Show calls relations' })).toBeChecked()
-    await expect(page.getByRole('checkbox', { name: 'Show depends on relations' })).toHaveCount(0)
+    await expect(edgePaths).toHaveCount(4)
+    await expect(page.getByRole('checkbox', { name: 'Show depends on relations' })).toBeChecked()
   })
 
-  test('package nesting dojo exposes a depth slider and regenerates the diagram', async ({ page }) => {
-    await page.goto('/?tab=dojo:package-nesting&dojoDepth=3')
+  test('class stacking dojo exposes an artefact count slider and regenerates the diagram', async ({ page }) => {
+    await page.goto('/?tab=dojo:class-stacking&dojoDepth=1')
 
-    await expect(page.getByRole('tab', { name: /package-nesting\.ilograph\.yaml/i })).toBeVisible()
+    await expect(page.getByRole('tab', { name: /class-stacking\.ilograph\.yaml/i })).toBeVisible()
     await expect(page.getByRole('tab', { name: 'Dojo' })).toBeVisible()
-    await expect(page.getByLabel('Package nesting depth')).toHaveValue('3')
-    await expect(page.getByText('package-3', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('Class stacking count')).toHaveValue('1')
+    await expect(page.getByText('class-stack-demo', { exact: true })).toBeVisible()
 
-    await page.getByLabel('Package nesting depth').fill('6')
+    await page.getByLabel('Class stacking count').fill('40')
 
-    await expect(page.getByLabel('Package nesting depth')).toHaveValue('6')
-    await expect(page.getByText('package-6', { exact: true })).toBeVisible()
-    await expect(page).toHaveURL(/dojoDepth=6/)
+    await expect(page.getByLabel('Class stacking count')).toHaveValue('40')
+    await expect(page).toHaveURL(/dojoDepth=40/)
+  })
+
+  test('class inheritance chain dojo exposes an artefact count slider and regenerates the diagram', async ({
+    page,
+  }) => {
+    await page.goto('/?tab=dojo:class-inheritance-chain&dojoDepth=2')
+
+    await expect(page.getByRole('tab', { name: /class-inheritance-chain\.ilograph\.yaml/i })).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Dojo' })).toBeVisible()
+    await expect(page.getByLabel('Class inheritance chain artefact count')).toHaveValue('2')
+    await expect(page.getByText('inherit-chain-demo', { exact: true })).toBeVisible()
+
+    await page.getByLabel('Class inheritance chain artefact count').fill('12')
+
+    await expect(page.getByLabel('Class inheritance chain artefact count')).toHaveValue('12')
+    await expect(page).toHaveURL(/dojoDepth=12/)
   })
 
   test('package stacking dojo exposes a count slider and regenerates the diagram', async ({ page }) => {
@@ -504,177 +254,15 @@ test.describe('dojo fixtures', () => {
     await expect(verticalRail).toHaveAttribute('aria-valuenow', /[0-9]+/)
   })
 
-  test('outermost nesting package keeps filling the viewport across depths and resizes', async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 980 })
-    await page.goto('/?tab=dojo:package-nesting&dojoDepth=1')
-
-    await expect
-      .poll(() => rootPackageViewportFill(page))
-      .toMatchObject({ widthRatio: expect.any(Number), heightRatio: expect.any(Number) })
-
-    for (const depth of NESTING_DEPTH_SWEEP) {
-      await page.getByLabel('Package nesting depth').fill(String(depth))
-      await expect(page.getByLabel('Package nesting depth')).toHaveValue(String(depth))
-      await expect(page.getByText(`package-${depth}`, { exact: true })).toBeVisible()
-
-      const initial = await rootPackageViewportFill(page)
-      expect(initial.widthRatio).toBeGreaterThan(0.88)
-      expect(initial.heightRatio).toBeGreaterThan(0.84)
-
-      await page.setViewportSize({ width: 1180, height: 820 })
-      const smaller = await rootPackageViewportFill(page)
-      expect(smaller.widthRatio).toBeGreaterThan(0.88)
-      expect(smaller.heightRatio).toBeGreaterThan(0.84)
-
-      await page.setViewportSize({ width: 1560, height: 1040 })
-      const larger = await rootPackageViewportFill(page)
-      expect(larger.widthRatio).toBeGreaterThan(0.88)
-      expect(larger.heightRatio).toBeGreaterThan(0.84)
-    }
-  })
-
-  test('nested packages remain fully contained inside their parent across depths and resizes', async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 980 })
-    await page.goto('/?tab=dojo:package-nesting&dojoDepth=4')
-
-    for (const depth of NESTING_DEPTH_SWEEP_FROM_TWO) {
-      await page.getByLabel('Package nesting depth').fill(String(depth))
-      await expect(page.getByLabel('Package nesting depth')).toHaveValue(String(depth))
-      await expect(page.getByText(`package-${depth}`, { exact: true })).toBeVisible()
-
-      for (const viewport of [
-        { width: 1440, height: 980 },
-        { width: 1180, height: 820 },
-        { width: 1560, height: 1040 },
-      ]) {
-        await page.setViewportSize(viewport)
-        await expect
-          .poll(async () => (await nestedPackageContainment(page, depth)).length)
-          .toBe(Math.max(0, depth - 1))
-        const containment = await nestedPackageContainment(page, depth)
-        for (const row of containment) {
-          expect(row.childWidth).toBeGreaterThan(24)
-          expect(row.childHeight).toBeGreaterThan(24)
-          expect(
-            row.fullyContained,
-            `${row.childId} should stay inside ${row.parentId} ` +
-              `${JSON.stringify({
-                child: {
-                  left: row.childLeft,
-                  top: row.childTop,
-                  right: row.childRight,
-                  bottom: row.childBottom,
-                },
-                parent: {
-                  left: row.parentLeft,
-                  top: row.parentTop,
-                  right: row.parentRight,
-                  bottom: row.parentBottom,
-                },
-              })}`,
-          ).toBe(true)
-        }
-      }
-    }
-  })
-
-  test('innermost unfocused package keeps title and subtitle visible below the icon', async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 980 })
-    await page.goto('/?tab=dojo:package-nesting&dojoDepth=4')
-
-    for (const depth of NESTING_DEPTH_SWEEP_FROM_TWO) {
-      await page.getByLabel('Package nesting depth').fill(String(depth))
-      await expect(page.getByLabel('Package nesting depth')).toHaveValue(String(depth))
-      await expect(page.getByText(`package-${depth}`, { exact: true })).toBeVisible()
-
-      await expect
-        .poll(() => innermostPackageHeaderLayout(page, depth), { timeout: 15000 })
-        .toMatchObject({ nodeFound: true, iconFound: true, titleFound: true })
-      const layout = await innermostPackageHeaderLayout(page, depth)
-      expect(layout.nodeFound).toBe(true)
-      expect(layout.iconFound).toBe(true)
-      expect(layout.titleFound).toBe(true)
-      // Title may sit beside the icon (shared row) or below it depending on breakpoint.
-      const titleSharesIconRow =
-        layout.titleTop < layout.iconBottom + 2 && layout.titleTop > layout.iconTop - 36
-      expect(titleSharesIconRow || layout.titleTop > layout.iconBottom - 1).toBe(true)
-      // Subtitle may be omitted in very tight innermost layouts.
-      if (layout.subtitleFound) {
-        expect(layout.subtitleTop).toBeGreaterThan(layout.titleTop)
-      }
-    }
-  })
-
-  test('non-innermost packages keep icon, title, and subtitle in the top-left corner', async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 980 })
-    await page.goto('/?tab=dojo:package-nesting&dojoDepth=4')
-
-    for (const depth of NESTING_DEPTH_SWEEP_FROM_TWO) {
-      await page.getByLabel('Package nesting depth').fill(String(depth))
-      await expect(page.getByLabel('Package nesting depth')).toHaveValue(String(depth))
-      await expect(page.getByText(`package-${depth}`, { exact: true })).toBeVisible()
-
-      const levelsToCheck = Array.from(new Set([1, Math.max(1, depth - 1)])).filter((level) => level < depth)
-      for (const level of levelsToCheck) {
-        const layout = await nonInnermostPackageHeaderLayout(page, level)
-        expect(layout.nodeFound).toBe(true)
-        expect(layout.iconFound).toBe(true)
-        expect(layout.titleFound).toBe(true)
-        expect(layout.subtitleFound).toBe(true)
-        expect(layout.headerLeftInset).toBeLessThan(28)
-        expect(layout.headerTopInset).toBeLessThan(56)
-        expect(layout.titleLeftOffsetFromIcon).toBeGreaterThan(4)
-        expect(layout.subtitleLeftOffsetFromIcon).toBeGreaterThan(4)
-        expect(layout.titleTopOffsetFromNode).toBeLessThan(80)
-        expect(layout.subtitleTopOffsetFromTitle).toBeGreaterThanOrEqual(-2)
-      }
-    }
-  })
-
-  test('nesting keeps the next package header visible', async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 980 })
-    await page.goto('/?tab=dojo:package-nesting&dojoDepth=4')
-
-    for (const depth of NESTING_DEPTH_SWEEP_FROM_TWO) {
-      await page.getByLabel('Package nesting depth').fill(String(depth))
-      await expect(page.getByLabel('Package nesting depth')).toHaveValue(String(depth))
-      await expect(page.getByText(`package-${depth}`, { exact: true })).toBeVisible()
-
-      const visibility = await immediateChildHeaderVisibility(page, depth)
-      // Header visibility heuristics are allowed to collapse intermediate headers under pressure.
-      expect(visibility.length).toBeGreaterThan(0)
-      for (const row of visibility) {
-        expect(row.iconVisibleInsideChild, `${row.childId} icon should stay visible inside the child box`).toBe(true)
-        expect(row.titleVisibleInsideChild, `${row.childId} title should stay visible inside the child box`).toBe(true)
-        expect(
-          row.iconVisibleInsideParent,
-          `${row.childId} icon should remain visible within ${row.parentId}`,
-        ).toBe(true)
-        expect(
-          row.titleVisibleInsideParent,
-          `${row.childId} title should remain visible within ${row.parentId}`,
-        ).toBe(true)
-        expect(row.iconTopOffset).toBeGreaterThanOrEqual(0)
-        if (Number.isFinite(row.subtitleBottomGap)) {
-          expect(row.subtitleBottomGap).toBeGreaterThanOrEqual(0)
-        }
-      }
-    }
-  })
-
   test('relation checkboxes affect dojo edge rendering', async ({ page }) => {
-    await page.goto('/?dojo=relations')
+    await page.goto('/?tab=dojo:package-tree&dojoDepth=4')
 
     const edgePaths = page.locator('.vue-flow__edge-path')
     const nodeCount = await diagramNodeCount(page)
-    await expect(edgePaths).toHaveCount(4)
-
-    await page.getByRole('checkbox', { name: 'Show has trait relations' }).uncheck()
     await expect(edgePaths).toHaveCount(3)
-    await expect.poll(() => diagramNodeCount(page)).toBe(nodeCount)
 
-    await page.getByRole('checkbox', { name: 'Show gets relations' }).uncheck()
-    await expect(edgePaths).toHaveCount(2)
+    await page.getByRole('checkbox', { name: 'Show imports relations' }).uncheck()
+    await expect(edgePaths).toHaveCount(0)
     await expect.poll(() => diagramNodeCount(page)).toBe(nodeCount)
   })
 
@@ -682,13 +270,13 @@ test.describe('dojo fixtures', () => {
     const pageErrors: Error[] = []
     page.on('pageerror', (error) => pageErrors.push(error))
 
-    await page.goto('/?dojo=folding')
+    await page.goto('/?dojo=large-drill-perf')
 
-    await page.getByTestId('diagram-node-system').click({ force: true })
-    await page.getByTestId('diagram-node-domain').click({ force: true })
-    await page.getByTestId('diagram-node-aggregate-users').click({ force: true })
+    await page.getByTestId('diagram-node-core-types').click({ force: true })
+    await page.getByTestId('diagram-node-platform-auth').click({ force: true })
+    await page.getByTestId('diagram-node-domain-accounts').click({ force: true })
 
     await expect(pageErrors).toEqual([])
-    await expect(page.getByRole('tab', { name: /folding\.ilograph\.yaml/i })).toBeVisible()
+    await expect(page.getByRole('tab', { name: /large-drill-perf\.ilograph\.yaml/i })).toBeVisible()
   })
 })

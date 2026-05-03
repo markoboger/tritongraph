@@ -1,9 +1,20 @@
 /**
- * Minimum width Vue Flow leaf nodes may shrink to — matches the pinned icon column (~40px badge
- * + 2–4px inset). Node resizers on diagram flow nodes use this.
+ * Square footprint (px) for the language / folder / kind badge in diagram node chrome. Leaf
+ * minimum width and height, layout floors, and header icon slots all derive from this so the
+ * box never shrinks below the logo in either axis.
  */
-export const DIAGRAM_LEAF_MIN_WIDTH_PX = 44
-export const DIAGRAM_LEAF_MIN_HEIGHT_PX = 40
+export const DIAGRAM_LOGO_BOX_PX = 40
+
+export const DIAGRAM_LEAF_MIN_WIDTH_PX = DIAGRAM_LOGO_BOX_PX
+export const DIAGRAM_LEAF_MIN_HEIGHT_PX = DIAGRAM_LOGO_BOX_PX
+
+/**
+ * Flow `type: 'artefact'` leaves (Scala class / trait / object cards): smaller footprint than
+ * dependency-column {@link MODULE_W} / full-viewport singleton packages so artefacts read as
+ * compact members, not full canvas tiles.
+ */
+export const DIAGRAM_ARTEFACT_PREFERRED_WIDTH_PX = 176
+export const DIAGRAM_ARTEFACT_PREFERRED_HEIGHT_PX = 112
 
 /**
  * Inline width at which BoxMetricStrip stacks its rows (`@container (max-width: 150px)`).
@@ -26,10 +37,19 @@ export const METRICS_BREAK_PORTRAIT_MAX_W_ENTER_PX = 240
 export const METRICS_BREAK_PORTRAIT_MAX_W_EXIT_PX = 268
 
 /**
- * Chrome widths used by slim metrics layouts: the pinned language logo is 40px wide and one
- * metric chip is 36px wide. The slim layout begins once those two can sit side-by-side.
+ * Wide but not tall enough for stacked default chrome: corner folder + metric strip (same as narrow
+ * break) so subtitle stays in-flow. Hysteresis mirrors other layout bands.
  */
-export const SLIM_LAYOUT_LOGO_WIDTH_PX = 40
+export const METRICS_BREAK_SHALLOW_ENTER_H_PX = 118
+export const METRICS_BREAK_SHALLOW_EXIT_H_PX = 130
+export const METRICS_BREAK_SHALLOW_MIN_WIDTH_PX = 128
+export const METRICS_BREAK_SHALLOW_MIN_WIDTH_EXIT_PX = 120
+
+/**
+ * Chrome widths used by slim metrics layouts: the pinned language logo uses {@link DIAGRAM_LOGO_BOX_PX}
+ * and one metric chip is 36px wide. The slim layout begins once those two can sit side-by-side.
+ */
+export const SLIM_LAYOUT_LOGO_WIDTH_PX = DIAGRAM_LOGO_BOX_PX
 export const SLIM_LAYOUT_METRIC_CHIP_WIDTH_PX = 36
 export const SLIM_LAYOUT_MIN_WIDTH_PX = SLIM_LAYOUT_LOGO_WIDTH_PX + SLIM_LAYOUT_METRIC_CHIP_WIDTH_PX
 export const SLIM_LAYOUT_MIN_WIDTH_EXIT_PX = SLIM_LAYOUT_MIN_WIDTH_PX + 8
@@ -41,8 +61,13 @@ export const SLIM_LAYOUT_MIN_WIDTH_EXIT_PX = SLIM_LAYOUT_MIN_WIDTH_PX + 8
 export const SUPERSLIM_LAYOUT_ENTER_PX = 96
 export const SUPERSLIM_LAYOUT_EXIT_PX = 104
 
-export const FLAT_LAYOUT_MAX_H_PX = 96
-export const FLAT_LAYOUT_EXIT_H_PX = 108
+/**
+ * Wide shallow nodes (e.g. ~167×101): stacked default chrome clips subtitle under `overflow:hidden`.
+ * Flat row layout fits title + metrics summary in one short band — keep in sync with breakpoint dojo
+ * `flat-layout` sample max height in {@link App.vue}.
+ */
+export const FLAT_LAYOUT_MAX_H_PX = 112
+export const FLAT_LAYOUT_EXIT_H_PX = 122
 export const FLAT_LAYOUT_MIN_WIDTH_PX = 128
 export const FLAT_LAYOUT_MIN_WIDTH_EXIT_PX = FLAT_LAYOUT_MIN_WIDTH_PX - 8
 
@@ -74,12 +99,19 @@ export function nextMetricsBreakLayout(boxWidthPx: number, boxHeightPx: number, 
     w < METRICS_BREAK_PORTRAIT_MAX_W_EXIT_PX &&
     permille >= METRICS_BREAK_PORTRAIT_EXIT_PERMILLE
 
+  const shallowEnter =
+    h <= METRICS_BREAK_SHALLOW_ENTER_H_PX &&
+    w >= METRICS_BREAK_SHALLOW_MIN_WIDTH_PX &&
+    w > METRICS_STRIP_BREAK_EXIT_PX
+  const shallowStay =
+    h < METRICS_BREAK_SHALLOW_EXIT_H_PX && w >= METRICS_BREAK_SHALLOW_MIN_WIDTH_EXIT_PX
+
   if (prev) {
     const narrowStay = w < METRICS_STRIP_BREAK_EXIT_PX
-    return narrowStay || portraitStay
+    return narrowStay || portraitStay || shallowStay
   }
   const narrowEnter = w <= METRICS_STRIP_BREAK_ENTER_PX
-  return narrowEnter || portraitEnter
+  return narrowEnter || portraitEnter || shallowEnter
 }
 
 export function nextSuperslimLayout(

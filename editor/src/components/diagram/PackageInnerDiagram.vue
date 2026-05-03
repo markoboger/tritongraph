@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { TritonInnerArtefactSpec, TritonInnerPackageSpec } from '../../ilograph/types'
 import scalaIconUrl from '../../assets/language-icons/scala.svg'
 import scalaClassIconUrl from '../../assets/language-icons/scala-class.svg'
@@ -11,6 +11,10 @@ import DiagramLeafBox from './DiagramLeafBox.vue'
 import ScalaArtefactBox from './ScalaArtefactBox.vue'
 import type { InnerEdgeDraw, PortEndpoint } from './innerArtefactGraphHelpers'
 import InnerArtefactEdgesSvg from './InnerArtefactEdgesSvg.vue'
+import {
+  innerArtefactRelationLaneGapPx,
+  innerMemberMemberRelationDrawCountForLaneGap,
+} from './innerArtefactRelationLayout'
 import InnerPackageStack from './InnerPackageStack.vue'
 import InnerDiagramPorts from './InnerDiagramPorts.vue'
 
@@ -74,12 +78,35 @@ const allRelationDraws = computed(() => [
   ...props.emphasizedInnerEdgeDraws,
   ...props.routedOverlayInnerEdgeDraws,
 ])
+/**
+ * Pixel `gap` for `.package-box__inner-artefact-cols` driven by {@link innerArtefactRelationLaneGapPx}:
+ * the lane starts at a roomy preferred width for two-column inheritance chains, then **yields
+ * faster than artefact tracks** as more inheritance layers stack horizontally (yield curve in
+ * {@link innerArtefactRelationLayout}). Only **member↔member** edges count toward the per-edge
+ * label-density boost — port stubs and cross-package bridges no longer widen the gutter.
+ *
+ * Restored after the wrapper-element revert dropped the previous wiring; the constants in
+ * `innerArtefactRelationLayout.ts` were preserved so this stays a one-line plug-back-in.
+ */
+const innerColumnArtefactIdSet = computed(() => {
+  const ids = new Set<string>()
+  for (const col of props.innerArtefactLayerColumns) {
+    for (const id of col) ids.add(id)
+  }
+  return ids
+})
+const memberMemberRelationCount = computed(() =>
+  innerMemberMemberRelationDrawCountForLaneGap(allRelationDraws.value, innerColumnArtefactIdSet.value),
+)
 const relationLaneStyle = computed(() => {
   const columns = props.innerArtefactLayerColumns.length
   if (columns <= 1 || allRelationDraws.value.length === 0) return undefined
-  const lane = Math.min(180, 88 + Math.min(6, allRelationDraws.value.length) * 8)
+  const lane = innerArtefactRelationLaneGapPx(columns, memberMemberRelationCount.value)
   return { '--triton-inner-relation-lane': `${lane}px` }
 })
+const showInnerRelationLane = computed(
+  () => props.innerArtefactLayerColumns.length > 1 && memberMemberRelationCount.value > 0,
+)
 
 function scalaIconForKind(subtitle: string | undefined): string {
   const k = (subtitle ?? '').trim().toLowerCase()
@@ -118,6 +145,12 @@ function artefactSlotStyle(id: string): Record<string, string> {
     '--triton-inner-artefact-preferred-h': `${verticalTitlePreferredHeight(cell?.name)}px`,
   }
 }
+
+/**
+ * Cross-package endpoint chips: lift port layer above inner artefacts only while a chip is
+ * being hovered (Vue `:has(:deep())` is unreliable across the scoped child DOM boundary).
+ */
+const innerEndpointChipHovered = ref(false)
 </script>
 
 <template>
@@ -153,6 +186,7 @@ function artefactSlotStyle(id: string): Record<string, string> {
         'package-box__inner-artefact-cols--child-package-lane':
           innerArtefactFocusActive && childPackagePortsById.size > 0,
         'package-box__inner-artefact-cols--with-packages': mode === 'focused' && topLevelInnerPackages.length > 0,
+        'package-box__inner-artefact-cols--inner-relations': showInnerRelationLane,
       }"
       :style="mode === 'focused' ? { ...relationLaneStyle, ...colsTransformStyle } : relationLaneStyle"
     >
@@ -261,13 +295,17 @@ function artefactSlotStyle(id: string): Record<string, string> {
         </template>
       </InnerPackageStack>
 
-      <div class="package-box__inner-port-layer">
+      <div
+        class="package-box__inner-port-layer"
+        :class="{ 'package-box__inner-port-layer--endpoint-chip-hover': innerEndpointChipHovered }"
+      >
         <InnerDiagramPorts
           :show-root-ports="mode === 'focused'"
           :root-ports-left="rootPackagePortsLeft"
           :root-ports-right="rootPackagePortsRight"
           :external-endpoints="crossPackageExternalEndpoints"
           :bind-slot-el="bindSlotEl"
+          @endpoint-chip-hover="innerEndpointChipHovered = $event"
         />
       </div>
 
@@ -441,15 +479,38 @@ function artefactSlotStyle(id: string): Record<string, string> {
 .package-box__inner-artefact-cols:has(:deep(.package-box__external-endpoint-chip:hover)) {
   z-index: 6;
 }
+/**
+ * Cross-package endpoint chips live in this layer. They sit in the **background** by default
+ * (`z-index: 0`) so they cannot occlude inner artefact rows or the focused artefact card; the
+ * `--endpoint-chip-hover` modifier (driven by {@link InnerDiagramPorts} hover emit) lifts the
+ * whole layer to the foreground only while the user is hovering a chip — when they want to read
+ * the full label and follow the cross-package edge.
+ *
+ * The `:has(:hover)` rule below is a CSS fallback for browsers / scoping where the emit
+ * doesn't reach (e.g. event swallowed by a parent). Both paths arrive at the same lifted z.
+ */
 .package-box__inner-port-layer {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 0;
   pointer-events: none;
   overflow: visible;
 }
 .package-box__inner-port-layer:has(:deep(.package-box__external-endpoint-chip:hover)) {
-  z-index: 10;
+  z-index: 40;
+}
+.package-box__inner-port-layer--endpoint-chip-hover {
+  z-index: 40;
+}
+/**
+ * Pressure-aware horizontal `gap` between artefact columns when **member↔member** relations are
+ * drawn (inheritance / `extends` chains). The lane width is computed in the script via
+ * {@link innerArtefactRelationLaneGapPx}: roomy at two columns, yielding faster than artefact
+ * tracks as more inheritance layers stack horizontally. Without this modifier the cols default
+ * to the small `clamp(18px, 5.5cqw, 36px)` gap which is too tight for inheritance edges.
+ */
+.package-box__inner-artefact-cols--inner-relations {
+  gap: var(--triton-inner-relation-lane);
 }
 .package-box__inner-artefact-cols--artefact-focus {
   flex: 1 1 0;
@@ -473,6 +534,9 @@ function artefactSlotStyle(id: string): Record<string, string> {
   justify-content: flex-start;
 }
 .package-box__inner-artefact-col {
+  /** `position: relative; z-index: 1` keeps artefact columns above the background port layer (z 0). */
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -487,6 +551,35 @@ function artefactSlotStyle(id: string): Record<string, string> {
     flex 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     max-width 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     min-width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/**
+ * Endpoint chips live behind the artefact columns; in the port-lane modes (left/right) the
+ * chips visually overlap the **first/last** artefact column. Pass pointer events through the
+ * inner-slot wrapper of those edge columns so chips below remain hoverable, but keep the
+ * `.package-box__artefact-row` itself interactive (click + cursor still on the artefact card).
+ */
+.package-box__inner-artefact-cols--left-port-lane
+  > .package-box__inner-artefact-col:first-of-type
+  .package-box__inner-slot.package-box__inner-slot--artefact-layer:not(.package-box__inner-slot--artefact-focused-cell) {
+  pointer-events: none;
+}
+.package-box__inner-artefact-cols--left-port-lane
+  > .package-box__inner-artefact-col:first-of-type
+  .package-box__inner-slot.package-box__inner-slot--artefact-layer:not(.package-box__inner-slot--artefact-focused-cell)
+  .package-box__artefact-row {
+  pointer-events: auto;
+}
+.package-box__inner-artefact-cols--right-port-lane
+  > .package-box__inner-artefact-col:last-of-type
+  .package-box__inner-slot.package-box__inner-slot--artefact-layer:not(.package-box__inner-slot--artefact-focused-cell) {
+  pointer-events: none;
+}
+.package-box__inner-artefact-cols--right-port-lane
+  > .package-box__inner-artefact-col:last-of-type
+  .package-box__inner-slot.package-box__inner-slot--artefact-layer:not(.package-box__inner-slot--artefact-focused-cell)
+  .package-box__artefact-row {
+  pointer-events: auto;
 }
 .package-box__inner-artefact-cols--artefact-focus > .package-box__inner-artefact-col {
   min-height: 0;

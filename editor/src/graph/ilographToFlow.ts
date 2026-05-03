@@ -15,6 +15,7 @@ import { dependencyEdgeLabelStyle, dependencyEdgeStyle, markersForAggregateEdge,
 import { isAggregateEdge, strokeForIlographRelation } from './relationKinds'
 import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE } from './handles'
 import { drillNoteForModuleId } from './sbtStyleDrillNotes'
+import { DIAGRAM_ARTEFACT_PREFERRED_WIDTH_PX } from '../components/diagram/boxChromeLayout'
 import { packageContentWeight, preferredPackageFocusWidth } from './layoutDependencyLayers'
 
 const DEP_PERSPECTIVE_NAMES = new Set(['dependencies', 'module dependencies', 'depends on'])
@@ -290,7 +291,7 @@ export function ilographDocumentToFlow(
       projectCompartments?.length
         ? 460
         : leafType === 'artefact'
-          ? 520
+          ? Math.max(320, Math.round(DIAGRAM_ARTEFACT_PREFERRED_WIDTH_PX * 2))
           : preferredPackageFocusWidth(packageContentData)
     const contentWeight = leafType === 'package' ? packageContentWeight(packageContentData) : undefined
     const preferredLeafHeight =
