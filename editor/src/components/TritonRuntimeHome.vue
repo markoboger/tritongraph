@@ -16,9 +16,11 @@ import courseIconUrl from '../assets/language-icons/course.svg'
 import { dockerBrandIconUrl } from '../triton/dockerConceptIcons'
 import cubeIconUrl from '../assets/language-icons/cube.svg'
 import sbtIconUrl from '../assets/language-icons/sbt.svg'
+import scalaIconUrl from '../assets/language-icons/scala.svg'
 import typescriptIconUrl from '../assets/language-icons/typescript.svg'
 import genericIconUrl from '../assets/language-icons/generic.svg'
 import tritonIconUrl from '../assets/language-icons/triton.svg'
+import { formatLinesOfCodeUnit } from '../graph/linesOfCodeDisplay'
 
 /** Derived on GET /api/home when runtime supports workspace sbt tests and logs. */
 export type WorkspaceTestCiStatus = 'none' | 'idle' | 'running' | 'failed' | 'passed'
@@ -94,6 +96,11 @@ const props = withDefaults(
     runtimeBaseUrl: string
     /** Bundled YAML / dojo / sbt / TS examples as home cards. */
     starterCards?: StarterCard[]
+    /**
+     * Main Scala LOC (non-`src/test/`) keyed by runtime `workspacePath`, updated after a successful
+     * workspace bundle fetch (SBT or package diagram).
+     */
+    workspaceMainScalaLocByPath?: Readonly<Record<string, number>>
     /** Present when opened from an IDE with `ideOpenUrl` (and related) query params. */
     ideSession?: TritonIdeSession | null
     /** App status line (errors, hints). */
@@ -101,6 +108,7 @@ const props = withDefaults(
   }>(),
   {
     starterCards: () => [],
+    workspaceMainScalaLocByPath: () => ({}),
     ideSession: null,
     statusMessage: '',
   },
@@ -1073,8 +1081,37 @@ function formatLastOpened(value?: string): string {
   return d.toLocaleString()
 }
 
-function repoKind(repo: RuntimeHomeRepo): string {
-  return repo.probe?.kind || 'workspace'
+function repoMainScalaLocLabel(repo: RuntimeHomeRepo): string {
+  const n = props.workspaceMainScalaLocByPath[repo.workspacePath]
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return ''
+  return formatLinesOfCodeUnit(n)
+}
+
+function repoProbeKindLower(repo: RuntimeHomeRepo): string {
+  return String(repo.probe?.kind ?? '').toLowerCase()
+}
+
+/** Primary language glyph under the repo host icon (from runtime probe, with Scala LOC / sbt-layout fallbacks). */
+function repoLanguageIconUrl(repo: RuntimeHomeRepo): string | null {
+  const k = repoProbeKindLower(repo)
+  if (k.includes('typescript') || k === 'ts' || k.includes('javascript') || k === 'js')
+    return typescriptIconUrl
+  if (k === 'scala-sbt' || k.includes('scala')) return scalaIconUrl
+  if (repoMainScalaLocLabel(repo)) return scalaIconUrl
+  if (repo.probe?.hasBuildSbt || repo.probe?.hasProjectDir) return scalaIconUrl
+  return null
+}
+
+/** Build tool glyph (sbt when `build.sbt` or `project/` is present). */
+function repoBuildIconUrl(repo: RuntimeHomeRepo): string | null {
+  const p = repo.probe
+  if (!p) return null
+  if (p.hasBuildSbt || p.hasProjectDir) return sbtIconUrl
+  return null
+}
+
+function repoTechStackShown(repo: RuntimeHomeRepo): boolean {
+  return !!(repoLanguageIconUrl(repo) || repoBuildIconUrl(repo))
 }
 
 function repoCardIconUrl(repo: RuntimeHomeRepo): string {
@@ -1441,8 +1478,28 @@ watch(
             <p v-if="!(course.workspaces?.length)" class="runtime-home__fold-hint">No workspaces linked yet.</p>
             <div v-else class="runtime-home__grid">
               <article v-for="repo in course.workspaces" :key="repo.workspacePath" class="repo-card">
-                <div class="repo-card__icon-wrap" aria-hidden="true">
-                  <img class="repo-card__icon" :src="repoCardIconUrl(repo)" width="28" height="28" alt="" />
+                <div class="repo-card__icon-column">
+                  <div class="repo-card__icon-wrap" aria-hidden="true">
+                    <img class="repo-card__icon" :src="repoCardIconUrl(repo)" width="28" height="28" alt="" />
+                  </div>
+                  <div v-if="repoTechStackShown(repo)" class="repo-card__tech-stack" aria-hidden="true">
+                    <img
+                      v-if="repoLanguageIconUrl(repo)"
+                      class="repo-card__tech-icon"
+                      :src="repoLanguageIconUrl(repo)!"
+                      width="22"
+                      height="22"
+                      alt=""
+                    />
+                    <img
+                      v-if="repoBuildIconUrl(repo)"
+                      class="repo-card__tech-icon"
+                      :src="repoBuildIconUrl(repo)!"
+                      width="22"
+                      height="22"
+                      alt=""
+                    />
+                  </div>
                 </div>
                 <div class="repo-card__body">
                   <div class="repo-card__title-row">
@@ -1462,9 +1519,11 @@ watch(
                   </div>
                   <p class="repo-card__path"><code>{{ repo.workspacePath }}</code></p>
                   <p class="repo-card__meta">
-                    <span class="repo-card__badge">{{ repoKind(repo) }}</span>
+                    <span v-if="repoMainScalaLocLabel(repo)" class="repo-card__loc-metric">{{
+                      repoMainScalaLocLabel(repo)
+                    }}</span>
                     <template v-if="repo.lastOpenedAt">
-                      <span class="repo-card__dot" aria-hidden="true">·</span>
+                      <span v-if="repoMainScalaLocLabel(repo)" class="repo-card__dot" aria-hidden="true">·</span>
                       <span class="runtime-home__muted">Linked {{ formatLastOpened(repo.lastOpenedAt) }}</span>
                     </template>
                   </p>
@@ -1857,8 +1916,28 @@ watch(
         </div>
         <div v-else class="runtime-home__grid">
           <article v-for="repo in repositoryCards" :key="repo.workspacePath" class="repo-card">
-            <div class="repo-card__icon-wrap" aria-hidden="true">
-              <img class="repo-card__icon" :src="repoCardIconUrl(repo)" width="28" height="28" alt="" />
+            <div class="repo-card__icon-column">
+              <div class="repo-card__icon-wrap" aria-hidden="true">
+                <img class="repo-card__icon" :src="repoCardIconUrl(repo)" width="28" height="28" alt="" />
+              </div>
+              <div v-if="repoTechStackShown(repo)" class="repo-card__tech-stack" aria-hidden="true">
+                <img
+                  v-if="repoLanguageIconUrl(repo)"
+                  class="repo-card__tech-icon"
+                  :src="repoLanguageIconUrl(repo)!"
+                  width="22"
+                  height="22"
+                  alt=""
+                />
+                <img
+                  v-if="repoBuildIconUrl(repo)"
+                  class="repo-card__tech-icon"
+                  :src="repoBuildIconUrl(repo)!"
+                  width="22"
+                  height="22"
+                  alt=""
+                />
+              </div>
             </div>
             <div class="repo-card__body">
               <div class="repo-card__title-row">
@@ -1879,9 +1958,11 @@ watch(
               </div>
               <p class="repo-card__path"><code>{{ repo.workspacePath }}</code></p>
               <p class="repo-card__meta">
-                <span class="repo-card__badge">{{ repoKind(repo) }}</span>
+                <span v-if="repoMainScalaLocLabel(repo)" class="repo-card__loc-metric">{{
+                  repoMainScalaLocLabel(repo)
+                }}</span>
                 <template v-if="repo.lastOpenedAt">
-                  <span class="repo-card__dot" aria-hidden="true">·</span>
+                  <span v-if="repoMainScalaLocLabel(repo)" class="repo-card__dot" aria-hidden="true">·</span>
                   <span class="runtime-home__muted">Last opened {{ formatLastOpened(repo.lastOpenedAt) }}</span>
                 </template>
               </p>
@@ -2525,6 +2606,28 @@ watch(
   border-color: #cbd5e1;
   box-shadow: 0 6px 20px rgba(15, 23, 42, 0.07);
 }
+.repo-card__icon-column {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.repo-card__tech-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 0;
+}
+.repo-card__tech-icon {
+  display: block;
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  opacity: 0.92;
+}
 .repo-card__icon-wrap {
   flex-shrink: 0;
   width: 48px;
@@ -2634,13 +2737,13 @@ watch(
 .repo-card__dot {
   color: #94a3b8;
 }
-.repo-card__badge {
+.repo-card__loc-metric {
   display: inline-flex;
   align-items: center;
   padding: 2px 8px;
   border-radius: 999px;
-  background: #e0f2fe;
-  color: #0369a1;
+  background: #ecfdf5;
+  color: #047857;
   font-size: 11px;
   font-weight: 700;
 }

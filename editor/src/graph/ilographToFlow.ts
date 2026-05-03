@@ -126,6 +126,8 @@ function normalizeInnerArtefactSpec(raw: unknown): TritonInnerArtefactSpec | nul
     typeof o.sourceFile === 'string' && o.sourceFile.trim() ? String(o.sourceFile) : undefined
   const sourceRow =
     typeof o.sourceRow === 'number' && Number.isFinite(o.sourceRow) ? (o.sourceRow as number) : undefined
+  const sourceEndRow =
+    typeof o.sourceEndRow === 'number' && Number.isFinite(o.sourceEndRow) ? (o.sourceEndRow as number) : undefined
   return {
     id: o.id,
     name,
@@ -137,20 +139,22 @@ function normalizeInnerArtefactSpec(raw: unknown): TritonInnerArtefactSpec | nul
     ...(methodSignatures.length ? { methodSignatures } : {}),
     ...(sourceFile ? { sourceFile } : {}),
     ...(sourceRow !== undefined ? { sourceRow } : {}),
+    ...(sourceEndRow !== undefined ? { sourceEndRow } : {}),
   }
 }
 
 /**
- * Normalise `methodSignatures` entries to the rich shape `{ signature, startRow }`. The
+ * Normalise `methodSignatures` entries to the rich shape `{ signature, startRow, endRow? }`. The
  * canonical scanner output already emits objects; strings are accepted as a backwards-compat
  * fallback for hand-edited YAML (no row information → row `0`, which degrades the click-to-open
- * action to "open the file at the top" rather than failing silently). Anything else is dropped.
+ * action to "open the file at the top" rather than failing silently). Optional `endRow` is kept
+ * when present so the Methods panel can show per-member line spans. Anything else is dropped.
  */
 function normalizeMethodSignatureArray(
   raw: unknown,
-): Array<{ signature: string; startRow: number }> {
+): Array<{ signature: string; startRow: number; endRow?: number }> {
   if (!Array.isArray(raw)) return []
-  const out: Array<{ signature: string; startRow: number }> = []
+  const out: Array<{ signature: string; startRow: number; endRow?: number }> = []
   for (const v of raw) {
     if (typeof v === 'string' && v.trim().length > 0) {
       out.push({ signature: v, startRow: 0 })
@@ -162,7 +166,11 @@ function normalizeMethodSignatureArray(
       if (!sig.trim()) continue
       const row =
         typeof o.startRow === 'number' && Number.isFinite(o.startRow) ? (o.startRow as number) : 0
-      out.push({ signature: sig, startRow: row })
+      const endRow =
+        typeof o.endRow === 'number' && Number.isFinite(o.endRow) ? (o.endRow as number) : undefined
+      out.push(
+        endRow !== undefined ? { signature: sig, startRow: row, endRow } : { signature: sig, startRow: row },
+      )
     }
   }
   return out
@@ -338,6 +346,10 @@ export function ilographDocumentToFlow(
           : {}),
         ...(typeof res['x-triton-source-row'] === 'number' && Number.isFinite(res['x-triton-source-row'])
           ? { sourceRow: res['x-triton-source-row'] as number }
+          : {}),
+        ...(typeof res['x-triton-source-end-row'] === 'number' &&
+        Number.isFinite(res['x-triton-source-end-row'])
+          ? { sourceEndRow: res['x-triton-source-end-row'] as number }
           : {}),
         ...(boxColor ? { boxColor } : {}),
         ...(!isGroup && pinnedIds.has(id) ? { pinned: true } : {}),

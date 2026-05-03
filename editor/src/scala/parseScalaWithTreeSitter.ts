@@ -84,6 +84,8 @@ export interface ParsedScalaParent {
 export interface ParsedScalaMethodSignature {
   signature: string
   startRow: number
+  /** 0-indexed last row of the method node (inclusive with {@link startRow}). */
+  endRow: number
 }
 
 export interface ParsedScalaDefinition {
@@ -778,7 +780,7 @@ function extractMethodSignatures(defNode: TSNode): ParsedScalaMethodSignature[] 
     // `startPosition.row` is 0-indexed (tree-sitter convention). Callers that build editor URLs
     // bump to 1 (see `openInEditor`); we keep it 0-indexed here so the value matches the other
     // `startRow` fields on {@link ParsedScalaDefinition}.
-    out.push({ signature: sig, startRow: c.startPosition.row })
+    out.push({ signature: sig, startRow: c.startPosition.row, endRow: c.endPosition.row })
   }
   return out
 }

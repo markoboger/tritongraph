@@ -17,6 +17,7 @@ import {
 } from './innerArtefactRelationLayout'
 import InnerPackageStack from './InnerPackageStack.vue'
 import InnerDiagramPorts from './InnerDiagramPorts.vue'
+import { artefactSubtitleSansMetrics, innerArtefactRowSubtitle } from '../../graph/linesOfCodeDisplay'
 
 type ExternalEndpoint = { id: string; label: string; side: 'left' | 'right'; foreignPackageId: string }
 
@@ -109,7 +110,7 @@ const showInnerRelationLane = computed(
 )
 
 function scalaIconForKind(subtitle: string | undefined): string {
-  const k = (subtitle ?? '').trim().toLowerCase()
+  const k = artefactSubtitleSansMetrics(subtitle).toLowerCase()
   if (k === 'class' || k === 'case class') return scalaClassIconUrl
   if (k === 'object' || k === 'case object') return scalaObjectIconUrl
   if (k === 'trait') return scalaTraitIconUrl
@@ -121,7 +122,7 @@ function kindBadgeForInnerArtefact(cell: TritonInnerArtefactSpec | undefined): s
   if (!cell) return null
   const src = (cell.sourceFile ?? '').toLowerCase()
   const isTs = src.endsWith('.ts') || src.endsWith('.tsx')
-  const k = (cell.subtitle ?? '').trim().toLowerCase()
+  const k = artefactSubtitleSansMetrics(cell.subtitle).toLowerCase()
   if (!isTs) return null
   if (k === 'interface') return 'I'
   if (k === 'class') return 'C'
@@ -225,6 +226,8 @@ const innerEndpointChipHovered = ref(false)
                   :label="artefactCell(artId)!.name"
                   :subtitle="artefactCell(artId)!.subtitle ?? ''"
                   :declaration="artefactCell(artId)!.declaration"
+                  :source-row="artefactCell(artId)!.sourceRow"
+                  :source-end-row="artefactCell(artId)!.sourceEndRow"
                   :description="artefactCell(artId)!.description"
                   :constructor-params="artefactCell(artId)!.constructorParams"
                   :constructor-signatures="artefactCell(artId)!.constructorSignatures"
@@ -266,7 +269,7 @@ const innerEndpointChipHovered = ref(false)
                 <DiagramLeafBox
                   class="package-box__artefact-row"
                   :label="artefactCell(artId)!.name"
-                  :subtitle="artefactCell(artId)!.declaration || (artefactCell(artId)!.subtitle ?? '')"
+                  :subtitle="innerArtefactRowSubtitle(artefactCell(artId)!)"
                   :icon-url="
                     kindBadgeForInnerArtefact(artefactCell(artId)!)
                       ? undefined
@@ -333,6 +336,8 @@ const innerEndpointChipHovered = ref(false)
               :label="artefactCell(artId)!.name"
               :subtitle="artefactCell(artId)!.subtitle ?? ''"
               :declaration="artefactCell(artId)!.declaration"
+              :source-row="artefactCell(artId)!.sourceRow"
+              :source-end-row="artefactCell(artId)!.sourceEndRow"
               :description="artefactCell(artId)!.description"
               :constructor-params="artefactCell(artId)!.constructorParams"
               :constructor-signatures="artefactCell(artId)!.constructorSignatures"
@@ -374,7 +379,7 @@ const innerEndpointChipHovered = ref(false)
             <DiagramLeafBox
               class="package-box__artefact-row"
               :label="artefactCell(artId)!.name"
-              :subtitle="artefactCell(artId)!.declaration || (artefactCell(artId)!.subtitle ?? '')"
+              :subtitle="innerArtefactRowSubtitle(artefactCell(artId)!)"
               :icon-url="
                 kindBadgeForInnerArtefact(artefactCell(artId)!)
                   ? undefined

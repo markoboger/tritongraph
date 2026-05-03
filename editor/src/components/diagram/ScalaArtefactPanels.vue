@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch, type Ref } from 'vue'
 import { openInEditor, type OpenInEditorTarget } from '../../openInEditor'
+import { formatLinesOfCodeUnit, physicalLineSpanInclusive } from '../../graph/linesOfCodeDisplay'
 import { useScalaDoc, useScalaSpecs, useScalaTestBlock } from '../../store/useOverlay'
 import ShikiCodeBlock from '../ShikiCodeBlock.vue'
 import TestChecklistBlock from '../TestChecklistBlock.vue'
@@ -9,8 +10,8 @@ const props = defineProps<{
   boxId: string
   description?: string
   constructorParams?: string
-  constructorSignatures?: ReadonlyArray<{ signature: string; startRow: number }>
-  methodSignatures?: ReadonlyArray<{ signature: string; startRow: number }>
+  constructorSignatures?: ReadonlyArray<{ signature: string; startRow: number; endRow?: number }>
+  methodSignatures?: ReadonlyArray<{ signature: string; startRow: number; endRow?: number }>
 }>()
 
 const emit = defineEmits<{
@@ -45,16 +46,23 @@ function lineCount(s: string): number {
   return s.split('\n').filter((l) => l.trim().length > 0).length
 }
 
+function signatureLineWithLoc(s: { signature: string; startRow: number; endRow?: number }): string {
+  if (!Number.isFinite(s.endRow)) return s.signature
+  const span = physicalLineSpanInclusive(s.startRow, s.endRow as number)
+  if (span <= 0) return s.signature
+  return `${s.signature}, ${formatLinesOfCodeUnit(span)}`
+}
+
 const methodSignaturesText = computed(() => {
   const sigs = props.methodSignatures
   if (!Array.isArray(sigs)) return ''
-  return sigs.map((s) => s.signature).join('\n')
+  return sigs.map(signatureLineWithLoc).join('\n')
 })
 
 const constructorSignaturesText = computed(() => {
   const sigs = props.constructorSignatures
   if (!Array.isArray(sigs)) return ''
-  return sigs.map((s) => s.signature).join('\n')
+  return sigs.map(signatureLineWithLoc).join('\n')
 })
 
 function splitConstructorArgs(raw: string): string[] {

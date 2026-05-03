@@ -10,6 +10,7 @@ export {
   sbtProjectsToIlographDocument,
   type SbtToIlographMeta,
 } from './sbtProjectsToIlographDocument'
+export { formatLinesOfCodeUnit } from './linesOfCodeFormat'
 export type {
   IlographDocument,
   IlographPerspective,

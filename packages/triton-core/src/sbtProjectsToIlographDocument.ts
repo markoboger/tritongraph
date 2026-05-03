@@ -5,6 +5,7 @@ import type {
   TritonProjectCompartment,
 } from './ilographTypes'
 import type { SbtSubproject } from './parseBuildSbt'
+import { formatLinesOfCodeUnit } from './linesOfCodeFormat'
 
 export interface SbtToIlographMeta {
   title?: string
@@ -16,6 +17,11 @@ export interface SbtToIlographMeta {
    * ignore the link or strip it.
    */
   projectsWithScalaSources?: ReadonlySet<string>
+  /**
+   * Total physical Scala LOC per sbt `project.id` (workspace-relative sources). When set,
+   * {@link makeSubtitle} appends `, N loc` / `, N kloc` after the path / packages link segment.
+   */
+  projectScalaLineCounts?: Readonly<Record<string, number>>
 }
 
 function pickRootProjectId(projects: ReadonlyArray<SbtSubproject>): string | undefined {
@@ -41,7 +47,13 @@ function makeSubtitle(p: SbtSubproject, meta: SbtToIlographMeta): string | undef
   const parts: string[] = []
   if (p.baseDir && p.baseDir !== '.') parts.push(p.baseDir)
   if (meta.projectsWithScalaSources?.has(p.id)) parts.push(packagesLinkMarkdown(p.id))
-  return parts.length ? parts.join(' · ') : undefined
+  let out = parts.length ? parts.join(' · ') : undefined
+  const n = meta.projectScalaLineCounts?.[p.id]
+  if (n != null && Number.isFinite(n) && n > 0) {
+    const loc = formatLinesOfCodeUnit(n)
+    out = out ? `${out}, ${loc}` : loc
+  }
+  return out
 }
 
 function buildProjectCompartments(

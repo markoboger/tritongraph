@@ -17,6 +17,11 @@ import {
   buildScalaPackageGraphFromSummaries,
   collectScalaArtefactDocs as collectScalaArtefactDocsFromCore,
 } from '../../../packages/triton-core/src/scalaPackageGraph.ts'
+import {
+  formatLinesOfCodeUnit,
+  physicalLineSpanInclusive,
+  sumPhysicalLinesForPaths,
+} from '../graph/linesOfCodeDisplay'
 
 export interface ScalaArtefact {
   /**
@@ -34,6 +39,8 @@ export interface ScalaArtefact {
    * to a 1-indexed editor URL scheme (see `editor/src/openInEditor.ts`).
    */
   startRow: number
+  /** 0-indexed last row of the definition (inclusive with {@link startRow}). */
+  endRow: number
   /** Fully-qualified package the artefact lives in (`com.example.animalsfruit.animal`). */
   packageName: string
   /** `extends X with Y with Z` parents in source order; empty for top-level defs / vals etc. */
@@ -147,6 +154,8 @@ export interface ScalaPackageEdge {
 export interface ScalaPackageGraph {
   packages: ScalaPackageNode[]
   edges: ScalaPackageEdge[]
+  /** Physical line counts keyed by main-source `relPath` (from the scanner). */
+  fileLineCounts?: Readonly<Record<string, number>>
   /** `extends` / `with` relations between artefacts (resolved by simple-name lookup). */
   inheritance: ScalaInheritanceEdge[]
   /**
@@ -437,6 +446,12 @@ export function collectScalaArtefactDocs(
   return collectScalaArtefactDocsFromCore(graph)
 }
 
+function innerArtefactKindSubtitle(a: ScalaArtefact): string {
+  const span = physicalLineSpanInclusive(a.startRow, a.endRow)
+  if (span <= 0) return a.kind
+  return `${a.kind}, ${formatLinesOfCodeUnit(span)}`
+}
+
 /** Stable inner-list entries for artefacts declared in this package (layer-drill UI only). */
 function innerArtefactSpecsForNode(n: PackageTreeNode): TritonInnerArtefactSpec[] {
   if (!n.artefacts.length) return []
@@ -446,12 +461,13 @@ function innerArtefactSpecsForNode(n: PackageTreeNode): TritonInnerArtefactSpec[
     .map((a) => ({
       id: artefactResourceId(n.fqn, a),
       name: a.name,
-      subtitle: a.kind,
+      subtitle: innerArtefactKindSubtitle(a),
       declaration: a.declaration,
       ...(a.constructorParams ? { constructorParams: a.constructorParams } : {}),
       ...(a.methodSignatures.length ? { methodSignatures: a.methodSignatures } : {}),
       ...(a.file ? { sourceFile: a.file } : {}),
       ...(Number.isFinite(a.startRow) ? { sourceRow: a.startRow } : {}),
+      ...(Number.isFinite(a.endRow) ? { sourceEndRow: a.endRow } : {}),
     }))
 }
 
@@ -568,32 +584,35 @@ function collectSubtreeFiles(node: PackageTreeNode): string[] {
 }
 
 /** One package node → nested spec (recursive `innerPackages` for inner drill). */
-function packageNodeToInnerSpec(n: PackageTreeNode): TritonInnerPackageSpec {
+function packageNodeToInnerSpec(n: PackageTreeNode, graph: ScalaPackageGraph): TritonInnerPackageSpec {
   const files = collectSubtreeFiles(n)
   const nSub = n.children.length
   const parts: string[] = []
   if (nSub) parts.push(`${nSub} sub-package${nSub === 1 ? '' : 's'}`)
   parts.push(`${files.length} file${files.length === 1 ? '' : 's'}`)
+  const locTotal = sumPhysicalLinesForPaths(files, graph.fileLineCounts)
+  const baseSubtitle = parts.join(' · ')
+  const subtitle = locTotal > 0 ? `${baseSubtitle}, ${formatLinesOfCodeUnit(locTotal)}` : baseSubtitle
   const innerChildSpecs: TritonInnerPackageSpec[] = n.children.length
     ? n.children
         .map((c) => collapseLinearChains(c))
         .sort((a, b) => (a.segment || a.fqn).localeCompare(b.segment || b.fqn))
-        .map(packageNodeToInnerSpec)
+        .map((c) => packageNodeToInnerSpec(c, graph))
     : []
   return {
     id: n.fqn,
     name: n.segment || n.fqn,
-    subtitle: parts.join(' · '),
+    subtitle,
     ...(innerChildSpecs.length ? { innerPackages: innerChildSpecs } : {}),
   }
 }
 
 /** Direct children of the outer picked package as nested specs (each may contain deeper packages). */
-function rootInnerPackageSpecs(picked: PackageTreeNode): TritonInnerPackageSpec[] {
+function rootInnerPackageSpecs(picked: PackageTreeNode, graph: ScalaPackageGraph): TritonInnerPackageSpec[] {
   return picked.children
     .map((c) => collapseLinearChains(c))
     .sort((a, b) => (a.segment || a.fqn).localeCompare(b.segment || b.fqn))
-    .map(packageNodeToInnerSpec)
+    .map((c) => packageNodeToInnerSpec(c, graph))
 }
 
 /**
@@ -608,14 +627,14 @@ function rootOnlyPackageLeafResource(node: PackageTreeNode, graph: ScalaPackageG
   // focused on real code changes (renames, new artefacts, new edges) instead of file-listing noise.
   const files = collectSubtreeFiles(node)
   const name = node.segment || node.fqn || ROOT_PACKAGE
-  const inner = rootInnerPackageSpecs(node)
+  const inner = rootInnerPackageSpecs(node, graph)
   const innerArts = innerArtefactSpecsForNode(node)
   const innerRels = innerArtefactRelationSpecsForNode(node, graph)
   const crossRels = crossPackageArtefactRelationSpecsForNode(node, graph)
   return {
     id: node.fqn || ROOT_PACKAGE,
     name,
-    subtitle: formatArtefactBreakdown(node.artefacts, files.length),
+    subtitle: packageLeafSubtitle(node.artefacts, files.length, files, graph),
     ...(inner.length ? { 'x-triton-inner-packages': inner } : {}),
     ...(innerArts.length ? { 'x-triton-inner-artefacts': innerArts } : {}),
     ...(innerRels.length ? { 'x-triton-inner-artefact-relations': innerRels } : {}),
@@ -669,7 +688,7 @@ function packageLeafResourceForGraph(n: PackageTreeNode, graph: ScalaPackageGrap
   return {
     id: c.fqn,
     name: c.segment || c.fqn,
-    subtitle: formatArtefactBreakdown(c.artefacts, files.length),
+    subtitle: packageLeafSubtitle(c.artefacts, files.length, files, graph),
     'x-triton-node-type': 'package',
     ...(innerArts.length ? { 'x-triton-inner-artefacts': innerArts } : {}),
     ...(innerRels.length ? { 'x-triton-inner-artefact-relations': innerRels } : {}),
@@ -727,6 +746,18 @@ function formatArtefactBreakdown(artefacts: readonly ScalaArtefact[], fileCount:
     return `${fileCount} Scala file${fileCount === 1 ? '' : 's'}`
   }
   return parts.join(', ')
+}
+
+function packageLeafSubtitle(
+  artefacts: readonly ScalaArtefact[],
+  fileCount: number,
+  subtreeFiles: readonly string[],
+  graph: ScalaPackageGraph,
+): string {
+  const base = formatArtefactBreakdown(artefacts, fileCount)
+  const total = sumPhysicalLinesForPaths(subtreeFiles, graph.fileLineCounts)
+  if (total <= 0) return base
+  return `${base}, ${formatLinesOfCodeUnit(total)}`
 }
 
 /**
@@ -833,13 +864,14 @@ function scopeDirectArtefactLeafResources(scope: PackageTreeNode): IlographResou
       return {
         id,
         name: a.name,
-        subtitle: a.kind,
+        subtitle: innerArtefactKindSubtitle(a),
         'x-triton-node-type': 'artefact',
         'x-triton-declaration': a.declaration,
         ...(a.constructorParams ? { 'x-triton-constructor-params': a.constructorParams } : {}),
         ...(a.methodSignatures.length ? { 'x-triton-method-signatures': a.methodSignatures } : {}),
         ...(a.file ? { 'x-triton-source-file': a.file } : {}),
         ...(Number.isFinite(a.startRow) ? { 'x-triton-source-row': a.startRow } : {}),
+        ...(Number.isFinite(a.endRow) ? { 'x-triton-source-end-row': a.endRow } : {}),
       } as IlographResource
     })
 }
@@ -876,10 +908,14 @@ function pickedPackageGroupResource(picked: PackageTreeNode, graph: ScalaPackage
       `${directArtefactLeaves.length} direct ${directArtefactLeaves.length === 1 ? 'artefact' : 'artefacts'}`,
     )
   }
+  const subtreeLines = sumPhysicalLinesForPaths(files, graph.fileLineCounts)
+  const baseGroupSubtitle = subtitleParts.join(' · ')
+  const groupSubtitle =
+    subtreeLines > 0 ? `${baseGroupSubtitle}, ${formatLinesOfCodeUnit(subtreeLines)}` : baseGroupSubtitle
   return {
     id: top.fqn,
     name,
-    subtitle: subtitleParts.join(' · '),
+    subtitle: groupSubtitle,
     'x-triton-package-scope': true,
     ...(language ? { 'x-triton-package-language': language } : {}),
     children: childResources,

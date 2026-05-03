@@ -53,6 +53,12 @@ import { assignInnerArtefactLayers } from '../../graph/innerArtefactLayerLayout'
 import ScalaArtefactBox from './ScalaArtefactBox.vue'
 import InnerDiagramScrollRails from './InnerDiagramScrollRails.vue'
 import KindBadge from './KindBadge.vue'
+import {
+  artefactSubtitleSansMetrics,
+  formatLinesOfCodeUnit,
+  metricsSuffixFromArtefactSubtitle,
+  physicalLineSpanInclusive,
+} from '../../graph/linesOfCodeDisplay'
 
 /**
  * Pick the kind-specific Scala badge (class / trait / object / enum) for a Scala leaf
@@ -64,7 +70,7 @@ import KindBadge from './KindBadge.vue'
  * declarative without a per-kind text badge.
  */
 function scalaIconForKind(subtitle: string | undefined): string {
-  const k = (subtitle ?? '').trim().toLowerCase()
+  const k = artefactSubtitleSansMetrics(subtitle).toLowerCase()
   if (k === 'class' || k === 'case class') return scalaClassIconUrl
   if (k === 'object' || k === 'case object') return scalaObjectIconUrl
   if (k === 'trait') return scalaTraitIconUrl
@@ -73,7 +79,7 @@ function scalaIconForKind(subtitle: string | undefined): string {
 }
 
 function kindBadgeForLeafArtefact(subtitle: string | undefined): string | null {
-  const k = (subtitle ?? '').trim().toLowerCase()
+  const k = artefactSubtitleSansMetrics(subtitle).toLowerCase()
   // For TS examples we use these as the "kind" values; show the same badge when unfocused.
   if (k === 'interface') return 'I'
   if (k === 'class') return 'C'
@@ -98,6 +104,12 @@ const props = withDefaults(
      * don't set it and gracefully fall back to their existing subtitle text.
      */
     declaration?: string
+    /**
+     * 0-indexed tree-sitter rows for the declaration span. When `subtitle` has no `, N loc` tail
+     * (e.g. slim YAML), the focused header still appends metrics from these rows.
+     */
+    sourceRow?: number
+    sourceEndRow?: number
     /** Shown when the box is focused (layer drill). */
     notes?: string
     /** Free-text "what does this package contains" — surfaced in the AI prompt. */
@@ -263,6 +275,22 @@ const {
 const drilledInnerPackageId = computed(() => activeInnerSpec.value?.id ?? null)
 const focusedPackageTitle = computed(() => props.label)
 const focusedPackageSubtitle = computed(() => props.declaration || props.subtitle)
+/** Appended after Shiki declaration in focused Scala headers (`subtitle` or `sourceRow`/`sourceEndRow`). */
+const focusedDeclarationLocSuffix = computed(() => {
+  const fromSubtitle = metricsSuffixFromArtefactSubtitle(props.subtitle)
+  if (fromSubtitle) return fromSubtitle
+  if (!isScalaLeaf.value || !props.declaration) return ''
+  if (
+    typeof props.sourceRow === 'number' &&
+    Number.isFinite(props.sourceRow) &&
+    typeof props.sourceEndRow === 'number' &&
+    Number.isFinite(props.sourceEndRow)
+  ) {
+    const span = physicalLineSpanInclusive(props.sourceRow, props.sourceEndRow)
+    if (span > 0) return `, ${formatLinesOfCodeUnit(span)}`
+  }
+  return ''
+})
 const packageSubtitleLinkText = computed(() => {
   if (isScalaLeaf.value || !props.subtitle?.trim()) return ''
   const escaped = props.subtitle.replace(/([\\\]\[])/g, '\\$1')
@@ -281,7 +309,7 @@ const drilledInnerArtefacts = computed(() => {
 const visibleInnerArtefacts = computed(() => {
   const drilledId = drilledInnerPackageId.value
   const kindVisible = (artefact: TritonInnerArtefactSpec) => {
-    const key = (artefact.subtitle ?? '').trim().toLowerCase() || '(unknown)'
+    const key = artefactSubtitleSansMetrics(artefact.subtitle).toLowerCase() || '(unknown)'
     return nodeTypeVisibilityRef.value[key] !== false
   }
   if (drilledId) return drilledInnerArtefacts.value.filter(kindVisible)
@@ -754,16 +782,18 @@ function onHeaderDblClick() {
         attached). `tabindex="-1"` keeps the focused-box keyboard flow unchanged; the tool
         button in the header still owns the primary Tab target.
       -->
-      <button
-        v-if="isScalaLeaf && declaration"
-        type="button"
-        class="subtitle__open-btn"
-        :title="'Click to open this declaration in the editor'"
-        tabindex="-1"
-        @click.stop="emit('declaration-click')"
-      >
-        <ShikiInlineCode :code="declaration" lang="scala" />
-      </button>
+      <span v-if="isScalaLeaf && declaration" class="subtitle__declaration-with-metrics">
+        <button
+          type="button"
+          class="subtitle__open-btn"
+          :title="'Click to open this declaration in the editor'"
+          tabindex="-1"
+          @click.stop="emit('declaration-click')"
+        >
+          <ShikiInlineCode :code="declaration" lang="scala" />
+        </button>
+        <span v-if="focusedDeclarationLocSuffix" class="subtitle__loc-suffix">{{ focusedDeclarationLocSuffix }}</span>
+      </span>
       <MarkdownActionSubtitle
         v-else-if="packageSubtitleLinkText"
         :text="packageSubtitleLinkText"
@@ -1772,6 +1802,14 @@ function onHeaderDblClick() {
  * so the user sees highlighted code, not a button shape. `cursor: pointer` and a subtle
  * hover underline are the only affordances; keeps the focused header visually calm.
  */
+.subtitle__declaration-with-metrics {
+  display: inline;
+}
+.subtitle__loc-suffix {
+  color: #64748b;
+  font-size: 0.92em;
+  white-space: nowrap;
+}
 .subtitle__open-btn {
   all: unset;
   cursor: pointer;

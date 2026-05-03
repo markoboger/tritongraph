@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Position, type NodeTypesObject } from '@vue-flow/core'
-import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, provide, ref, shallowRef, watch } from 'vue'
 import FlowProjectNode from './components/diagram/FlowProjectNode.vue'
 import FlowPackageNode from './components/diagram/FlowPackageNode.vue'
 import GroupNode from './components/GroupNode.vue'
@@ -30,6 +30,11 @@ import { ilographDocumentToFlow } from './graph/ilographToFlow'
 import { flowToIlographDocument } from './graph/flowToIlograph'
 import { slimEdgesForExport, slimNodesForExport } from './graph/slimFlow'
 import { boxColorForId } from './graph/boxColors'
+import {
+  artefactSubtitleSansMetrics,
+  formatLinesOfCodeUnit,
+  totalMainScalaPhysicalLines,
+} from './graph/linesOfCodeDisplay'
 import { isLeafBoxNode } from './graph/nodeKinds'
 import { languageIconForId } from './graph/languages'
 import {
@@ -47,6 +52,7 @@ import {
 import { packageContentWeight, preferredPackageFocusWidth } from './graph/layoutDependencyLayers'
 import { drillNoteForModuleId } from './graph/sbtStyleDrillNotes'
 import { listSbtExamples } from './sbt/sbtExampleBuilds'
+import { computeSbtProjectScalaLineCounts } from './sbt/sbtProjectLineCounts'
 import { listTsExamples } from './ts/tsExampleDiagrams'
 import { parseBuildSbt } from './sbt/parseBuildSbt'
 import { sbtProjectsToIlographDocument } from './sbt/sbtProjectsToIlographDocument'
@@ -194,7 +200,8 @@ function collectNodeTypeKeys(nodeList: readonly any[], diagramTabKey: string): s
   for (const node of nodeList) {
     const data = node?.data as Record<string, unknown> | undefined
     const nodeType = String(node?.type ?? '')
-    if (nodeType === 'artefact') out.add(normalizeNodeTypeKey(data?.subtitle))
+    if (nodeType === 'artefact')
+      out.add(normalizeNodeTypeKey(artefactSubtitleSansMetrics(String(data?.subtitle ?? ''))))
     if (dockerModuleKinds && nodeType === 'module') {
       const rawIcon = data?.tritonIconKey
       const iconKey = typeof rawIcon === 'string' ? rawIcon.trim().toLowerCase() : ''
@@ -203,7 +210,13 @@ function collectNodeTypeKeys(nodeList: readonly any[], diagramTabKey: string): s
     const raw = data?.innerArtefacts
     if (!Array.isArray(raw)) continue
     for (const artefact of raw) {
-      out.add(normalizeNodeTypeKey((artefact as Record<string, unknown> | undefined)?.subtitle))
+      out.add(
+        normalizeNodeTypeKey(
+          artefactSubtitleSansMetrics(
+            String((artefact as Record<string, unknown> | undefined)?.subtitle ?? ''),
+          ),
+        ),
+      )
     }
   }
   return [...out]
@@ -216,7 +229,11 @@ function visibleInnerArtefactsForPreferredSize(
   if (!Array.isArray(raw)) return []
   const visibility = nodeTypeVisibility.value
   return raw.filter((artefact) => {
-    const key = normalizeNodeTypeKey((artefact as Record<string, unknown> | undefined)?.subtitle)
+    const key = normalizeNodeTypeKey(
+      artefactSubtitleSansMetrics(
+        String((artefact as Record<string, unknown> | undefined)?.subtitle ?? ''),
+      ),
+    )
     return visibility[key] !== false
   }) as readonly Record<string, unknown>[]
 }
@@ -248,7 +265,7 @@ function applyNodeTypeVisibilityToNodes(nodeList: readonly any[], diagramTabKey:
   return nodeList.map((node) => {
     const data = { ...((node?.data ?? {}) as Record<string, unknown>) }
     let changed = false
-    const kindKey = normalizeNodeTypeKey(data.subtitle)
+    const kindKey = normalizeNodeTypeKey(artefactSubtitleSansMetrics(String(data.subtitle ?? '')))
     const rawIcon = data.tritonIconKey
     const iconKey = typeof rawIcon === 'string' ? rawIcon.trim().toLowerCase() : ''
     const dockerFilterKey =
@@ -701,6 +718,11 @@ function exampleSelectionId(root: string, dir: string): string {
   return `sbt:${root}/${dir}`
 }
 
+function starterSbtCardSubtitle(root: string, dir: string, path: string): string {
+  const n = totalMainScalaPhysicalLines(listScalaSourcesIn(root, dir))
+  return n > 0 ? `${path} · ${formatLinesOfCodeUnit(n)}` : path
+}
+
 function tsExampleSelectionId(root: string, dir: string, file: string): string {
   return `ts:${root}/${dir}/${file}`
 }
@@ -768,7 +790,7 @@ const tritonStarterCards = computed<StarterCard[]>(() => {
       kind: 'sbt',
       selectionId: exampleSelectionId(e.root, e.dir),
       title: exampleOptionLabel(e.dir),
-      subtitle: e.path,
+      subtitle: starterSbtCardSubtitle(e.root, e.dir, e.path),
       group: 'Scala (bundled)',
     })
   }
@@ -777,7 +799,7 @@ const tritonStarterCards = computed<StarterCard[]>(() => {
       kind: 'sbt',
       selectionId: exampleSelectionId(e.root, e.dir),
       title: exampleOptionLabel(e.dir),
-      subtitle: e.path,
+      subtitle: starterSbtCardSubtitle(e.root, e.dir, e.path),
       group: 'sbt tutorial',
     })
   }
@@ -786,7 +808,7 @@ const tritonStarterCards = computed<StarterCard[]>(() => {
       kind: 'sbt',
       selectionId: exampleSelectionId(e.root, e.dir),
       title: exampleOptionLabel(e.dir),
-      subtitle: e.path,
+      subtitle: starterSbtCardSubtitle(e.root, e.dir, e.path),
       group: 'sbt (large OSS)',
     })
   }
@@ -893,6 +915,19 @@ function createRuntimeHomeDiagramTab(): DiagramTab {
 const runtimeHomeTabSeed = createRuntimeHomeDiagramTab()
 const tabs = ref<DiagramTab[]>([runtimeHomeTabSeed])
 const activeTabId = ref<string | null>(runtimeHomeTabSeed.id)
+
+/** Main Scala LOC per runtime workspace path (filled whenever {@link fetchRuntimeWorkspaceBundle} succeeds). */
+const runtimeWorkspaceMainScalaLocByPath = shallowRef<Record<string, number>>({})
+
+function rememberRuntimeWorkspaceMainScalaLoc(
+  workspacePath: string,
+  scalaFiles: ReadonlyArray<{ relPath: string; source: string }>,
+): void {
+  const n = totalMainScalaPhysicalLines(scalaFiles)
+  const prev = runtimeWorkspaceMainScalaLocByPath.value
+  if (prev[workspacePath] === n) return
+  runtimeWorkspaceMainScalaLocByPath.value = { ...prev, [workspacePath]: n }
+}
 
 const activeTab = computed<DiagramTab | undefined>(() =>
   tabs.value.find((t) => t.id === activeTabId.value),
@@ -1341,7 +1376,7 @@ async function fetchRuntimeWorkspaceBundle(
     throw new Error(`Runtime bundle request failed (${res.status}).`)
   }
   const body = (await res.json()) as Partial<RuntimeWorkspaceBundle>
-  return {
+  const bundle: RuntimeWorkspaceBundle = {
     ok: body.ok === true,
     workspacePath: String(body.workspacePath ?? workspacePath),
     workspaceName: String(body.workspaceName ?? workspaceName),
@@ -1382,6 +1417,8 @@ async function fetchRuntimeWorkspaceBundle(
           }
         : null,
   }
+  rememberRuntimeWorkspaceMainScalaLoc(bundle.workspacePath, bundle.scalaFiles)
+  return bundle
 }
 
 function mergeParsedCoverageFromRuntimeBundle(
@@ -3483,12 +3520,14 @@ async function loadSbtBuildForExample(root: string, dir: string) {
   }
   const projects = parseBuildSbt(hit.source)
   const projectsWithScalaSources = computeProjectsWithScalaSources(hit.root, hit.dir, projects)
+  const allFiles = listScalaSourcesIn(hit.root, hit.dir)
+  const projectScalaLineCounts = computeSbtProjectScalaLineCounts(allFiles, projects)
   const doc = sbtProjectsToIlographDocument(projects, {
     title: `sbt build: ${dir}`,
     sourcePath: `${hit.root}/${hit.dir}/build.sbt`,
     projectsWithScalaSources,
+    projectScalaLineCounts,
   })
-  const allFiles = listScalaSourcesIn(hit.root, hit.dir)
   const reps = getScoverageReportsFor(hit.root, hit.dir)
   const parsedCoverage = reps.length ? mergeParsedScoverageXml(reps.map((r) => parseScoverageXml(r.xml))) : undefined
   if (allFiles.length && parsedCoverage) {
@@ -3612,11 +3651,18 @@ async function loadScalaPackagesForExample(root: string, dir: string, projectId?
       title: projectScope ? `Scala packages: ${dir}:${projectScope.id}` : `Scala packages: ${dir}`,
       sourcePath: sourceLabel,
     })
+    const projectScalaLineCounts = computeSbtProjectScalaLineCounts(allFiles, projects)
+    const coverageProjectScalaCounts = projectScope
+      ? projectScalaLineCounts[projectScope.id] != null
+        ? { [projectScope.id]: projectScalaLineCounts[projectScope.id]! }
+        : {}
+      : projectScalaLineCounts
     const coverageProjectDoc = sbtProjectsToIlographDocument(
       projectScope ? projects.filter((p) => p.id === projectScope.id) : projects,
       {
         title: `sbt projects: ${dir}`,
         sourcePath: `${root}/${dir}/build.sbt`,
+        projectScalaLineCounts: coverageProjectScalaCounts,
       },
     )
     const payload = buildScalaWorkspacePayload({
@@ -3692,10 +3738,12 @@ async function loadSbtBuildForRuntimeWorkspace(workspacePath: string, workspaceN
     }
     const projects = parseBuildSbt(bundle.buildSbt.source)
     const projectsWithScalaSources = computeProjectsWithScalaSourceFiles(bundle.scalaFiles, projects)
+    const projectScalaLineCounts = computeSbtProjectScalaLineCounts(bundle.scalaFiles, projects)
     const doc = sbtProjectsToIlographDocument(projects, {
       title: `sbt build: ${workspaceName}`,
       sourcePath: `${workspacePath}/build.sbt`,
       projectsWithScalaSources,
+      projectScalaLineCounts,
     })
     const mergedRuntimeCoverage = mergeParsedCoverageFromRuntimeBundle(bundle)
     if (bundle.scalaFiles.length && mergedRuntimeCoverage) {
@@ -3766,11 +3814,19 @@ async function loadScalaPackagesForRuntimeWorkspace(workspacePath: string, works
       title: projectScope ? `Scala packages: ${workspaceName}:${projectScope.id}` : `Scala packages: ${workspaceName}`,
       sourcePath: sourceLabel,
     })
+    const scalaRowsForCounts = bundle.scalaFiles.map((f) => ({ relPath: f.relPath, source: f.source }))
+    const projectScalaLineCounts = projects.length ? computeSbtProjectScalaLineCounts(scalaRowsForCounts, projects) : {}
+    const coverageProjectScalaCounts = projectScope
+      ? projectScalaLineCounts[projectScope.id] != null
+        ? { [projectScope.id]: projectScalaLineCounts[projectScope.id]! }
+        : {}
+      : projectScalaLineCounts
     const coverageProjectDoc = sbtProjectsToIlographDocument(
       projectScope ? projects.filter((p) => p.id === projectScope.id) : projects,
       {
         title: `sbt projects: ${workspaceName}`,
         sourcePath: `${workspacePath}/build.sbt`,
+        projectScalaLineCounts: coverageProjectScalaCounts,
       },
     )
     const payload = buildScalaWorkspacePayload({
@@ -4706,6 +4762,7 @@ onUnmounted(() => {
           <TritonRuntimeHome
             :runtime-base-url="effectiveRuntimeUrl"
             :starter-cards="tritonStarterCards"
+            :workspace-main-scala-loc-by-path="runtimeWorkspaceMainScalaLocByPath"
             :ide-session="ideSession"
             :status-message="status"
             @open-sbt="(p) => void openRuntimeSbtTab(p.workspacePath, p.workspaceName)"

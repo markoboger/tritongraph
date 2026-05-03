@@ -17,6 +17,7 @@
  */
 import { computed } from 'vue'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
+import { artefactSubtitleSansMetrics } from '../../graph/linesOfCodeDisplay'
 import PackageBox from './PackageBox.vue'
 import ScalaArtefactPanels from './ScalaArtefactPanels.vue'
 import KindBadge from './KindBadge.vue'
@@ -34,6 +35,10 @@ const props = defineProps<{
    * selection stays compact — only the header line swaps to the richer text.
    */
   declaration?: string
+  /** 0-indexed declaration start row (optional; pairs with {@link sourceEndRow} for header LOC). */
+  sourceRow?: number
+  /** 0-indexed declaration end row inclusive (optional). */
+  sourceEndRow?: number
   /**
    * Primary constructor parameter source text (with parens, whitespace collapsed) —
    * e.g. `"(variety: String, ripeness: Ripeness.Value)"`. Rendered in the focused
@@ -46,15 +51,16 @@ const props = defineProps<{
    * still renders its header and keeps the panel count stable.
    */
   constructorParams?: string
-  constructorSignatures?: ReadonlyArray<{ signature: string; startRow: number }>
+  constructorSignatures?: ReadonlyArray<{ signature: string; startRow: number; endRow?: number }>
   /**
    * One-line signatures of `def` members for this artefact (source order, body stripped),
    * paired with the 0-indexed source row of each declaration. The Methods panel renders
    * them as a Shiki-highlighted code block and uses the rows to wire per-line
-   * click-to-open-at-line actions. An empty or missing list shows a short "no methods"
+   * click-to-open-at-line actions. Optional `endRow` enables an inclusive `loc` suffix per line.
+   * An empty or missing list shows a short "no methods"
    * placeholder so the panel still has chrome.
    */
-  methodSignatures?: ReadonlyArray<{ signature: string; startRow: number }>
+  methodSignatures?: ReadonlyArray<{ signature: string; startRow: number; endRow?: number }>
   /** Shown when the box is focused (layer drill). */
   notes?: string
   boxColor?: NamedBoxColor | string
@@ -102,7 +108,7 @@ const accent = computed(() => (props.boxColor as string) || boxColorForId(props.
  * meaningful without requiring a code change here.
  */
 const kindBadge = computed(() => {
-  const k = (props.subtitle ?? '').trim().toLowerCase()
+  const k = artefactSubtitleSansMetrics(props.subtitle).toLowerCase()
   if (!k) return '?'
   // TypeScript kinds (used by TS example inner artefacts).
   if (k === 'interface') return 'I'
@@ -131,6 +137,8 @@ const kindBadge = computed(() => {
     :label="label"
     :subtitle="subtitle"
     :declaration="declaration"
+    :source-row="sourceRow"
+    :source-end-row="sourceEndRow"
     :notes="notes"
     :box-color="boxColor"
     :pinned="pinned"

@@ -44,6 +44,8 @@ export interface TritonMethodSignature {
   signature: string
   /** 0-indexed — bumped to 1 when composing editor URL templates. */
   startRow: number
+  /** 0-indexed last line of the member (optional; when set, UI shows an inclusive `loc` span). */
+  endRow?: number
 }
 
 /** Scala top-level members listed inside a layer-drill–focused package box (not separate flow nodes). */
@@ -85,7 +87,8 @@ export type TritonInnerArtefactSpec = {
    * Hand-edited YAML that only carries the string form (no `startRow`) is still accepted
    * on input — see the normalizer in `ilographToFlow.ts`, which falls back to row `0`
    * (points at the file top) so the click target degrades to "open file" rather than
-   * failing silently.
+   * failing silently. When `endRow` is present on an entry, the Methods panel appends an
+   * inclusive `loc` / `kloc` suffix after each signature (comma-separated).
    */
   methodSignatures?: ReadonlyArray<TritonMethodSignature>
   /**
@@ -100,6 +103,11 @@ export type TritonInnerArtefactSpec = {
    * scanner can't supply a location.
    */
   sourceRow?: number
+  /**
+   * 0-indexed last row of the declaration node (inclusive with {@link sourceRow}). Used to show
+   * `loc` / `kloc` in the focused header when {@link subtitle} omits the metrics suffix (e.g. slim YAML).
+   */
+  sourceEndRow?: number
 }
 
 /**
@@ -217,6 +225,8 @@ export interface IlographResource {
   'x-triton-source-file'?: string
   /** Non-standard: 0-indexed start row of the declaration. See {@link TritonInnerArtefactSpec.sourceRow}. */
   'x-triton-source-row'?: number
+  /** Non-standard: 0-indexed end row of the declaration (inclusive with `x-triton-source-row`). */
+  'x-triton-source-end-row'?: number
   /** Non-standard: coordinates last saved by this editor (Ilograph ignores unknown top-level keys on resources if nested — we keep under a namespace key at doc level instead). */
   /** Non-standard: focused project-box panels for sbt module metadata (versions, libraries, settings). */
   'x-triton-project-compartments'?: readonly BoxCompartment[]

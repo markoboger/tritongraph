@@ -87,17 +87,22 @@ describe('ilographDocumentToFlow', () => {
         {
           id: 'm',
           name: 'M',
-          'x-triton-method-signatures': ['def foo: Unit', { signature: 'val x: Int', startRow: 12 }],
+          'x-triton-method-signatures': [
+            'def foo: Unit',
+            { signature: 'val x: Int', startRow: 12 },
+            { signature: 'def bar(): Unit', startRow: 1, endRow: 4 },
+          ],
         },
       ],
     } as IlographDocument
     const flow = ilographDocumentToFlow(doc)
     const sigs = (flow.nodes.find((n) => n.id === 'm')?.data as Record<string, unknown>)?.methodSignatures as
-      | { signature: string; startRow: number }[]
+      | { signature: string; startRow: number; endRow?: number }[]
       | undefined
-    expect(sigs).toHaveLength(2)
+    expect(sigs).toHaveLength(3)
     expect(sigs?.[0]).toEqual({ signature: 'def foo: Unit', startRow: 0 })
     expect(sigs?.[1]).toEqual({ signature: 'val x: Int', startRow: 12 })
+    expect(sigs?.[2]).toEqual({ signature: 'def bar(): Unit', startRow: 1, endRow: 4 })
   })
 
   it('expands comma-separated relation endpoints into multiple edges', () => {

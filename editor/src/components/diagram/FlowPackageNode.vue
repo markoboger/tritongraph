@@ -52,15 +52,16 @@ const props = defineProps<{
      */
     constructorParams?: string
     /** Constructor signatures (full lines) with source rows for click-to-open. */
-    constructorSignatures?: ReadonlyArray<{ signature: string; startRow: number }>
+    constructorSignatures?: ReadonlyArray<{ signature: string; startRow: number; endRow?: number }>
     /**
      * Scala `def` member signatures for a Scala artefact leaf. Each entry carries the
      * signature text plus the 0-indexed source row of its declaration — the box uses the row
-     * to dispatch a per-method "open at line" click. Rendered as a Shiki code block in the
+     * to dispatch a per-method "open at line" click. Optional `endRow` adds a `loc` suffix per line.
+     * Rendered as a Shiki code block in the
      * focused Methods panel; `ScalaArtefactBox` falls back to a placeholder when the array
      * is empty or missing (packages never set this).
      */
-    methodSignatures?: ReadonlyArray<{ signature: string; startRow: number }>
+    methodSignatures?: ReadonlyArray<{ signature: string; startRow: number; endRow?: number }>
     /**
      * Source file relative to its owning `(root, exampleDir)` for a Scala artefact leaf —
      * used by the "open in editor" tool. Populated by `ilographToFlow` from the ilograph
@@ -70,6 +71,8 @@ const props = defineProps<{
     sourceFile?: string
     /** 0-indexed start row of the declaration — see {@link TritonInnerArtefactSpec.sourceRow}. */
     sourceRow?: number
+    /** 0-indexed end row of the declaration (inclusive) — see {@link TritonInnerArtefactSpec.sourceEndRow}. */
+    sourceEndRow?: number
     /**
      * Source-derived description (file lists, fqn, …) emitted by the scanner. Round-trips
      * through YAML unchanged so structural diffs only reflect code changes; user-typed
@@ -381,6 +384,8 @@ onUnmounted(() => {
       :constructor-params="data.constructorParams"
       :constructor-signatures="data.constructorSignatures"
       :method-signatures="data.methodSignatures"
+      :source-row="data.sourceRow"
+      :source-end-row="data.sourceEndRow"
       :notes="data.drillNote"
       :box-color="data.boxColor"
       :pinned="!!data.pinned"

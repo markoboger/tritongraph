@@ -13,6 +13,8 @@ export interface ParsedScalaParent {
 export interface ParsedScalaMethodSignature {
   signature: string
   startRow: number
+  /** 0-indexed last row of the method node (tree-sitter `endPosition.row`), inclusive span with {@link startRow}. */
+  endRow: number
 }
 
 export interface ParsedScalaDefinition {
@@ -45,6 +47,8 @@ export interface ScalaArtefact {
   name: string
   file: string
   startRow: number
+  /** 0-indexed last row of the definition node (inclusive with {@link startRow}). */
+  endRow: number
   packageName: string
   parents: ParsedScalaParent[]
   paramTypeRefs: Array<{ name: string; wrapper?: string }>
@@ -94,6 +98,11 @@ export interface ScalaPackageGraph {
   gets: ScalaGetsEdge[]
   creates: ScalaCreatesEdge[]
   testArtefacts: ScalaArtefact[]
+  /**
+   * Physical line counts per main-source `relPath` (non-test), from raw file text at scan time.
+   * Used for package / scope subtitles; absent when the graph was built without file bodies.
+   */
+  fileLineCounts?: Readonly<Record<string, number>>
 }
 
 const ARTEFACT_KINDS = new Set([
@@ -136,6 +145,11 @@ function resolveImportToPackage(prefix: string, knownPackages: Set<string>): str
   return knownPackages.has(prefix) ? prefix : undefined
 }
 
+function countPhysicalSourceLines(source: string): number {
+  if (source === '') return 0
+  return source.split(/\r\n|\n|\r/).length
+}
+
 function artefactFromDefinition(file: SourceTextFile, pkg: string, def: ParsedScalaDefinition): ScalaArtefact {
   const modifiers = def.modifiers ?? []
   return {
@@ -143,6 +157,7 @@ function artefactFromDefinition(file: SourceTextFile, pkg: string, def: ParsedSc
     name: def.name,
     file: file.relPath,
     startRow: def.startRow,
+    endRow: def.endRow,
     packageName: pkg,
     parents: def.parents,
     paramTypeRefs: def.paramTypeRefs ?? [],
@@ -161,6 +176,11 @@ export function buildScalaPackageGraphFromSummaries(
   const isTestFile = (relPath: string): boolean => /(?:^|\/)src\/test\//.test(relPath)
   const mainSummaries = summaries.filter((s) => !isTestFile(s.file.relPath))
   const testSummaries = summaries.filter((s) => isTestFile(s.file.relPath))
+
+  const fileLineCounts: Record<string, number> = {}
+  for (const { file } of mainSummaries) {
+    fileLineCounts[file.relPath] = countPhysicalSourceLines(file.source ?? '')
+  }
 
   const byPackage = new Map<string, { files: string[]; artefacts: ScalaArtefact[] }>()
   for (const { file, summary } of mainSummaries) {
@@ -215,7 +235,7 @@ export function buildScalaPackageGraphFromSummaries(
     }
   }
 
-  return { packages, edges, inheritance, gets, creates, testArtefacts }
+  return { packages, edges, inheritance, gets, creates, testArtefacts, fileLineCounts }
 }
 
 function resolveInheritanceEdges(
