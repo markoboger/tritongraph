@@ -53,7 +53,7 @@ describe('ilographDocumentToFlow', () => {
     }
     const flow = ilographDocumentToFlow(doc)
     const node = flow.nodes.find((n) => n.id === 'leaf')
-    expect((node?.data as Record<string, unknown>)?.preferredLeafHeight).toBe(240)
+    expect((node?.data as unknown as Record<string, unknown>)?.preferredLeafHeight).toBe(240)
   })
 
   it('honors moduleNodeType for non-group resources', () => {
@@ -75,7 +75,7 @@ describe('ilographDocumentToFlow', () => {
       ],
     }
     const flow = ilographDocumentToFlow(doc)
-    const inner = (flow.nodes.find((n) => n.id === 'root')?.data as Record<string, unknown>)?.innerPackages as
+    const inner = (flow.nodes.find((n) => n.id === 'root')?.data as unknown as Record<string, unknown>)?.innerPackages as
       | { id: string; name: string; subtitle?: string }[]
       | undefined
     expect(inner?.[0]).toMatchObject({ id: 'c1', name: 'Child', subtitle: '  sub  ' })
@@ -96,7 +96,7 @@ describe('ilographDocumentToFlow', () => {
       ],
     } as IlographDocument
     const flow = ilographDocumentToFlow(doc)
-    const sigs = (flow.nodes.find((n) => n.id === 'm')?.data as Record<string, unknown>)?.methodSignatures as
+    const sigs = (flow.nodes.find((n) => n.id === 'm')?.data as unknown as Record<string, unknown>)?.methodSignatures as
       | { signature: string; startRow: number; endRow?: number }[]
       | undefined
     expect(sigs).toHaveLength(3)
@@ -177,7 +177,7 @@ describe('ilographDocumentToFlow', () => {
       'x-triton-editor': { pinnedModuleIds: ['p'] },
     } as IlographDocument
     const flow = ilographDocumentToFlow(doc)
-    expect((flow.nodes.find((n) => n.id === 'p')?.data as Record<string, unknown>)?.pinned).toBe(true)
+    expect((flow.nodes.find((n) => n.id === 'p')?.data as unknown as Record<string, unknown>)?.pinned).toBe(true)
   })
 
   it('maps inner artefact relations onto node data', () => {
@@ -192,7 +192,7 @@ describe('ilographDocumentToFlow', () => {
       ],
     } as IlographDocument
     const flow = ilographDocumentToFlow(doc)
-    const rels = (flow.nodes.find((n) => n.id === 'pkg')?.data as Record<string, unknown>)?.innerArtefactRelations as
+    const rels = (flow.nodes.find((n) => n.id === 'pkg')?.data as unknown as Record<string, unknown>)?.innerArtefactRelations as
       | { from: string; to: string; label: string }[]
       | undefined
     expect(rels?.[0]).toMatchObject({ from: 'x', to: 'x', label: 'creates' })
@@ -211,11 +211,11 @@ describe('ilographDocumentToFlow', () => {
       ],
     } as IlographDocument
     const flow = ilographDocumentToFlow(doc)
-    const comps = (flow.nodes.find((n) => n.id === 'proj')?.data as Record<string, unknown>)?.projectCompartments as
+    const comps = (flow.nodes.find((n) => n.id === 'proj')?.data as unknown as Record<string, unknown>)?.projectCompartments as
       | { id: string; title: string }[]
       | undefined
     expect(comps?.[0]).toMatchObject({ id: 'c1', title: 'Main' })
-    expect((flow.nodes.find((n) => n.id === 'proj')?.data as Record<string, unknown>)?.preferredFocusWidth).toBe(
+    expect((flow.nodes.find((n) => n.id === 'proj')?.data as unknown as Record<string, unknown>)?.preferredFocusWidth).toBe(
       460,
     )
   })

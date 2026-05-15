@@ -6,6 +6,7 @@ import type {
   TritonInnerArtefactSpec,
   TritonInnerPackageSpec,
 } from '../ilograph/types'
+import type { TritonFlowEdge, TritonFlowNode } from './flowTypes'
 import type { BoxCompartment, BoxCompartmentRow } from '../diagram/boxCompartments'
 import { resourceKey, splitRefs } from '../ilograph/refs'
 import { boxColorForId, isNamedBoxColor } from './boxColors'
@@ -229,7 +230,7 @@ function normalizeBoxCompartment(raw: unknown): BoxCompartment | null {
 export function ilographDocumentToFlow(
   doc: IlographDocument,
   options: FlowFromIlographOptions = {},
-): { nodes: any[]; edges: any[]; perspectiveName: string | undefined } {
+): { nodes: TritonFlowNode[]; edges: TritonFlowEdge[]; perspectiveName: string | undefined } {
   const flat: { res: IlographResource; parentId: string | undefined }[] = []
   flattenResources(doc.resources, undefined, flat)
 
@@ -241,7 +242,7 @@ export function ilographDocumentToFlow(
   const pinnedIds = new Set(editor?.pinnedModuleIds ?? [])
 
   const moduleType = options.moduleNodeType ?? 'module'
-  const nodes: any[] = flat.map(({ res, parentId }, i) => {
+  const nodes: TritonFlowNode[] = flat.map(({ res, parentId }, i) => {
     const id = resourceKey(res)
     const pos = saved?.[id] ?? defaultPosition(i)
     const isGroup = flat.some((x) => x.parentId === id)
@@ -393,7 +394,7 @@ export function ilographDocumentToFlow(
   })
 
   const perspective = pickDependencyPerspective(doc, options.preferredPerspectiveName)
-  const edges: any[] = []
+  const edges: TritonFlowEdge[] = []
   let e = 0
   if (perspective?.relations) {
     for (const rel of perspective.relations) {

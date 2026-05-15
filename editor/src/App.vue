@@ -27,9 +27,10 @@ import stackedCubesIconUrl from './assets/language-icons/stacked-cubes.svg'
 import folderIconUrl from './assets/language-icons/folder.svg'
 import tritonIconUrl from './assets/language-icons/triton.svg'
 import { ilographDocumentToFlow } from './graph/ilographToFlow'
+import type { TritonFlowEdge, TritonFlowNode, TritonNodeData } from './graph/flowTypes'
 import { flowToIlographDocument } from './graph/flowToIlograph'
 import { slimEdgesForExport, slimNodesForExport } from './graph/slimFlow'
-import { boxColorForId } from './graph/boxColors'
+import { boxColorForId, isNamedBoxColor } from './graph/boxColors'
 import {
   artefactSubtitleSansMetrics,
   formatLinesOfCodeUnit,
@@ -112,8 +113,8 @@ import {
   whenOverlayStoreReady,
 } from './store/overlayStore'
 
-const nodes = ref<any[]>([])
-const edges = ref<any[]>([])
+const nodes = ref<TritonFlowNode[]>([])
+const edges = ref<TritonFlowEdge[]>([])
 const perspectiveName = ref<string | undefined>('dependencies')
 const fileName = ref('diagram.ilograph.yaml')
 /** Repo-relative source path the diagram was generated from (sbt build, YAML file, …). Shown top-left on the canvas and embedded in the AI prompt for context. */
@@ -384,9 +385,9 @@ function packageDiagramDataForNode(packageId: string): {
   innerArtefactRelations?: readonly TritonInnerArtefactRelationSpec[]
   crossArtefactRelations?: readonly TritonInnerArtefactRelationSpec[]
 } | null {
-  const direct = nodes.value.find((node) => String(node.id) === packageId)
+  const direct = (nodes.value as Array<{ id: string | number }>).find((node) => String(node.id) === packageId) as TritonFlowNode | undefined
   if (direct) {
-    const data = (direct.data ?? {}) as Record<string, unknown>
+    const data = direct.data as unknown as Record<string, unknown>
     return {
       id: packageId,
       name: String(data.label ?? packageId),
@@ -1160,16 +1161,16 @@ function readFlowViewport(): { width: number; height: number } {
  *
  * Skipped when no workspace is active (boot path: tab not yet selected).
  */
-function applyOverlayToFlowNodes(nodeList: any[]): void {
+function applyOverlayToFlowNodes(nodeList: TritonFlowNode[]): void {
   const ws = activeWorkspaceKey.value
   for (const node of nodeList) {
-    const data = (node.data ??= {})
+    const data = (node.data ?? ({} as TritonNodeData))
     if (typeof data.description === 'string' && data.scannerDescription === undefined) {
       data.scannerDescription = data.description
     }
     if (!ws) continue
     const ov = getNodeOverlay(ws, String(node.id))
-    if (ov.color) data.boxColor = ov.color
+    if (ov.color && isNamedBoxColor(ov.color)) data.boxColor = ov.color
     if (ov.pinned === true) data.pinned = true
     if (typeof ov.notes === 'string' && ov.notes) data.notes = ov.notes
     if (typeof ov.posX === 'number' && typeof ov.posY === 'number') {
@@ -4227,9 +4228,9 @@ function computeSbtDiff(original: string, modified: string): SbtDiff {
 }
 
 function descriptionForModuleName(name: string): string {
-  const hit = nodes.value.find(
+  const hit = (nodes.value as Array<{ type?: string | null; data: unknown }>).find(
     (n) => isLeafBoxNode(n) && String((n.data as { label?: string })?.label ?? '') === name,
-  )
+  ) as TritonFlowNode | undefined
   const d = (hit?.data as { description?: string } | undefined)?.description
   return typeof d === 'string' ? d.trim() : ''
 }
