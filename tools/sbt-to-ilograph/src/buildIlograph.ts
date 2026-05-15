@@ -1,4 +1,4 @@
-import type { IlographDocument, IlographRelation, IlographResource } from './ilographTypes.js'
+import type { IlographDocument, IlographRelation, IlographResource } from 'triton-core/ilographTypes'
 
 export function sbtProjectsToIlograph(
   projects: import('./parseBuildSbt.js').SbtSubproject[],

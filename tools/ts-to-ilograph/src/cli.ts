@@ -4,7 +4,7 @@ import { mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
-import type { IlographDocument, IlographResource } from './ilographTypes.js'
+import type { IlographDocument, IlographResource } from 'triton-core'
 import { stringifyIlographYaml } from './yamlOut.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))

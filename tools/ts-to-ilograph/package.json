@@ -12,9 +12,11 @@
     "generate:built": "node dist/cli.js"
   },
   "dependencies": {
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.1.0",
+    "triton-core": "file:../../packages/triton-core"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.2",
     "tsx": "^4.19.2",
     "typescript": "~5.7.2"

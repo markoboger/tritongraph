@@ -13,6 +13,8 @@ editor/node_modules/
 packages/triton-runtime/node_modules/
 tools/sbt-to-ilograph/node_modules/
 tools/sbt-to-ilograph/dist/
+tools/ts-to-ilograph/node_modules/
+tools/ts-to-ilograph/dist/
 editor/dist/
 editor/coverage/
 editor/playwright-report/
