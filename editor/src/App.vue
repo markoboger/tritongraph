@@ -75,10 +75,8 @@ import {
   type StoredEditorLinkPreference,
   type StoredExternalEditorId,
 } from './store/editorLinkPreference'
-import {
-  buildScalaPackageGraph,
-  scalaPackageGraphToIlographDocument,
-} from './scala/scalaPackagesToIlograph'
+import { buildScalaPackageGraph } from './scala/scalaPackagesToIlograph'
+import { parseScalaFilesToDoc } from './composables/useCodeParser'
 import {
   COMPACT_LAYOUT_MAX_WIDTH_PX,
   COMPACT_LAYOUT_MAX_HEIGHT_PX,
@@ -3639,7 +3637,6 @@ async function loadScalaPackagesForExample(root: string, dir: string, projectId?
   }
   status.value = `Parsing ${files.length} Scala file${files.length === 1 ? '' : 's'} with tree-sitter…`
   try {
-    const graph = await buildScalaPackageGraph(files)
     const sourceLabel = projectScope
       ? `${root}/${dir}/${normalizeProjectBaseDir(projectScope) || '.'}/`
       : `${root}/${dir}/`
@@ -3648,7 +3645,7 @@ async function loadScalaPackagesForExample(root: string, dir: string, projectId?
     const reps = getScoverageReportsFor(root, dir)
     const parsedTestLog = log?.text ? parseSbtTestLog(log.text) : undefined
     const parsedCoverage = reps.length ? mergeParsedScoverageXml(reps.map((r) => parseScoverageXml(r.xml))) : undefined
-    const ilographDoc = scalaPackageGraphToIlographDocument(graph, {
+    const { graph, doc: ilographDoc } = await parseScalaFilesToDoc(files, {
       title: projectScope ? `Scala packages: ${dir}:${projectScope.id}` : `Scala packages: ${dir}`,
       sourcePath: sourceLabel,
     })
@@ -3804,14 +3801,13 @@ async function loadScalaPackagesForRuntimeWorkspace(workspacePath: string, works
       return
     }
     status.value = `Parsing ${files.length} Scala file${files.length === 1 ? '' : 's'} from ${workspaceName}…`
-    const graph = await buildScalaPackageGraph(files)
     const sourceLabel = projectScope
       ? `${workspacePath}/${normalizeProjectBaseDir(projectScope) || '.'}/`
       : `${workspacePath}/`
     sourcePath.value = sourceLabel
     const parsedTestLog = bundle.testLog?.text ? parseSbtTestLog(bundle.testLog.text) : undefined
     const mergedRuntimeCoverage = mergeParsedCoverageFromRuntimeBundle(bundle)
-    const ilographDoc = scalaPackageGraphToIlographDocument(graph, {
+    const { graph, doc: ilographDoc } = await parseScalaFilesToDoc(files, {
       title: projectScope ? `Scala packages: ${workspaceName}:${projectScope.id}` : `Scala packages: ${workspaceName}`,
       sourcePath: sourceLabel,
     })
