@@ -15,6 +15,14 @@ const IGNORED_DIRS = new Set([
   'node_modules',
   'dist',
   'out',
+  // Python-specific
+  '.venv',
+  'venv',
+  '__pycache__',
+  'build',
+  '.tox',
+  '.mypy_cache',
+  '.pytest_cache',
 ])
 const REPO_DISCOVERY_MAX_DEPTH = 3
 const RUNTIME_VERSION = '0.7.5'
@@ -110,6 +118,7 @@ function probeWorkspace(workspacePath) {
       hasBuildSbt: false,
       hasProjectDir: false,
       hasScalaSources: false,
+      hasPyMarker: false,
     }
   }
   const buildFile = path.join(root, 'build.sbt')
@@ -119,12 +128,24 @@ function probeWorkspace(workspacePath) {
   const hasBuildSbt = fileExists(buildFile)
   const hasProjectDir = fileExists(projectDir)
   const hasScalaSources = fileExists(scalaMain) || fileExists(scalaTest)
+  const isScalaSbt = hasBuildSbt || hasProjectDir || hasScalaSources
+
+  const hasPyMarker =
+    fileExists(path.join(root, 'pyproject.toml')) ||
+    fileExists(path.join(root, 'setup.py')) ||
+    fileExists(path.join(root, 'setup.cfg'))
+
+  let kind = 'generic'
+  if (isScalaSbt) kind = 'scala-sbt'
+  else if (hasPyMarker) kind = 'python'
+
   return {
     workspacePath: root,
-    kind: hasBuildSbt || hasProjectDir || hasScalaSources ? 'scala-sbt' : 'generic',
+    kind,
     hasBuildSbt,
     hasProjectDir,
     hasScalaSources,
+    hasPyMarker,
   }
 }
 
@@ -633,6 +654,39 @@ function collectScalaFiles(workspacePath) {
   return out
 }
 
+function collectPythonFiles(workspacePath) {
+  const out = []
+  const seen = new Set()
+
+  function walk(dirPath) {
+    let entries = []
+    try {
+      entries = fs.readdirSync(dirPath, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const absPath = path.join(dirPath, entry.name)
+      if (entry.isDirectory()) {
+        if (IGNORED_DIRS.has(entry.name)) continue
+        walk(absPath)
+        continue
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.py')) continue
+      const relPath = normalizeRelPath(workspacePath, absPath)
+      if (seen.has(relPath)) continue
+      const source = readUtf8IfFile(absPath)
+      if (source == null) continue
+      seen.add(relPath)
+      out.push({ relPath, source })
+    }
+  }
+
+  walk(workspacePath)
+  out.sort((a, b) => a.relPath.localeCompare(b.relPath))
+  return out
+}
+
 /**
  * Collect every readable `scoverage.xml` under the workspace (multi-module sbt roots, optional
  * `target/scoverage-report/` layout, and each `target/scala-<binary>/scoverage-report/` tree).
@@ -757,6 +811,7 @@ function readWorkspaceBundle(workspacePath) {
           source: buildSbtSource,
         },
     scalaFiles: collectScalaFiles(root),
+    pyFiles: collectPythonFiles(root),
     testLog: findSbtTestLog(root),
     coverageReports,
     coverageReport: coverageReports.length ? coverageReports[0] : null,

@@ -116,7 +116,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   openSbt: [payload: { workspacePath: string; workspaceName: string }]
-  openPackages: [payload: { workspacePath: string; workspaceName: string }]
+  openPackages: [payload: { workspacePath: string; workspaceName: string; kind?: string }]
   selectExample: [selectionId: string]
   openWorkspaceTestLog: [payload: { workspacePath: string; workspaceName: string }]
 }>()
@@ -1071,7 +1071,7 @@ async function openPackageDiagram(repo: RuntimeHomeRepo): Promise<void> {
   lastResultJson.value = ''
   const r = await ensureAnalyzedForOpen(repo.workspacePath)
   if (!r) return
-  emit('openPackages', { workspacePath: r.workspacePath, workspaceName: r.workspaceName })
+  emit('openPackages', { workspacePath: r.workspacePath, workspaceName: r.workspaceName, kind: r.probe?.kind })
 }
 
 function formatLastOpened(value?: string): string {

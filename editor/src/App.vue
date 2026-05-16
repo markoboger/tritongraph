@@ -878,6 +878,7 @@ interface RuntimeWorkspaceBundle {
   workspaceName: string
   buildSbt: { relPath: string; source: string } | null
   scalaFiles: Array<{ relPath: string; source: string }>
+  pyFiles: Array<{ relPath: string; source: string }>
   testLog: { relPath: string; text: string } | null
   /** All discovered reports (multi-module); merged client-side for diagrams. */
   coverageReports: Array<{ relPath: string; xml: string }>
@@ -1388,6 +1389,12 @@ async function fetchRuntimeWorkspaceBundle(
         : null,
     scalaFiles: Array.isArray(body.scalaFiles)
       ? body.scalaFiles.map((f) => ({
+          relPath: String(f?.relPath ?? ''),
+          source: String(f?.source ?? ''),
+        }))
+      : [],
+    pyFiles: Array.isArray(body.pyFiles)
+      ? body.pyFiles.map((f) => ({
           relPath: String(f?.relPath ?? ''),
           source: String(f?.source ?? ''),
         }))
@@ -3451,6 +3458,17 @@ async function openRuntimePackagesTab(workspacePath: string, workspaceName: stri
   )
 }
 
+async function openRuntimePythonTab(workspacePath: string, workspaceName: string): Promise<void> {
+  await openOrActivateTab(
+    {
+      key: `runtime-python:${workspacePath}::${workspaceName}`,
+      title: workspaceName,
+      iconUrl: cubeIconUrl,
+    },
+    () => loadPythonPackagesForRuntimeWorkspace(workspacePath, workspaceName),
+  )
+}
+
 async function reloadActiveRuntimeTab(): Promise<void> {
   const session = runtimeWorkspaceSession.value
   const fromActive = activeRuntimeWorkspace.value
@@ -3468,6 +3486,11 @@ async function reloadActiveRuntimeTab(): Promise<void> {
   if (key.startsWith('runtime-packages:')) {
     const parsed = parseRuntimeTabKey(key)
     await loadScalaPackagesForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName, parsed?.projectId)
+    snapshotActiveTab()
+    return
+  }
+  if (key.startsWith('runtime-python:')) {
+    await loadPythonPackagesForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName)
     snapshotActiveTab()
     return
   }
@@ -3864,6 +3887,48 @@ async function loadScalaPackagesForRuntimeWorkspace(workspacePath: string, works
       : `Loaded ${files.length} Scala file${files.length === 1 ? '' : 's'} from runtime workspace ${workspaceName}.`
   } catch (err) {
     status.value = `Failed to load runtime Scala workspace: ${(err as Error).message}`
+  }
+}
+
+async function loadPythonPackagesForRuntimeWorkspace(workspacePath: string, workspaceName: string): Promise<void> {
+  status.value = `Loading Python workspace from ${workspaceName} via Triton runtime…`
+  try {
+    const bundle = await fetchRuntimeWorkspaceBundle(workspacePath, workspaceName)
+    const files = bundle.pyFiles
+    if (!files.length) {
+      sourcePath.value = `${workspacePath}/`
+      nodes.value = []
+      edges.value = []
+      yamlBaseline.value = yamlPreview.value
+      status.value = `No .py files found under ${workspacePath}.`
+      return
+    }
+    status.value = `Parsing ${files.length} Python file${files.length === 1 ? '' : 's'} from ${workspaceName}…`
+    sourcePath.value = `${workspacePath}/`
+    const [{ summarizePython }, { buildPythonCodeModelFromSummaries }, { codeModelToIlographDocument }] =
+      await Promise.all([
+        import('./python/parsePythonWithTreeSitter'),
+        import('../../packages/triton-core/src/pythonCodeModel'),
+        import('../../packages/triton-core/src/codeModelToIlograph'),
+      ])
+    const summaries = await Promise.all(
+      files.map((f) => summarizePython(f.source, f.relPath, workspacePath)),
+    )
+    const codeModel = buildPythonCodeModelFromSummaries(
+      summaries.map((s, i) => ({ filePath: files[i]!.relPath, summary: s })),
+      { name: `Python packages: ${workspaceName}` },
+    )
+    const ilographDoc = codeModelToIlographDocument(codeModel, {
+      title: `Python packages: ${workspaceName}`,
+      description: `Source: \`${workspacePath}/\``,
+    })
+    const yaml = stringifyIlographYaml(ilographDoc)
+    await applyDoc(yaml, `${workspaceName}.packages.runtime.ilograph.yaml`, false, {
+      moduleNodeType: 'package',
+    })
+    status.value = `Loaded ${files.length} Python file${files.length === 1 ? '' : 's'} from runtime workspace ${workspaceName}.`
+  } catch (err) {
+    status.value = `Failed to load runtime Python workspace: ${(err as Error).message}`
   }
 }
 
@@ -4763,7 +4828,7 @@ onUnmounted(() => {
             :ide-session="ideSession"
             :status-message="status"
             @open-sbt="(p) => void openRuntimeSbtTab(p.workspacePath, p.workspaceName)"
-            @open-packages="(p) => void openRuntimePackagesTab(p.workspacePath, p.workspaceName)"
+            @open-packages="(p) => p.kind === 'python' ? void openRuntimePythonTab(p.workspacePath, p.workspaceName) : void openRuntimePackagesTab(p.workspacePath, p.workspaceName)"
             @select-example="(id) => void selectExample(id)"
             @open-workspace-test-log="(p) => void openRuntimeWorkspaceTestLogTab(p.workspacePath, p.workspaceName)"
           />

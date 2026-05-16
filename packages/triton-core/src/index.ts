@@ -41,6 +41,14 @@ export type {
 } from './languageModel'
 export { scalaPackageGraphToCodeModel } from './scalaCodeModel'
 export type { ScalaCodeModelOptions } from './scalaCodeModel'
+export { buildPythonCodeModelFromSummaries } from './pythonCodeModel'
+export type {
+  ParsedPythonArtefact,
+  ParsedPythonImport,
+  ParsedPythonMember,
+  PythonCodeModelOptions,
+  PythonFileSummary,
+} from './pythonCodeModel'
 export { buildTypeScriptCodeModelFromFiles } from './typeScriptCodeModel'
 export type { TypeScriptCodeModelOptions, TypeScriptSourceFile } from './typeScriptCodeModel'
 export { codeModelToIlographDocument } from './codeModelToIlograph'
