@@ -5,7 +5,7 @@ export interface CodeModelToIlographOptions {
   resourceId?: string
   title?: string
   description?: string
-  projectionMode?: 'single-resource' | 'nested-resources'
+  projectionMode?: 'single-resource' | 'nested-resources' | 'flat-modules'
   rootResourceKind?: 'package' | 'project'
   scopeContainerId?: string
 }
@@ -634,6 +634,63 @@ function codeModelToNestedIlographDocument(
 }
 
 /**
+ * Flat-modules projection: one overview resource (package hierarchy as inner-package pills) plus
+ * one flat leaf resource per module file (its artefacts as inner-artefact dots). Import edges
+ * run between module resources. Mirrors how scalaPackageGraphToIlographDocument renders Scala —
+ * avoids the all-at-once nested-group layout that nested-resources produces for deep hierarchies.
+ */
+function codeModelToFlatModulesDocument(
+  model: CodeModel,
+  options: CodeModelToIlographOptions,
+): IlographDocument {
+  const innerPackages = model.root.children.map(containerToInnerPackage)
+
+  const rootResource: TritonCodeResource = {
+    id: options.resourceId ?? model.id,
+    name: model.name,
+    subtitle: `${model.language} project`,
+    description: options.description ?? `Code model projection for ${model.name}.`,
+    'x-triton-node-type': 'package',
+    'x-triton-package-language': model.language,
+    ...(innerPackages.length ? { 'x-triton-inner-packages': innerPackages } : {}),
+  }
+
+  const moduleResources: TritonCodeResource[] = []
+  function collectModules(container: CodeContainer): void {
+    for (const child of container.children) {
+      if (child.kind === 'module') {
+        const innerArtefacts = child.artefacts.map(artefactToInnerArtefact)
+        moduleResources.push({
+          id: child.id,
+          name: child.name,
+          subtitle: containerSubtitle(child),
+          'x-triton-node-type': 'package',
+          'x-triton-package-language': model.language,
+          ...(innerArtefacts.length ? { 'x-triton-inner-artefacts': innerArtefacts } : {}),
+        })
+      } else {
+        collectModules(child)
+      }
+    }
+  }
+  collectModules(model.root)
+
+  const importRelations = containerImportRelations(model.relations)
+
+  return {
+    description: options.description ?? `Code model projection for ${model.name}.`,
+    resources: moduleResources.length ? [rootResource, ...moduleResources] : [rootResource],
+    perspectives: [
+      {
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        relations: importRelations,
+      },
+    ],
+  }
+}
+
+/**
  * Project a language-neutral code model into the current Triton Ilograph extension fields.
  *
  * This is the compatibility layer that lets new language adapters use the existing renderer while
@@ -645,6 +702,9 @@ export function codeModelToIlographDocument(
 ): IlographDocument {
   if (options.projectionMode === 'nested-resources') {
     return codeModelToNestedIlographDocument(model, options)
+  }
+  if (options.projectionMode === 'flat-modules') {
+    return codeModelToFlatModulesDocument(model, options)
   }
 
   const innerPackages = model.root.children.map(containerToInnerPackage)

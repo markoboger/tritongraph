@@ -3322,8 +3322,10 @@ async function openPythonExampleTab(root: string, dir: string): Promise<void> {
           { name: `Python: ${dir}` },
         )
         const ilographDoc = codeModelToIlographDocument(codeModel, {
+          resourceId: dir,
           title: `Python: ${dir}`,
           description: `Bundled Python example: \`${root}/${dir}/\``,
+          projectionMode: 'flat-modules',
         })
         await applyDoc(stringifyIlographYaml(ilographDoc), `${dir}.python.ilograph.yaml`, true, {
           moduleNodeType: 'package',
@@ -3991,8 +3993,10 @@ async function loadPythonPackagesForRuntimeWorkspace(workspacePath: string, work
       { name: `Python packages: ${workspaceName}` },
     )
     const ilographDoc = codeModelToIlographDocument(codeModel, {
+      resourceId: workspaceName,
       title: `Python packages: ${workspaceName}`,
       description: `Source: \`${workspacePath}/\``,
+      projectionMode: 'flat-modules',
     })
     const yaml = stringifyIlographYaml(ilographDoc)
     await applyDoc(yaml, `${workspaceName}.packages.runtime.ilograph.yaml`, false, {

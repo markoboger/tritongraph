@@ -359,8 +359,10 @@ export function ilographDocumentToFlow(
         ...(!isGroup
           ? {
               language: languageIconForId(id),
-              // Skip synthetic sbt drill notes for Docker-tagged leaves (`sbtStyleDrillNotes`).
+              // Skip synthetic sbt drill notes for Docker-tagged leaves or non-Scala languages.
               ...(typeof tritonIconKey === 'string' && isDockerConceptIconKey(tritonIconKey.trim())
+                ? {}
+                : typeof res['x-triton-package-language'] === 'string'
                 ? {}
                 : { drillNote: drillNoteForModuleId(id) }),
             }

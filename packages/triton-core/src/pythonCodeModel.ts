@@ -166,13 +166,18 @@ export function buildPythonCodeModelFromSummaries(
     // Ensure parent package containers exist
     const parentNode = ensureContainerPath(root, parentSegments)
 
-    // Create the module container
+    // __init__.py files represent the package itself, so they should create a package node
+    // rather than a module node. If they were module nodes, collectModules() would stop
+    // recursing there and miss all sibling module files (receptionist.py, vet.py, etc.).
+    const isPackageInit = filePath.endsWith('/__init__.py') || filePath === '__init__.py'
+
+    // Create the module/package container
     let moduleNode = parentNode.children.get(leafName)
     if (!moduleNode) {
       moduleNode = {
         id: modulePath,
         name: leafName,
-        kind: 'module',
+        kind: isPackageInit ? 'package' : 'module',
         source: { file: filePath, startRow: 0 },
         children: new Map(),
         artefacts: [],
