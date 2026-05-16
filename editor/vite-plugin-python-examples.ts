@@ -10,10 +10,12 @@ export interface PythonExamplesRoot {
   dir: string
 }
 
+const SKIP_DIRS = new Set([
+  '.git', '.venv', '__pycache__', '.pytest_cache', '.ruff_cache', 'dist', 'node_modules',
+])
+
 function shouldSkipDir(name: string): boolean {
-  return new Set([
-    '.git', '.venv', '__pycache__', '.pytest_cache', '.ruff_cache', 'dist', 'node_modules',
-  ]).has(name)
+  return SKIP_DIRS.has(name)
 }
 
 function collectPythonFiles(

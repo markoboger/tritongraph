@@ -33,6 +33,8 @@ export interface ParsedPythonArtefact {
   bases: string[]
   decorators: string[]
   members: ParsedPythonMember[]
+  /** Full `def name(params) -> ret` signature for top-level functions. */
+  signature?: string
 }
 
 export interface PythonFileSummary {
@@ -86,7 +88,7 @@ function buildArtefact(filePath: string, modulePath: string, a: ParsedPythonArte
   const artId = makeArtefactId(modulePath, kind, a.name)
   const declaration = a.kind === 'class'
     ? (a.bases.length ? `class ${a.name}(${a.bases.join(', ')})` : `class ${a.name}`)
-    : `def ${a.name}()`
+    : (a.signature ?? `def ${a.name}()`)
   return {
     id: artId,
     name: a.name,
@@ -217,20 +219,20 @@ export function buildPythonCodeModelFromSummaries(
       if (art.kind !== 'class' || !art.bases.length) continue
       const childId = makeArtefactId(modulePath, 'class', art.name)
       for (const base of art.bases) {
-        const candidates = artefactBySimpleName.get(base) ?? []
-        for (const parentId of candidates) {
-          if (parentId === childId) continue
-          const relId = `rel:extends:${childId}→${parentId}`
-          if (seen.has(relId)) continue
-          seen.add(relId)
-          relations.push({
-            id: relId,
-            from: childId,
-            to: parentId,
-            kind: 'extends',
-            scope: 'artefact',
-          })
-        }
+        const candidates = (artefactBySimpleName.get(base) ?? []).filter((id) => id !== childId)
+        // Skip ambiguous base names (same simple name in multiple modules) to avoid false edges.
+        if (candidates.length !== 1) continue
+        const parentId = candidates[0]!
+        const relId = `rel:extends:${childId}→${parentId}`
+        if (seen.has(relId)) continue
+        seen.add(relId)
+        relations.push({
+          id: relId,
+          from: childId,
+          to: parentId,
+          kind: 'extends',
+          scope: 'artefact',
+        })
       }
     }
   }

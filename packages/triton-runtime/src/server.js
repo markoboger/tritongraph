@@ -133,7 +133,8 @@ function probeWorkspace(workspacePath) {
   const hasPyMarker =
     fileExists(path.join(root, 'pyproject.toml')) ||
     fileExists(path.join(root, 'setup.py')) ||
-    fileExists(path.join(root, 'setup.cfg'))
+    fileExists(path.join(root, 'setup.cfg')) ||
+    fileExists(path.join(root, 'requirements.txt'))
 
   let kind = 'generic'
   if (isScalaSbt) kind = 'scala-sbt'

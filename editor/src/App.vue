@@ -23,6 +23,7 @@ import type {
 import { dojoFixtures, getDojoFixture } from './dojo'
 import sbtLogoUrl from './assets/language-icons/sbt.svg'
 import cubeIconUrl from './assets/language-icons/cube.svg'
+import pythonIconUrl from './assets/language-icons/python.svg'
 import stackedCubesIconUrl from './assets/language-icons/stacked-cubes.svg'
 import folderIconUrl from './assets/language-icons/folder.svg'
 import tritonIconUrl from './assets/language-icons/triton.svg'
@@ -1502,6 +1503,7 @@ async function selectExample(id: string) {
     const slash = body.indexOf('/')
     if (slash < 0) return
     await openPythonExampleTab(body.slice(0, slash), body.slice(slash + 1))
+    return
   }
 }
 
@@ -3290,6 +3292,14 @@ async function openTsExampleTab(root: string, dir: string, file: string): Promis
   )
 }
 
+function importPythonModules() {
+  return Promise.all([
+    import('./python/parsePythonWithTreeSitter'),
+    import('../../packages/triton-core/src/pythonCodeModel'),
+    import('../../packages/triton-core/src/codeModelToIlograph'),
+  ])
+}
+
 async function openPythonExampleTab(root: string, dir: string): Promise<void> {
   const hit = pythonExamplesAll.find((e) => e.root === root && e.dir === dir)
   if (!hit) {
@@ -3297,30 +3307,30 @@ async function openPythonExampleTab(root: string, dir: string): Promise<void> {
     return
   }
   await openOrActivateTab(
-    { key: pythonExampleSelectionId(root, dir), title: `Python: ${dir}`, iconUrl: cubeIconUrl },
+    { key: pythonExampleSelectionId(root, dir), title: `Python: ${dir}`, iconUrl: pythonIconUrl },
     async () => {
       sourcePath.value = hit.path
-      const [{ summarizePython }, { buildPythonCodeModelFromSummaries }, { codeModelToIlographDocument }] =
-        await Promise.all([
-          import('./python/parsePythonWithTreeSitter'),
-          import('../../packages/triton-core/src/pythonCodeModel'),
-          import('../../packages/triton-core/src/codeModelToIlograph'),
-        ])
-      const fileEntries = Object.entries(hit.files)
-      const summaries = await Promise.all(
-        fileEntries.map(([relPath, source]) => summarizePython(source, relPath, `${root}/${dir}`)),
-      )
-      const codeModel = buildPythonCodeModelFromSummaries(
-        summaries.map((s, i) => ({ filePath: fileEntries[i]![0], summary: s })),
-        { name: `Python: ${dir}` },
-      )
-      const ilographDoc = codeModelToIlographDocument(codeModel, {
-        title: `Python: ${dir}`,
-        description: `Bundled Python example: \`${root}/${dir}/\``,
-      })
-      await applyDoc(stringifyIlographYaml(ilographDoc), `${dir}.python.ilograph.yaml`, true, {
-        moduleNodeType: 'package',
-      })
+      try {
+        const [{ summarizePython }, { buildPythonCodeModelFromSummaries }, { codeModelToIlographDocument }] =
+          await importPythonModules()
+        const fileEntries = Object.entries(hit.files)
+        const summaries = await Promise.all(
+          fileEntries.map(([relPath, source]) => summarizePython(source, relPath, `${root}/${dir}`)),
+        )
+        const codeModel = buildPythonCodeModelFromSummaries(
+          summaries.map((s, i) => ({ filePath: fileEntries[i]![0], summary: s })),
+          { name: `Python: ${dir}` },
+        )
+        const ilographDoc = codeModelToIlographDocument(codeModel, {
+          title: `Python: ${dir}`,
+          description: `Bundled Python example: \`${root}/${dir}/\``,
+        })
+        await applyDoc(stringifyIlographYaml(ilographDoc), `${dir}.python.ilograph.yaml`, true, {
+          moduleNodeType: 'package',
+        })
+      } catch (err) {
+        status.value = `Failed to load Python example: ${(err as Error).message}`
+      }
     },
   )
 }
@@ -3521,7 +3531,7 @@ async function openRuntimePythonTab(workspacePath: string, workspaceName: string
     {
       key: `runtime-python:${workspacePath}::${workspaceName}`,
       title: workspaceName,
-      iconUrl: cubeIconUrl,
+      iconUrl: pythonIconUrl,
     },
     () => loadPythonPackagesForRuntimeWorkspace(workspacePath, workspaceName),
   )
@@ -3972,11 +3982,7 @@ async function loadPythonPackagesForRuntimeWorkspace(workspacePath: string, work
     status.value = `Parsing ${files.length} Python file${files.length === 1 ? '' : 's'} from ${workspaceName}…`
     sourcePath.value = `${workspacePath}/`
     const [{ summarizePython }, { buildPythonCodeModelFromSummaries }, { codeModelToIlographDocument }] =
-      await Promise.all([
-        import('./python/parsePythonWithTreeSitter'),
-        import('../../packages/triton-core/src/pythonCodeModel'),
-        import('../../packages/triton-core/src/codeModelToIlograph'),
-      ])
+      await importPythonModules()
     const summaries = await Promise.all(
       files.map((f) => summarizePython(f.source, f.relPath, workspacePath)),
     )

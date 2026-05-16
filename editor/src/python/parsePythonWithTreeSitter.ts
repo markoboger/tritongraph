@@ -72,10 +72,16 @@ function parseImportStatement(node: TSNode): ParsedPythonImport[] {
   return out
 }
 
-function resolveModuleName(moduleNode: TSNode): string {
+function resolveModuleName(moduleNode: TSNode, currentModulePath: string): string {
   if (moduleNode.type === 'relative_import') {
     const inner = moduleNode.namedChildren.find((c) => c.type === 'dotted_name')
-    return inner ? inner.text.trim() : ''
+    // Count leading dots: 1 dot = current package, 2 dots = parent package, etc.
+    const dotCount = (/^\.+/.exec(moduleNode.text) ?? [''])[0].length
+    const parts = currentModulePath.split('.')
+    const parentParts = parts.slice(0, Math.max(0, parts.length - dotCount))
+    const parent = parentParts.join('.')
+    if (inner) return parent ? `${parent}.${inner.text.trim()}` : inner.text.trim()
+    return parent
   }
   return moduleNode.text.trim()
 }
@@ -94,9 +100,9 @@ function collectImportedNames(node: TSNode, moduleNode: TSNode | null): string[]
   return names
 }
 
-function parseImportFromStatement(node: TSNode): ParsedPythonImport {
+function parseImportFromStatement(node: TSNode, currentModulePath: string): ParsedPythonImport {
   const moduleNode = node.childForFieldName('module_name')
-  const modulePath = moduleNode ? resolveModuleName(moduleNode) : ''
+  const modulePath = moduleNode ? resolveModuleName(moduleNode, currentModulePath) : ''
   const names = collectImportedNames(node, moduleNode)
   return { raw: node.text.trim(), modulePath, names }
 }
@@ -162,6 +168,7 @@ function parseFunctionDef(node: TSNode, decorators: string[]): ParsedPythonArtef
     bases: [],
     decorators,
     members: [],
+    signature: parseFunctionSignature(node),
   }
 }
 
@@ -184,9 +191,10 @@ export async function summarizePython(
   filePath: string,
   projectRoot: string,
 ): Promise<PythonFileSummary> {
+  const modulePath = filePathToModulePath(filePath, projectRoot)
   const parser = await getParser()
   const tree = parser.parse(source)
-  if (!tree) return { modulePath: filePathToModulePath(filePath, projectRoot), filePath, imports: [], topLevel: [] }
+  if (!tree) return { modulePath, filePath, imports: [], topLevel: [] }
   const root = tree.rootNode
 
   const imports: ParsedPythonImport[] = []
@@ -196,7 +204,7 @@ export async function summarizePython(
     if (child.type === 'import_statement') {
       imports.push(...parseImportStatement(child))
     } else if (child.type === 'import_from_statement') {
-      imports.push(parseImportFromStatement(child))
+      imports.push(parseImportFromStatement(child, modulePath))
     } else if (child.type === 'class_definition') {
       topLevel.push(parseClassDef(child, []))
     } else if (child.type === 'function_definition') {
@@ -214,5 +222,5 @@ export async function summarizePython(
 
   tree.delete()
 
-  return { modulePath: filePathToModulePath(filePath, projectRoot), filePath, imports, topLevel }
+  return { modulePath, filePath, imports, topLevel }
 }
