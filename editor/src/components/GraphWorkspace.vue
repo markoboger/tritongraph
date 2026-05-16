@@ -12,7 +12,7 @@ import {
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import '@vue-flow/node-resizer/dist/style.css'
-import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, unref, watch, withDefaults } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, unref, watch } from 'vue'
 import type { AbstractionDojoResizeConfig } from './diagram/useAbstractionNodeResize'
 import DiagramContainerView from './diagram/DiagramContainerView.vue'
 import GraphDrillIn from './GraphDrillIn.vue'

@@ -73,6 +73,15 @@ declare module 'virtual:scoverage-reports' {
   export const scoverageReportEncodedEntries: ScoverageReportEncoded[]
 }
 
+declare module 'virtual:python-examples' {
+  export interface PythonExampleEncoded {
+    root: string
+    dir: string
+    filesB64: Record<string, string>
+  }
+  export const pythonExampleEncodedEntries: PythonExampleEncoded[]
+}
+
 declare module 'virtual:triton-config' {
   export interface TritonEditorConfig {
     /** Built-in preset shortcut (`cursor`, `vscode`, `vscode-insiders`, `idea`, `zed`). */

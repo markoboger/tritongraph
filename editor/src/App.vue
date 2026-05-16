@@ -55,6 +55,7 @@ import { drillNoteForModuleId } from './graph/sbtStyleDrillNotes'
 import { listSbtExamples } from './sbt/sbtExampleBuilds'
 import { computeSbtProjectScalaLineCounts } from './sbt/sbtProjectLineCounts'
 import { listTsExamples } from './ts/tsExampleDiagrams'
+import { listPythonExamples } from './python/pythonExampleDiagrams'
 import { parseBuildSbt } from './sbt/parseBuildSbt'
 import { sbtProjectsToIlographDocument } from './sbt/sbtProjectsToIlographDocument'
 import { getSbtTestLogFor } from './sbt/sbtTestLogLoader'
@@ -706,6 +707,7 @@ const dojoMatrixArtefactCount = ref(
 /** All bundled examples (`build.sbt` files) across every registered examples-root. */
 const sbtExamplesAll = listSbtExamples()
 const tsExamplesAll = listTsExamples()
+const pythonExamplesAll = listPythonExamples()
 
 /** Tutorial-style bundled examples: 01–12 numbered prefixes (the `sbt-examples` tutorial set). */
 function isTutorialSbtFolder(dir: string): boolean {
@@ -753,6 +755,11 @@ const sbtExamplesLargeOss = sbtExamplesAll.filter(
 )
 const scalaExamples = sbtExamplesAll.filter((e) => e.root === 'scala-examples')
 const tsExamples = tsExamplesAll.filter((e) => e.root === 'ts-examples')
+const pythonExamples = pythonExamplesAll.filter((e) => e.root === 'python-examples')
+
+function pythonExampleSelectionId(root: string, dir: string): string {
+  return `py:${root}/${dir}`
+}
 const dojoExamples = computed(() => [
   { id: PACKAGE_STACKING_DOJO_ID, title: 'Package stacking' },
   { id: CLASS_STACKING_DOJO_ID, title: 'Class Stacking' },
@@ -829,6 +836,15 @@ const tritonStarterCards = computed<StarterCard[]>(() => {
       subtitle: d.subtitle,
       group: 'Docker',
       dockerConceptIcon: d.icon,
+    })
+  }
+  for (const e of pythonExamples) {
+    rows.push({
+      kind: 'python',
+      selectionId: pythonExampleSelectionId(e.root, e.dir),
+      title: exampleOptionLabel(e.dir),
+      subtitle: e.path,
+      group: 'Python',
     })
   }
   return rows
@@ -1479,6 +1495,13 @@ async function selectExample(id: string) {
     const slug = id.slice('docker:'.length).trim()
     if (!slug) return
     await openDockerExampleTab(slug)
+    return
+  }
+  if (id.startsWith('py:')) {
+    const body = id.slice('py:'.length)
+    const slash = body.indexOf('/')
+    if (slash < 0) return
+    await openPythonExampleTab(body.slice(0, slash), body.slice(slash + 1))
   }
 }
 
@@ -3267,6 +3290,41 @@ async function openTsExampleTab(root: string, dir: string, file: string): Promis
   )
 }
 
+async function openPythonExampleTab(root: string, dir: string): Promise<void> {
+  const hit = pythonExamplesAll.find((e) => e.root === root && e.dir === dir)
+  if (!hit) {
+    status.value = `Cannot open Python example — not found: ${root}/${dir}`
+    return
+  }
+  await openOrActivateTab(
+    { key: pythonExampleSelectionId(root, dir), title: `Python: ${dir}`, iconUrl: cubeIconUrl },
+    async () => {
+      sourcePath.value = hit.path
+      const [{ summarizePython }, { buildPythonCodeModelFromSummaries }, { codeModelToIlographDocument }] =
+        await Promise.all([
+          import('./python/parsePythonWithTreeSitter'),
+          import('../../packages/triton-core/src/pythonCodeModel'),
+          import('../../packages/triton-core/src/codeModelToIlograph'),
+        ])
+      const fileEntries = Object.entries(hit.files)
+      const summaries = await Promise.all(
+        fileEntries.map(([relPath, source]) => summarizePython(source, relPath, `${root}/${dir}`)),
+      )
+      const codeModel = buildPythonCodeModelFromSummaries(
+        summaries.map((s, i) => ({ filePath: fileEntries[i]![0], summary: s })),
+        { name: `Python: ${dir}` },
+      )
+      const ilographDoc = codeModelToIlographDocument(codeModel, {
+        title: `Python: ${dir}`,
+        description: `Bundled Python example: \`${root}/${dir}/\``,
+      })
+      await applyDoc(stringifyIlographYaml(ilographDoc), `${dir}.python.ilograph.yaml`, true, {
+        moduleNodeType: 'package',
+      })
+    },
+  )
+}
+
 async function openTsPackagesTab(root: string, dir: string, file: string, moduleId: string): Promise<void> {
   const hit = tsExamplesAll.find((e) => e.root === root && e.dir === dir && e.file === file)
   if (!hit) {
@@ -3530,6 +3588,14 @@ async function reloadActiveExampleTab(): Promise<void> {
     if (slash < 0) return
     const projectId = body.includes('#') ? body.slice(body.indexOf('#') + 1) : ''
     await loadScalaPackagesForExample(cleaned.slice(0, slash), cleaned.slice(slash + 1), projectId || undefined)
+    snapshotActiveTab()
+    return
+  }
+  if (key.startsWith('py:')) {
+    const body = key.slice('py:'.length)
+    const slash = body.indexOf('/')
+    if (slash < 0) return
+    await openPythonExampleTab(body.slice(0, slash), body.slice(slash + 1))
     snapshotActiveTab()
   }
 }

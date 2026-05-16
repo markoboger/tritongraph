@@ -9,6 +9,7 @@ import { scalaSourcesVirtualModule } from './vite-plugin-scala-sources'
 import { scoverageReportsVirtualModule } from './vite-plugin-scoverage-reports'
 import { tritonConfigVirtualModule } from './vite-plugin-triton-config'
 import { tsExamplesVirtualModule } from './vite-plugin-ts-examples'
+import { pythonExamplesVirtualModule } from './vite-plugin-python-examples'
 import { dockerExamplesStaticPlugin } from './vite-plugin-docker-examples'
 
 const require = createRequire(import.meta.url)
@@ -32,6 +33,7 @@ const exampleRoots = [
   { name: 'docker-examples', dir: path.resolve(repoRoot, 'docker-examples') },
 ]
 const tsExampleRoots = [{ name: 'ts-examples', dir: path.resolve(repoRoot, 'ts-examples') }]
+const pythonExampleRoots = [{ name: 'python-examples', dir: path.resolve(repoRoot, 'python-examples') }]
 
 export default defineConfig({
   /** Keep SVG/PNG URLs as separate `/assets/*` files so `<img src>` works in strict embeds (long `data:image/svg+xml` blobs in the main chunk have been seen to break). */
@@ -43,6 +45,7 @@ export default defineConfig({
     ...dockerExamplesStaticPlugin(repoRoot),
     sbtExamplesVirtualModule(exampleRoots),
     tsExamplesVirtualModule(tsExampleRoots),
+    pythonExamplesVirtualModule(pythonExampleRoots),
     sbtTestLogsVirtualModule(exampleRoots),
     scalaSourcesVirtualModule(exampleRoots),
     scoverageReportsVirtualModule(exampleRoots),

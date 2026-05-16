@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { StarterCard, StarterCardKind } from '../triton/tritonStarterCard'
 
 type StarterFoldSection = {
-  id: 'scala' | 'ts' | 'sbt' | 'dojo' | 'docker'
+  id: 'scala' | 'ts' | 'sbt' | 'dojo' | 'docker' | 'python'
   title: string
   hint: string
   cards: StarterCard[]
@@ -19,6 +19,7 @@ import sbtIconUrl from '../assets/language-icons/sbt.svg'
 import scalaIconUrl from '../assets/language-icons/scala.svg'
 import typescriptIconUrl from '../assets/language-icons/typescript.svg'
 import genericIconUrl from '../assets/language-icons/generic.svg'
+import pythonIconUrl from '../assets/language-icons/python.svg'
 import tritonIconUrl from '../assets/language-icons/triton.svg'
 import { formatLinesOfCodeUnit } from '../graph/linesOfCodeDisplay'
 
@@ -392,6 +393,15 @@ const starterFoldSections = computed<StarterFoldSection[]>(() => {
       cards: docker,
     })
   }
+  const python = sortStartersByTitle(all.filter((c) => c.kind === 'python'))
+  if (python.length) {
+    out.push({
+      id: 'python',
+      title: 'Python Examples',
+      hint: 'Bundled python-examples workspaces — parsed on the fly with the Python tree-sitter parser.',
+      cards: python,
+    })
+  }
   return out
 })
 
@@ -413,6 +423,8 @@ function starterIconUrl(card: StarterCard): string {
       return typescriptIconUrl
     case 'docker':
       return dockerBrandIconUrl
+    case 'python':
+      return pythonIconUrl
   }
 }
 
@@ -428,6 +440,8 @@ function starterKindLabel(kind: StarterCardKind): string {
       return 'TypeScript'
     case 'docker':
       return 'Docker'
+    case 'python':
+      return 'Python'
   }
 }
 
@@ -2896,6 +2910,10 @@ watch(
 .starter-kind--docker {
   background: #e0f2fe;
   color: #0369a1;
+}
+.starter-kind--python {
+  background: #fef9c3;
+  color: #854d0e;
 }
 .runtime-home__grid--starters {
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));

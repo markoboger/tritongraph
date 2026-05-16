@@ -1,7 +1,7 @@
 import type { DockerConceptIconKey } from './dockerConceptIcons'
 
 /** Bundled example / dojo entry shown as a card on the Triton home screen. */
-export type StarterCardKind = 'dojo' | 'yaml' | 'sbt' | 'ts' | 'docker'
+export type StarterCardKind = 'dojo' | 'yaml' | 'sbt' | 'ts' | 'docker' | 'python'
 
 export type StarterCard = {
   kind: StarterCardKind
