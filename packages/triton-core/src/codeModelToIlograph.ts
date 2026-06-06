@@ -645,6 +645,10 @@ function codeModelToFlatModulesDocument(
 ): IlographDocument {
   const innerPackages = model.root.children.map(containerToInnerPackage)
 
+  // Fallback-only project overview node. Each module is emitted as its own top-level resource below
+  // (with its own language tag + artefacts), and import edges run module→module, so the overview
+  // node has no edges and just floats beside the modules. We therefore omit it when there are
+  // modules to show, and keep it solely as a non-empty placeholder when the model has none.
   const rootResource: TritonCodeResource = {
     id: options.resourceId ?? model.id,
     name: model.name,
@@ -679,7 +683,7 @@ function codeModelToFlatModulesDocument(
 
   return {
     description: options.description ?? `Code model projection for ${model.name}.`,
-    resources: moduleResources.length ? [rootResource, ...moduleResources] : [rootResource],
+    resources: moduleResources.length ? moduleResources : [rootResource],
     perspectives: [
       {
         name: 'dependencies',
