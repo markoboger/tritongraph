@@ -374,17 +374,98 @@ function findInnerPackageSpec(
   return null
 }
 
+/**
+ * The single source language of the active diagram, read from any `x-triton-package-scope` group
+ * node (which carries the real `x-triton-package-language` string in its data). Leaf nodes only carry
+ * a decorative `languageIconForId` value, so they are not a reliable source. Used to re-stamp derived
+ * drill-down diagrams so they don't lose the language tag and fall back to synthetic sbt drill notes.
+ */
+function activeDiagramLanguage(): string | undefined {
+  // The tab records the analysed project's language directly (flat-modules diagrams don't carry it on
+  // any flow node). Fall back to a `x-triton-package-scope` group node for the Scala nested projection.
+  if (typeof activeTab.value?.projectLanguage === 'string') return activeTab.value.projectLanguage
+  for (const node of nodes.value) {
+    const data = (node.data ?? {}) as Record<string, unknown>
+    if (data.packageScope === true && typeof data.language === 'string') return data.language
+  }
+  return undefined
+}
+
+/**
+ * Gather every inner-artefact owned by `packageId` (and the relations among them) from across all
+ * flow nodes — not just the node being drilled. The flat-modules projection (Python/TypeScript) keeps
+ * each module's artefacts on its own flat leaf node rather than nested under the parent package, so
+ * reading only the owner node's `innerArtefacts` produces an empty drill-down diagram for packages.
+ */
+function collectArtefactsUnderPackage(packageId: string): {
+  innerArtefacts: TritonInnerArtefactSpec[]
+  innerArtefactRelations: TritonInnerArtefactRelationSpec[]
+  crossArtefactRelations: TritonInnerArtefactRelationSpec[]
+} {
+  const innerArtefacts: TritonInnerArtefactSpec[] = []
+  const seenArtefact = new Set<string>()
+  for (const node of nodes.value) {
+    const data = (node.data ?? {}) as Record<string, unknown>
+    if (!Array.isArray(data.innerArtefacts)) continue
+    for (const artefact of data.innerArtefacts as TritonInnerArtefactSpec[]) {
+      if (artefact?.id && packageOwnsArtefact(packageId, artefact.id) && !seenArtefact.has(artefact.id)) {
+        seenArtefact.add(artefact.id)
+        innerArtefacts.push(artefact)
+      }
+    }
+  }
+  const ownedIds = new Set(innerArtefacts.map((a) => a.id))
+  const innerArtefactRelations: TritonInnerArtefactRelationSpec[] = []
+  const crossArtefactRelations: TritonInnerArtefactRelationSpec[] = []
+  const seenRel = new Set<string>()
+  const relKey = (r: TritonInnerArtefactRelationSpec) => `${r.from}${r.to}${r.label ?? ''}`
+  for (const node of nodes.value) {
+    const data = (node.data ?? {}) as Record<string, unknown>
+    const rels = [
+      ...(Array.isArray(data.innerArtefactRelations)
+        ? (data.innerArtefactRelations as TritonInnerArtefactRelationSpec[])
+        : []),
+      ...(Array.isArray(data.crossArtefactRelations)
+        ? (data.crossArtefactRelations as TritonInnerArtefactRelationSpec[])
+        : []),
+    ]
+    for (const rel of rels) {
+      const key = relKey(rel)
+      if (seenRel.has(key)) continue
+      const hasFrom = ownedIds.has(rel.from)
+      const hasTo = ownedIds.has(rel.to)
+      if (hasFrom && hasTo) {
+        seenRel.add(key)
+        innerArtefactRelations.push(rel)
+      } else if (hasFrom || hasTo) {
+        seenRel.add(key)
+        crossArtefactRelations.push(rel)
+      }
+    }
+  }
+  return { innerArtefacts, innerArtefactRelations, crossArtefactRelations }
+}
+
 function packageDiagramDataForNode(packageId: string): {
   id: string
   name: string
   subtitle?: string
   description?: string
   boxColor?: string
+  language?: string
   innerPackages?: readonly TritonInnerPackageSpec[]
   innerArtefacts?: readonly TritonInnerArtefactSpec[]
   innerArtefactRelations?: readonly TritonInnerArtefactRelationSpec[]
   crossArtefactRelations?: readonly TritonInnerArtefactRelationSpec[]
 } | null {
+  // The whole diagram is one language; re-stamp it on the derived drill-down so leaves don't lose it
+  // and fall back to synthetic sbt drill notes (see ilographToFlow drill-note gate).
+  const language = activeDiagramLanguage()
+  // Artefacts live on the flat module leaf nodes (flat-modules projection), not nested under the
+  // package being drilled — gather across all nodes so drilled packages aren't empty.
+  const { innerArtefacts, innerArtefactRelations, crossArtefactRelations } =
+    collectArtefactsUnderPackage(packageId)
+
   const direct = (nodes.value as Array<{ id: string | number }>).find((node) => String(node.id) === packageId) as TritonFlowNode | undefined
   if (direct) {
     const data = direct.data as unknown as Record<string, unknown>
@@ -394,14 +475,11 @@ function packageDiagramDataForNode(packageId: string): {
       ...(typeof data.subtitle === 'string' ? { subtitle: data.subtitle } : {}),
       ...(typeof data.description === 'string' ? { description: data.description } : {}),
       ...(typeof data.boxColor === 'string' ? { boxColor: data.boxColor } : {}),
+      ...(language ? { language } : {}),
       ...(Array.isArray(data.innerPackages) ? { innerPackages: data.innerPackages as TritonInnerPackageSpec[] } : {}),
-      ...(Array.isArray(data.innerArtefacts) ? { innerArtefacts: data.innerArtefacts as TritonInnerArtefactSpec[] } : {}),
-      ...(Array.isArray(data.innerArtefactRelations)
-        ? { innerArtefactRelations: data.innerArtefactRelations as TritonInnerArtefactRelationSpec[] }
-        : {}),
-      ...(Array.isArray(data.crossArtefactRelations)
-        ? { crossArtefactRelations: data.crossArtefactRelations as TritonInnerArtefactRelationSpec[] }
-        : {}),
+      ...(innerArtefacts.length ? { innerArtefacts } : {}),
+      ...(innerArtefactRelations.length ? { innerArtefactRelations } : {}),
+      ...(crossArtefactRelations.length ? { crossArtefactRelations } : {}),
     }
   }
 
@@ -412,24 +490,11 @@ function packageDiagramDataForNode(packageId: string): {
       packageId,
     )
     if (!found) continue
-    const innerArtefacts = Array.isArray(data.innerArtefacts)
-      ? (data.innerArtefacts as TritonInnerArtefactSpec[]).filter((artefact) => packageOwnsArtefact(packageId, artefact.id))
-      : []
-    const ownedIds = new Set(innerArtefacts.map((artefact) => artefact.id))
-    const innerArtefactRelations = Array.isArray(data.innerArtefactRelations)
-      ? (data.innerArtefactRelations as TritonInnerArtefactRelationSpec[]).filter(
-          (rel) => ownedIds.has(rel.from) && ownedIds.has(rel.to),
-        )
-      : []
-    const crossArtefactRelations = Array.isArray(data.crossArtefactRelations)
-      ? (data.crossArtefactRelations as TritonInnerArtefactRelationSpec[]).filter(
-          (rel) => ownedIds.has(rel.from) || ownedIds.has(rel.to),
-        )
-      : []
     return {
       id: found.id,
       name: found.name,
       ...(found.subtitle ? { subtitle: found.subtitle } : {}),
+      ...(language ? { language } : {}),
       ...(found.innerPackages?.length ? { innerPackages: found.innerPackages } : {}),
       ...(innerArtefacts.length ? { innerArtefacts } : {}),
       ...(innerArtefactRelations.length ? { innerArtefactRelations } : {}),
@@ -451,6 +516,7 @@ function packageDiagramDocument(data: NonNullable<ReturnType<typeof packageDiagr
         ...(data.description ? { description: data.description } : {}),
         ...(data.boxColor ? { color: data.boxColor } : {}),
         'x-triton-node-type': 'package',
+        ...(data.language ? { 'x-triton-package-language': data.language } : {}),
         ...(data.innerPackages?.length ? { 'x-triton-inner-packages': data.innerPackages } : {}),
         ...(data.innerArtefacts?.length ? { 'x-triton-inner-artefacts': data.innerArtefacts } : {}),
         ...(data.innerArtefactRelations?.length
@@ -520,6 +586,7 @@ async function openPackageInnerDiagramTab(packageId: string): Promise<void> {
   )
   const innerTab = tabs.value.find((t) => t.key === innerTabKey)
   if (innerTab) {
+    if (data.language) innerTab.projectLanguage = data.language
     if (typeof parentTab?.dojoDepth === 'number') innerTab.dojoDepth = parentTab.dojoDepth
     else if (parentKey === `dojo:${CLASS_STACKING_DOJO_ID}` && packageId === CLASS_STACKING_INNER_PACKAGE_ID) {
       innerTab.dojoDepth = dojoClassStackCount.value
@@ -887,6 +954,13 @@ interface DiagramTab {
   sourceContent?: string
   sourceLanguage?: string
   sourceLine?: number
+  /**
+   * Source language of the analysed project (`python`, `scala`, `typescript`). Distinct from
+   * {@link sourceLanguage} (Monaco highlight mode for source-view tabs). Used to re-stamp derived
+   * drill-down diagrams with `x-triton-package-language` so they keep real language metadata instead
+   * of falling back to synthetic sbt drill notes.
+   */
+  projectLanguage?: string
 }
 
 interface RuntimeWorkspaceBundle {
@@ -3335,6 +3409,8 @@ async function openPythonExampleTab(root: string, dir: string): Promise<void> {
       }
     },
   )
+  const tab = tabs.value.find((t) => t.key === pythonExampleSelectionId(root, dir))
+  if (tab) tab.projectLanguage = 'python'
 }
 
 async function openTsPackagesTab(root: string, dir: string, file: string, moduleId: string): Promise<void> {
@@ -3537,6 +3613,8 @@ async function openRuntimePythonTab(workspacePath: string, workspaceName: string
     },
     () => loadPythonPackagesForRuntimeWorkspace(workspacePath, workspaceName),
   )
+  const tab = tabs.value.find((t) => t.key === `runtime-python:${workspacePath}::${workspaceName}`)
+  if (tab) tab.projectLanguage = 'python'
 }
 
 async function reloadActiveRuntimeTab(): Promise<void> {
