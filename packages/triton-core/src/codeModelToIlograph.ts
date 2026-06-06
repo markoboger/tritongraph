@@ -5,7 +5,7 @@ export interface CodeModelToIlographOptions {
   resourceId?: string
   title?: string
   description?: string
-  projectionMode?: 'single-resource' | 'nested-resources' | 'flat-modules'
+  projectionMode?: 'single-resource' | 'nested-resources' | 'flat-modules' | 'package-graph'
   rootResourceKind?: 'package' | 'project'
   scopeContainerId?: string
 }
@@ -643,7 +643,11 @@ function codeModelToFlatModulesDocument(
   model: CodeModel,
   options: CodeModelToIlographOptions,
 ): IlographDocument {
-  const innerPackages = model.root.children.map(containerToInnerPackage)
+  // Honor an optional scope so the toolbar's "Flat modules" toggle works at any drill level
+  // (flat list of every module under the current package, not the whole repo).
+  const scopeId = options.scopeContainerId?.trim()
+  const scopeRoot = scopeId ? (findContainer(model.root, scopeId) ?? model.root) : model.root
+  const innerPackages = scopeRoot.children.map(containerToInnerPackage)
 
   // Fallback-only project overview node. Each module is emitted as its own top-level resource below
   // (with its own language tag + artefacts), and import edges run module→module, so the overview
@@ -677,7 +681,7 @@ function codeModelToFlatModulesDocument(
       }
     }
   }
-  collectModules(model.root)
+  collectModules(scopeRoot)
 
   const importRelations = containerImportRelations(model.relations)
 
@@ -689,6 +693,120 @@ function codeModelToFlatModulesDocument(
         name: 'dependencies',
         orientation: 'leftToRight',
         relations: importRelations,
+      },
+    ],
+  }
+}
+
+/** Descend through wrapper packages with a single child container and no artefacts of their own. */
+function collapseSingleChild(container: CodeContainer): CodeContainer {
+  let cur = container
+  while (cur.children.length === 1 && cur.artefacts.length === 0) {
+    cur = cur.children[0]!
+  }
+  return cur
+}
+
+/** Recursive counts used for a package node's summary subtitle. */
+function packageGraphCounts(container: CodeContainer): { subPackages: number; classes: number } {
+  let subPackages = container.children.length
+  let classes = container.artefacts.length
+  for (const child of container.children) {
+    const inner = packageGraphCounts(child)
+    subPackages += inner.subPackages
+    classes += inner.classes
+  }
+  return { subPackages, classes }
+}
+
+function packageGraphSubtitle(container: CodeContainer): string {
+  const { subPackages, classes } = packageGraphCounts(container)
+  const parts: string[] = []
+  if (subPackages) parts.push(`${subPackages} package${subPackages === 1 ? '' : 's'}`)
+  if (classes) parts.push(`${classes} class${classes === 1 ? '' : 'es'}`)
+  return parts.length ? parts.join(' · ') : container.kind
+}
+
+/**
+ * Roll module/artefact import relations up to the level of `children`: map each endpoint to the
+ * child container that owns it (longest-prefix match) and emit one deduped edge per ordered pair,
+ * skipping self-edges and imports that stay within a single child. Mirrors `moduleImportRelations`
+ * / `owningModuleId` but targets an explicit set of sibling containers.
+ */
+function rollupImportRelations(
+  relations: readonly CodeRelation[],
+  children: readonly CodeContainer[],
+): { from: string; to: string; label: string }[] {
+  const childIds = children.map((c) => c.id)
+  const owner = (containerId: string): string | null => {
+    let best: string | null = null
+    for (const id of childIds) {
+      if (containerId === id || containerId.startsWith(`${id}.`) || containerId.startsWith(`${id}/`)) {
+        if (!best || id.length > best.length) best = id
+      }
+    }
+    return best
+  }
+  const out: { from: string; to: string; label: string }[] = []
+  const seen = new Set<string>()
+  for (const rel of relations) {
+    if (rel.kind !== 'imports') continue
+    const from = owner(endpointContainerId(rel.from))
+    const to = owner(endpointContainerId(rel.to))
+    if (!from || !to || from === to) continue
+    const key = `${from}${to}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ from, to, label: 'imports' })
+  }
+  return out
+}
+
+/**
+ * Package-graph projection: render a single level — the immediate child packages of `scopeContainerId`
+ * (or the model root, with single-child wrappers collapsed) as drillable `package` nodes, with import
+ * edges rolled up to that level. A leaf scope (no child containers) renders its classes via
+ * `containerToResource`. The default exploration view for large repos: each node drills (via the
+ * PackageBox subtitle link → `openPackageInnerDiagramTab`) into the next level scoped to that package.
+ */
+function codeModelToPackageGraphDocument(
+  model: CodeModel,
+  options: CodeModelToIlographOptions,
+): IlographDocument {
+  const scopeId = options.scopeContainerId?.trim()
+  const rawScope = scopeId ? findContainer(model.root, scopeId) : model.root
+  const scope = collapseSingleChild(rawScope ?? model.root)
+  const description = options.description ?? `Package graph for ${model.name}.`
+
+  // Leaf scope: no sub-packages — show this module's classes (inner artefacts + relations).
+  if (scope.children.length === 0) {
+    const leaf: TritonCodeResource = {
+      ...containerToResource(scope, model.relations),
+      'x-triton-package-language': model.language,
+    }
+    return {
+      description,
+      resources: [leaf],
+      perspectives: [{ name: 'dependencies', orientation: 'leftToRight', relations: [] }],
+    }
+  }
+
+  const resources: TritonCodeResource[] = scope.children.map((child) => ({
+    id: child.id,
+    name: child.name,
+    subtitle: packageGraphSubtitle(child),
+    'x-triton-node-type': 'package',
+    'x-triton-package-language': model.language,
+  }))
+  return {
+    description,
+    resources,
+    perspectives: [
+      {
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        color: 'royalblue',
+        relations: rollupImportRelations(model.relations, scope.children),
       },
     ],
   }
@@ -709,6 +827,9 @@ export function codeModelToIlographDocument(
   }
   if (options.projectionMode === 'flat-modules') {
     return codeModelToFlatModulesDocument(model, options)
+  }
+  if (options.projectionMode === 'package-graph') {
+    return codeModelToPackageGraphDocument(model, options)
   }
 
   const innerPackages = model.root.children.map(containerToInnerPackage)

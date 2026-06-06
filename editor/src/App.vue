@@ -112,6 +112,17 @@ import {
   setScalaTestBlock,
   whenOverlayStoreReady,
 } from './store/overlayStore'
+import type { CodeModel } from '../../packages/triton-core/src/languageModel'
+
+/** Projection mode for CodeModel-backed (Python) diagrams; switchable via the toolbar toggle. */
+type PythonViewMode = 'package-graph' | 'flat-modules'
+/**
+ * Per-tab CodeModel for Python diagrams. Kept in a plain Map (not a ref): models are large and never
+ * rendered directly. Lets drill/toggle re-project from the model instead of the lossy flow-node
+ * rebuild. `scopeId` is the tab's base package scope (undefined for the workspace root, the drilled
+ * package id for inner tabs). The current mode lives on the reactive DiagramTab (`pythonViewMode`).
+ */
+const pythonTabModel = new Map<string, { model: CodeModel; scopeId?: string }>()
 
 const nodes = ref<TritonFlowNode[]>([])
 const edges = ref<TritonFlowEdge[]>([])
@@ -543,13 +554,48 @@ function collectInnerPackageIds(pkgs: readonly TritonInnerPackageSpec[] | undefi
   }
 }
 
+/**
+ * Drill into a package on a CodeModel-backed (Python) tab by re-projecting the stored model scoped to
+ * that package — always as `package-graph` (drilling is the one-level navigation). The new tab keeps the
+ * model so it can drill deeper and be toggled to flat. Avoids the lossy flow-node rebuild.
+ */
+async function openPythonPackageDrillTab(
+  packageId: string,
+  parentKey: string,
+  parentEntry: { model: CodeModel },
+): Promise<void> {
+  const innerTabKey = `package-inner:${parentKey}#${encodeURIComponent(packageId)}`
+  const name = packageId.split('.').pop() || packageId
+  const { codeModelToIlographDocument } = await import('../../packages/triton-core/src/codeModelToIlograph')
+  pythonTabModel.set(innerTabKey, { model: parentEntry.model, scopeId: packageId })
+  await openOrActivateTab({ key: innerTabKey, title: name, iconUrl: folderIconUrl }, async () => {
+    sourcePath.value = `${sourcePath.value || parentKey}#${packageId}`
+    const doc = codeModelToIlographDocument(parentEntry.model, {
+      projectionMode: 'package-graph',
+      scopeContainerId: packageId,
+      title: name,
+    })
+    await applyDoc(stringifyIlographYaml(doc), `${name}.ilograph.yaml`, false, { moduleNodeType: 'package' })
+  })
+  const innerTab = tabs.value.find((t) => t.key === innerTabKey)
+  if (innerTab) {
+    innerTab.projectLanguage = parentEntry.model.language
+    innerTab.pythonViewMode = 'package-graph'
+  }
+}
+
 async function openPackageInnerDiagramTab(packageId: string): Promise<void> {
+  const parentKey = activeTab.value?.key ?? 'diagram'
+  const parentEntry = pythonTabModel.get(parentKey)
+  if (parentEntry) {
+    await openPythonPackageDrillTab(packageId, parentKey, parentEntry)
+    return
+  }
   const data = packageDiagramDataForNode(packageId)
   if (!data) {
     status.value = `Cannot open package diagram — package not found: ${packageId}`
     return
   }
-  const parentKey = activeTab.value?.key ?? 'diagram'
   const parentTab = tabs.value.find((t) => t.key === parentKey)
   const innerTabKey = `package-inner:${parentKey}#${encodeURIComponent(packageId)}`
   await openOrActivateTab(
@@ -961,6 +1007,8 @@ interface DiagramTab {
    * of falling back to synthetic sbt drill notes.
    */
   projectLanguage?: string
+  /** Current projection mode for CodeModel-backed (Python) tabs; drives the toolbar toggle. */
+  pythonViewMode?: PythonViewMode
 }
 
 interface RuntimeWorkspaceBundle {
@@ -1026,6 +1074,31 @@ function rememberRuntimeWorkspaceMainScalaLoc(
 const activeTab = computed<DiagramTab | undefined>(() =>
   tabs.value.find((t) => t.id === activeTabId.value),
 )
+
+/**
+ * Current Python projection mode for the active tab, or null when it isn't a CodeModel-backed tab.
+ * Reads the reactive `pythonViewMode` tab field (set only for Python tabs) — not the non-reactive
+ * `pythonTabModel` Map, so the toolbar toggle stays in sync.
+ */
+const activePythonViewMode = computed<PythonViewMode | null>(() => activeTab.value?.pythonViewMode ?? null)
+
+/** Toolbar toggle handler: re-project the active tab's stored CodeModel in the chosen mode. */
+async function setPythonViewMode(mode: PythonViewMode): Promise<void> {
+  const tab = activeTab.value
+  if (!tab) return
+  const entry = pythonTabModel.get(tab.key)
+  if (!entry || tab.pythonViewMode === mode) return
+  tab.pythonViewMode = mode
+  const { codeModelToIlographDocument } = await import('../../packages/triton-core/src/codeModelToIlograph')
+  const doc = codeModelToIlographDocument(entry.model, {
+    projectionMode: mode,
+    scopeContainerId: entry.scopeId,
+    title: tab.title,
+  })
+  await applyDoc(stringifyIlographYaml(doc), tab.fileName || `${tab.title}.ilograph.yaml`, false, {
+    moduleNodeType: 'package',
+  })
+}
 
 const nodeTypesMenuSig = computed(() =>
   collectNodeTypeKeys(nodes.value, activeTab.value?.key ?? '').sort().join('\n'),
@@ -3401,11 +3474,12 @@ async function openPythonExampleTab(root: string, dir: string): Promise<void> {
           summaries.map((s, i) => ({ filePath: fileEntries[i]![0], summary: s })),
           { name: `Python: ${dir}` },
         )
+        pythonTabModel.set(pythonExampleSelectionId(root, dir), { model: codeModel })
         const ilographDoc = codeModelToIlographDocument(codeModel, {
           resourceId: dir,
           title: `Python: ${dir}`,
           description: `Bundled Python example: \`${root}/${dir}/\``,
-          projectionMode: 'flat-modules',
+          projectionMode: 'package-graph',
         })
         await applyDoc(stringifyIlographYaml(ilographDoc), `${dir}.python.ilograph.yaml`, true, {
           moduleNodeType: 'package',
@@ -3416,7 +3490,10 @@ async function openPythonExampleTab(root: string, dir: string): Promise<void> {
     },
   )
   const tab = tabs.value.find((t) => t.key === pythonExampleSelectionId(root, dir))
-  if (tab) tab.projectLanguage = 'python'
+  if (tab) {
+    tab.projectLanguage = 'python'
+    tab.pythonViewMode = 'package-graph'
+  }
 }
 
 async function openTsPackagesTab(root: string, dir: string, file: string, moduleId: string): Promise<void> {
@@ -3620,7 +3697,10 @@ async function openRuntimePythonTab(workspacePath: string, workspaceName: string
     () => loadPythonPackagesForRuntimeWorkspace(workspacePath, workspaceName),
   )
   const tab = tabs.value.find((t) => t.key === `runtime-python:${workspacePath}::${workspaceName}`)
-  if (tab) tab.projectLanguage = 'python'
+  if (tab) {
+    tab.projectLanguage = 'python'
+    tab.pythonViewMode = 'package-graph'
+  }
 }
 
 async function reloadActiveRuntimeTab(): Promise<void> {
@@ -4076,11 +4156,12 @@ async function loadPythonPackagesForRuntimeWorkspace(workspacePath: string, work
       summaries.map((s, i) => ({ filePath: files[i]!.relPath, summary: s })),
       { name: `Python packages: ${workspaceName}` },
     )
+    pythonTabModel.set(`runtime-python:${workspacePath}::${workspaceName}`, { model: codeModel })
     const ilographDoc = codeModelToIlographDocument(codeModel, {
       resourceId: workspaceName,
       title: `Python packages: ${workspaceName}`,
       description: `Source: \`${workspacePath}/\``,
-      projectionMode: 'flat-modules',
+      projectionMode: 'package-graph',
     })
     const yaml = stringifyIlographYaml(ilographDoc)
     await applyDoc(yaml, `${workspaceName}.packages.runtime.ilograph.yaml`, false, {
@@ -4943,6 +5024,7 @@ onUnmounted(() => {
           :metric-tooltips-enabled="metricTooltipsEnabled"
           :focus-relation-depth="focusRelationDepth"
           :metric-visibility="metricVisibility"
+          :view-mode="activePythonViewMode"
           @update:node-type-visible="setNodeTypeVisible"
           @update:relation-type-visible="setRelationTypeVisible"
           @update:metric-tooltips-enabled="(v) => (metricTooltipsEnabled = v)"
@@ -4950,6 +5032,7 @@ onUnmounted(() => {
           @update:metric-visible="
             (metricKey, visible) => (metricVisibility = { ...metricVisibility, [metricKey]: visible })
           "
+          @update:view-mode="(m) => void setPythonViewMode(m)"
         />
         <div
           v-if="!activeSourceTab && activeTab?.kind !== 'runtime' && ideSession"
