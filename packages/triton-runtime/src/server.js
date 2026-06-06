@@ -24,6 +24,27 @@ const IGNORED_DIRS = new Set([
   '.mypy_cache',
   '.pytest_cache',
 ])
+
+/**
+ * Directories skipped for Python source collection/discovery only (NOT added to the shared
+ * IGNORED_DIRS — Scala's test sources live in `src/test/scala`, so a global `test`/`tests` skip
+ * would break Scala). Covers test trees and build/coverage output.
+ */
+const PYTHON_SKIP_DIRS = new Set([
+  'tests',
+  'test',
+  'htmlcov',
+  '.ruff_cache',
+  '.aws-sam',
+  'cdk.out',
+  '.eggs',
+  '.nox',
+  'site-packages',
+])
+
+/** Files that mark a directory as the root of a Python package/project. */
+const PYTHON_MARKER_FILES = ['pyproject.toml', 'setup.py', 'setup.cfg']
+
 const REPO_DISCOVERY_MAX_DEPTH = 3
 const RUNTIME_VERSION = '0.7.5'
 
@@ -130,11 +151,13 @@ function probeWorkspace(workspacePath) {
   const hasScalaSources = fileExists(scalaMain) || fileExists(scalaTest)
   const isScalaSbt = hasBuildSbt || hasProjectDir || hasScalaSources
 
-  const hasPyMarker =
-    fileExists(path.join(root, 'pyproject.toml')) ||
-    fileExists(path.join(root, 'setup.py')) ||
-    fileExists(path.join(root, 'setup.cfg')) ||
-    fileExists(path.join(root, 'requirements.txt'))
+  // Detect Python at the root OR in any sub-package (monorepos like nova-modulith have no root-level
+  // pyproject.toml — each sub-package carries its own). `discoverPythonSourceRoots` stops at the
+  // first marker per subtree, so this stays cheap.
+  const hasRootPyMarker =
+    dirHasPythonMarker(root) || fileExists(path.join(root, 'requirements.txt'))
+  const pythonSourceRoots = isScalaSbt ? [] : discoverPythonSourceRoots(root)
+  const hasPyMarker = hasRootPyMarker || pythonSourceRoots.length > 0
 
   let kind = 'generic'
   if (isScalaSbt) kind = 'scala-sbt'
@@ -655,9 +678,62 @@ function collectScalaFiles(workspacePath) {
   return out
 }
 
-function collectPythonFiles(workspacePath) {
+/** True when `dirPath` contains any Python package/project marker file. */
+function dirHasPythonMarker(dirPath) {
+  return PYTHON_MARKER_FILES.some((m) => fileExists(path.join(dirPath, m)))
+}
+
+/**
+ * Discover the source roots of every Python package under `workspacePath`. For each directory that
+ * carries a marker (pyproject.toml/setup.py/setup.cfg), the source root is `<dir>/src` when that
+ * exists (the common `src/` layout — e.g. nova-modulith's sub-packages) or `<dir>` otherwise.
+ *
+ * Returns workspace-relative POSIX paths (e.g. `nova-backend/src`, `infrastructure`). Stops
+ * descending once a package is found (one package per subtree) and skips ignored/test/build dirs,
+ * so it stays cheap even on large monorepos. The editor strips the longest matching root from each
+ * file path to derive the module path (so `nova-backend/src/app/iam.py` → `app.iam`).
+ */
+function discoverPythonSourceRoots(workspacePath) {
+  const roots = new Set()
+
+  function walk(dirPath, depth) {
+    if (depth > REPO_DISCOVERY_MAX_DEPTH) return
+    if (dirHasPythonMarker(dirPath)) {
+      const srcDir = path.join(dirPath, 'src')
+      const sourceRoot = fileExists(srcDir) ? srcDir : dirPath
+      const rel = normalizeRelPath(workspacePath, sourceRoot)
+      roots.add(rel === '' ? '.' : rel)
+      return // one package per subtree
+    }
+    let entries = []
+    try {
+      entries = fs.readdirSync(dirPath, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      if (IGNORED_DIRS.has(entry.name) || PYTHON_SKIP_DIRS.has(entry.name)) continue
+      walk(path.join(dirPath, entry.name), depth + 1)
+    }
+  }
+
+  walk(workspacePath, 0)
+  return [...roots].sort()
+}
+
+/** True when `relPath` lies under one of the discovered source roots (segment boundary). */
+function isUnderSourceRoot(relPath, sourceRoots) {
+  return sourceRoots.some((r) => relPath === r || relPath.startsWith(`${r}/`))
+}
+
+function collectPythonFiles(workspacePath, sourceRoots = []) {
   const out = []
   const seen = new Set()
+  // When source roots are known (every package's src/ or package dir), restrict collection to files
+  // inside them. This drops package-root strays like `nova-backend/main.py` or `scripts/` that live
+  // beside `src/` but aren't part of the importable namespace. With no roots, collect everything.
+  const restrict = sourceRoots.length > 0
 
   function walk(dirPath) {
     let entries = []
@@ -669,13 +745,14 @@ function collectPythonFiles(workspacePath) {
     for (const entry of entries) {
       const absPath = path.join(dirPath, entry.name)
       if (entry.isDirectory()) {
-        if (IGNORED_DIRS.has(entry.name)) continue
+        if (IGNORED_DIRS.has(entry.name) || PYTHON_SKIP_DIRS.has(entry.name)) continue
         walk(absPath)
         continue
       }
       if (!entry.isFile() || !entry.name.endsWith('.py')) continue
       const relPath = normalizeRelPath(workspacePath, absPath)
       if (seen.has(relPath)) continue
+      if (restrict && !isUnderSourceRoot(relPath, sourceRoots)) continue
       const source = readUtf8IfFile(absPath)
       if (source == null) continue
       seen.add(relPath)
@@ -800,6 +877,7 @@ function readWorkspaceBundle(workspacePath) {
   const buildSbtPath = path.join(root, 'build.sbt')
   const buildSbtSource = readUtf8IfFile(buildSbtPath)
   const coverageReports = collectScoverageReports(root)
+  const pythonSourceRoots = discoverPythonSourceRoots(root)
   return {
     ok: true,
     workspacePath: root,
@@ -812,7 +890,8 @@ function readWorkspaceBundle(workspacePath) {
           source: buildSbtSource,
         },
     scalaFiles: collectScalaFiles(root),
-    pyFiles: collectPythonFiles(root),
+    pyFiles: collectPythonFiles(root, pythonSourceRoots),
+    pythonSourceRoots,
     testLog: findSbtTestLog(root),
     coverageReports,
     coverageReport: coverageReports.length ? coverageReports[0] : null,

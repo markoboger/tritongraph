@@ -970,6 +970,9 @@ interface RuntimeWorkspaceBundle {
   buildSbt: { relPath: string; source: string } | null
   scalaFiles: Array<{ relPath: string; source: string }>
   pyFiles: Array<{ relPath: string; source: string }>
+  /** Per-package Python source roots (workspace-relative, e.g. `nova-backend/src`). Stripped from
+   * file paths to derive module paths so `src/` layouts don't produce `src.app.…` prefixes. */
+  pythonSourceRoots: string[]
   testLog: { relPath: string; text: string } | null
   /** All discovered reports (multi-module); merged client-side for diagrams. */
   coverageReports: Array<{ relPath: string; xml: string }>
@@ -1489,6 +1492,9 @@ async function fetchRuntimeWorkspaceBundle(
           relPath: String(f?.relPath ?? ''),
           source: String(f?.source ?? ''),
         }))
+      : [],
+    pythonSourceRoots: Array.isArray(body.pythonSourceRoots)
+      ? body.pythonSourceRoots.map((r) => String(r))
       : [],
     testLog:
       body.testLog && typeof body.testLog === 'object'
@@ -4064,7 +4070,7 @@ async function loadPythonPackagesForRuntimeWorkspace(workspacePath: string, work
     const [{ summarizePython }, { buildPythonCodeModelFromSummaries }, { codeModelToIlographDocument }] =
       await importPythonModules()
     const summaries = await Promise.all(
-      files.map((f) => summarizePython(f.source, f.relPath, workspacePath)),
+      files.map((f) => summarizePython(f.source, f.relPath, workspacePath, bundle.pythonSourceRoots)),
     )
     const codeModel = buildPythonCodeModelFromSummaries(
       summaries.map((s, i) => ({ filePath: files[i]!.relPath, summary: s })),

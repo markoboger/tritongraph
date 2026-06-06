@@ -1105,6 +1105,11 @@ function repoProbeKindLower(repo: RuntimeHomeRepo): string {
   return String(repo.probe?.kind ?? '').toLowerCase()
 }
 
+/** Python workspaces have no sbt build/tests — used to hide Scala-only actions on the repo card. */
+function repoIsPython(repo: RuntimeHomeRepo): boolean {
+  return repoProbeKindLower(repo) === 'python'
+}
+
 /** Primary language glyph under the repo host icon (from runtime probe, with Scala LOC / sbt-layout fallbacks). */
 function repoLanguageIconUrl(repo: RuntimeHomeRepo): string | null {
   const k = repoProbeKindLower(repo)
@@ -1542,15 +1547,17 @@ watch(
                     </template>
                   </p>
                   <div class="repo-card__links">
-                    <button
-                      type="button"
-                      class="repo-card__link"
-                      :disabled="!!analyzingPath || !!syncingGithubPath"
-                      @click="void openSbtDiagram(repo)"
-                    >
-                      SBT diagram
-                    </button>
-                    <span class="repo-card__sep" aria-hidden="true">·</span>
+                    <template v-if="!repoIsPython(repo)">
+                      <button
+                        type="button"
+                        class="repo-card__link"
+                        :disabled="!!analyzingPath || !!syncingGithubPath"
+                        @click="void openSbtDiagram(repo)"
+                      >
+                        SBT diagram
+                      </button>
+                      <span class="repo-card__sep" aria-hidden="true">·</span>
+                    </template>
                     <button
                       type="button"
                       class="repo-card__link"
@@ -1559,21 +1566,23 @@ watch(
                     >
                       Package diagram
                     </button>
-                    <span class="repo-card__sep" aria-hidden="true">·</span>
-                    <button
-                      type="button"
-                      class="repo-card__link"
-                      :disabled="
-                        !!analyzingPath ||
-                        !!syncingGithubPath ||
-                        !!runningSbtTestPath ||
-                        repo.workspaceTest?.status === 'running' ||
-                        !workspaceCanRunSbtTest(repo)
-                      "
-                      @click="void runSbtTest(repo)"
-                    >
-                      {{ sbtTestButtonLabel(repo) }}
-                    </button>
+                    <template v-if="!repoIsPython(repo)">
+                      <span class="repo-card__sep" aria-hidden="true">·</span>
+                      <button
+                        type="button"
+                        class="repo-card__link"
+                        :disabled="
+                          !!analyzingPath ||
+                          !!syncingGithubPath ||
+                          !!runningSbtTestPath ||
+                          repo.workspaceTest?.status === 'running' ||
+                          !workspaceCanRunSbtTest(repo)
+                        "
+                        @click="void runSbtTest(repo)"
+                      >
+                        {{ sbtTestButtonLabel(repo) }}
+                      </button>
+                    </template>
                     <template v-if="remoteRepoSupportsSync(repo)">
                       <span class="repo-card__sep" aria-hidden="true">·</span>
                       <button
@@ -1981,15 +1990,17 @@ watch(
                 </template>
               </p>
               <div class="repo-card__links">
-                <button
-                  type="button"
-                  class="repo-card__link"
-                  :disabled="!!analyzingPath || !!syncingGithubPath"
-                  @click="void openSbtDiagram(repo)"
-                >
-                  SBT diagram
-                </button>
-                <span class="repo-card__sep" aria-hidden="true">·</span>
+                <template v-if="!repoIsPython(repo)">
+                  <button
+                    type="button"
+                    class="repo-card__link"
+                    :disabled="!!analyzingPath || !!syncingGithubPath"
+                    @click="void openSbtDiagram(repo)"
+                  >
+                    SBT diagram
+                  </button>
+                  <span class="repo-card__sep" aria-hidden="true">·</span>
+                </template>
                 <button
                   type="button"
                   class="repo-card__link"
@@ -1998,21 +2009,23 @@ watch(
                 >
                   Package diagram
                 </button>
-                <span class="repo-card__sep" aria-hidden="true">·</span>
-                <button
-                  type="button"
-                  class="repo-card__link"
-                  :disabled="
-                    !!analyzingPath ||
-                    !!syncingGithubPath ||
-                    !!runningSbtTestPath ||
-                    repo.workspaceTest?.status === 'running' ||
-                    !workspaceCanRunSbtTest(repo)
-                  "
-                  @click="void runSbtTest(repo)"
-                >
-                  {{ sbtTestButtonLabel(repo) }}
-                </button>
+                <template v-if="!repoIsPython(repo)">
+                  <span class="repo-card__sep" aria-hidden="true">·</span>
+                  <button
+                    type="button"
+                    class="repo-card__link"
+                    :disabled="
+                      !!analyzingPath ||
+                      !!syncingGithubPath ||
+                      !!runningSbtTestPath ||
+                      repo.workspaceTest?.status === 'running' ||
+                      !workspaceCanRunSbtTest(repo)
+                    "
+                    @click="void runSbtTest(repo)"
+                  >
+                    {{ sbtTestButtonLabel(repo) }}
+                  </button>
+                </template>
                 <template v-if="remoteRepoSupportsSync(repo)">
                   <span class="repo-card__sep" aria-hidden="true">·</span>
                   <button

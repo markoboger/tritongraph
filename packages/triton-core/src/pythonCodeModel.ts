@@ -135,6 +135,31 @@ function resolveModuleId(
   return undefined
 }
 
+/**
+ * Resolve a base-class reference to a fully-qualified artefact id using the file's imports, so
+ * inheritance edges survive same-named classes across modules. Handles both `from pkg import Base`
+ * (simple name) and `import pkg` / `from pkg import sub` used as `pkg.Base` / `sub.Base` (dotted).
+ * Returns null when no import explains the base — callers fall back to the simple-name index.
+ */
+function resolveBaseViaImports(base: string, imports: readonly ParsedPythonImport[]): string | null {
+  const lastDot = base.lastIndexOf('.')
+  if (lastDot > 0) {
+    const modPrefix = base.slice(0, lastDot)
+    const className = base.slice(lastDot + 1)
+    for (const imp of imports) {
+      if (imp.modulePath === modPrefix) return makeArtefactId(imp.modulePath, 'class', className)
+      if (imp.names.includes(modPrefix)) {
+        return makeArtefactId(`${imp.modulePath}.${modPrefix}`, 'class', className)
+      }
+    }
+    return null
+  }
+  for (const imp of imports) {
+    if (imp.names.includes(base)) return makeArtefactId(imp.modulePath, 'class', base)
+  }
+  return null
+}
+
 export function buildPythonCodeModelFromSummaries(
   entries: readonly FileSummaryEntry[],
   options: PythonCodeModelOptions = {},
@@ -155,6 +180,8 @@ export function buildPythonCodeModelFromSummaries(
 
   // Build artefact index for inheritance resolution (simple name → artefact id)
   const artefactBySimpleName = new Map<string, string[]>()
+  // All artefact ids, used to confirm an import-resolved base actually exists in the model.
+  const allArtefactIds = new Set<string>()
 
   // Pass 1: build containers and artefacts
   for (const { filePath, summary } of entries) {
@@ -189,6 +216,7 @@ export function buildPythonCodeModelFromSummaries(
     for (const art of topLevel) {
       const codeArt = buildArtefact(filePath, modulePath, art)
       moduleNode.artefacts.push(codeArt)
+      allArtefactIds.add(codeArt.id)
       const bucket = artefactBySimpleName.get(art.name) ?? []
       bucket.push(codeArt.id)
       artefactBySimpleName.set(art.name, bucket)
@@ -224,10 +252,19 @@ export function buildPythonCodeModelFromSummaries(
       if (art.kind !== 'class' || !art.bases.length) continue
       const childId = makeArtefactId(modulePath, 'class', art.name)
       for (const base of art.bases) {
-        const candidates = (artefactBySimpleName.get(base) ?? []).filter((id) => id !== childId)
-        // Skip ambiguous base names (same simple name in multiple modules) to avoid false edges.
-        if (candidates.length !== 1) continue
-        const parentId = candidates[0]!
+        // Prefer the import-resolved target (handles same-named classes across modules); fall back
+        // to the global simple-name index only when no import explains the base.
+        const viaImport = resolveBaseViaImports(base, imports)
+        let parentId: string | undefined
+        if (viaImport && viaImport !== childId && allArtefactIds.has(viaImport)) {
+          parentId = viaImport
+        } else {
+          const simpleName = base.includes('.') ? base.slice(base.lastIndexOf('.') + 1) : base
+          const candidates = (artefactBySimpleName.get(simpleName) ?? []).filter((id) => id !== childId)
+          // Skip ambiguous base names (same simple name in multiple modules) to avoid false edges.
+          if (candidates.length === 1) parentId = candidates[0]!
+        }
+        if (!parentId) continue
         const relId = `rel:extends:${childId}→${parentId}`
         if (seen.has(relId)) continue
         seen.add(relId)

@@ -72,7 +72,7 @@ function parseImportStatement(node: TSNode): ParsedPythonImport[] {
   return out
 }
 
-function resolveModuleName(moduleNode: TSNode, currentModulePath: string): string {
+function resolveModuleName(moduleNode: TSNode, currentModulePath: string): string | null {
   if (moduleNode.type === 'relative_import') {
     const inner = moduleNode.namedChildren.find((c) => c.type === 'dotted_name')
     // Count leading dots: 1 dot = current package, 2 dots = parent package, etc.
@@ -80,10 +80,12 @@ function resolveModuleName(moduleNode: TSNode, currentModulePath: string): strin
     const parts = currentModulePath.split('.')
     const parentParts = parts.slice(0, Math.max(0, parts.length - dotCount))
     const parent = parentParts.join('.')
-    if (inner) return parent ? `${parent}.${inner.text.trim()}` : inner.text.trim()
-    return parent
+    const resolved = inner ? (parent ? `${parent}.${inner.text.trim()}` : inner.text.trim()) : parent
+    // Empty means the relative import points above the known root (e.g. `from . import x` in a
+    // top-level module): return null so it's dropped instead of creating a phantom empty module.
+    return resolved || null
   }
-  return moduleNode.text.trim()
+  return moduleNode.text.trim() || null
 }
 
 function collectImportedNames(node: TSNode, moduleNode: TSNode | null): string[] {
@@ -102,7 +104,7 @@ function collectImportedNames(node: TSNode, moduleNode: TSNode | null): string[]
 
 function parseImportFromStatement(node: TSNode, currentModulePath: string): ParsedPythonImport {
   const moduleNode = node.childForFieldName('module_name')
-  const modulePath = moduleNode ? resolveModuleName(moduleNode, currentModulePath) : ''
+  const modulePath = (moduleNode ? resolveModuleName(moduleNode, currentModulePath) : null) ?? ''
   const names = collectImportedNames(node, moduleNode)
   return { raw: node.text.trim(), modulePath, names }
 }
@@ -111,7 +113,10 @@ function parseFunctionSignature(node: TSNode): string {
   const name = node.childForFieldName('name')?.text.trim() ?? ''
   const params = node.childForFieldName('parameters')?.text.trim() ?? '()'
   const ret = node.childForFieldName('return_type')
-  return ret ? `def ${name}${params} -> ${ret.text.trim()}` : `def ${name}${params}`
+  // tree-sitter-python represents `async def` as a function_definition with an unnamed `async` token.
+  const asyncPrefix = node.children.some((c) => c?.type === 'async') ? 'async ' : ''
+  const base = ret ? `def ${name}${params} -> ${ret.text.trim()}` : `def ${name}${params}`
+  return `${asyncPrefix}${base}`
 }
 
 function parseMethods(classBody: TSNode): ParsedPythonMember[] {
@@ -176,11 +181,34 @@ function extractDecorators(nodes: readonly TSNode[]): string[] {
   return nodes.filter((n) => n.type === 'decorator').map((d) => d.text.trim())
 }
 
-function filePathToModulePath(filePath: string, projectRoot: string): string {
+/**
+ * Strip the longest matching Python source root (on a path-segment boundary) so a `src/` layout
+ * doesn't leak into the module path: `nova-backend/src/app/iam/models.py` → `app/iam/models.py`.
+ * Source roots come from the runtime (`pythonSourceRoots`, e.g. `nova-backend/src`). When none match
+ * (or none are supplied, as for bundled examples), fall back to stripping a single leading `src/`.
+ */
+function stripSourceRoot(rel: string, sourceRoots: readonly string[]): string {
+  let best = ''
+  for (const raw of sourceRoots) {
+    const root = raw.replaceAll('\\', '/').replace(/^\.?\/+/, '').replace(/\/+$/, '')
+    if (!root || root === '.') continue
+    if ((rel === root || rel.startsWith(`${root}/`)) && root.length > best.length) best = root
+  }
+  if (best) return rel.slice(best.length).replace(/^\/+/, '')
+  if (rel.startsWith('src/')) return rel.slice('src/'.length)
+  return rel
+}
+
+export function filePathToModulePath(
+  filePath: string,
+  projectRoot: string,
+  sourceRoots: readonly string[] = [],
+): string {
   let rel = filePath.replaceAll('\\', '/')
   const root = projectRoot.replaceAll('\\', '/').replace(/\/?$/, '/')
   if (rel.startsWith(root)) rel = rel.slice(root.length)
   rel = rel.replace(/^\/+/, '')
+  rel = stripSourceRoot(rel, sourceRoots)
   if (rel.endsWith('/__init__.py')) rel = rel.slice(0, -'/__init__.py'.length)
   else if (rel.endsWith('.py')) rel = rel.slice(0, -'.py'.length)
   return rel.replaceAll('/', '.')
@@ -190,8 +218,9 @@ export async function summarizePython(
   source: string,
   filePath: string,
   projectRoot: string,
+  sourceRoots: readonly string[] = [],
 ): Promise<PythonFileSummary> {
-  const modulePath = filePathToModulePath(filePath, projectRoot)
+  const modulePath = filePathToModulePath(filePath, projectRoot, sourceRoots)
   const parser = await getParser()
   const tree = parser.parse(source)
   if (!tree) return { modulePath, filePath, imports: [], topLevel: [] }
