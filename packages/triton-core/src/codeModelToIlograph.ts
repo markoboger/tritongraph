@@ -812,6 +812,92 @@ function codeModelToPackageGraphDocument(
   }
 }
 
+/** Separator-agnostic "is `containerId` inside `scopeId`" test (Python uses `.`, TS uses `/`). */
+function containerInScope(containerId: string, scopeId: string): boolean {
+  return (
+    containerId === scopeId ||
+    containerId.startsWith(`${scopeId}.`) ||
+    containerId.startsWith(`${scopeId}/`)
+  )
+}
+
+/**
+ * Slim a resource tree for export: drop the heavy per-artefact fields (declaration, signatures,
+ * source location) and reduce each inner-artefact to `{ id, name, subtitle }`. Keeps structure and
+ * relations (inner / cross / packages). Recurses into children.
+ */
+function slimExportResource(resource: TritonCodeResource): TritonCodeResource {
+  const {
+    'x-triton-declaration': _decl,
+    'x-triton-constructor-signatures': _ctors,
+    'x-triton-method-signatures': _methods,
+    'x-triton-source-file': _file,
+    'x-triton-source-row': _row,
+    'x-triton-inner-artefacts': innerArtefacts,
+    children,
+    ...rest
+  } = resource
+  return {
+    ...rest,
+    ...(innerArtefacts && innerArtefacts.length
+      ? {
+          'x-triton-inner-artefacts': innerArtefacts.map((a) => ({
+            id: a.id,
+            name: a.name,
+            ...(a.subtitle ? { subtitle: a.subtitle } : {}),
+          })),
+        }
+      : {}),
+    ...(children && children.length ? { children: children.map(slimExportResource) } : {}),
+  }
+}
+
+/**
+ * Full export projection: the complete nested resource tree of the scope (whole model at the root,
+ * or a single package subtree when `scopeContainerId` is set), with every package / module / class
+ * and all import edges that stay within the scope. Unlike the render-time projections this never
+ * rolls up or collapses — it is meant to be serialized and handed to an LLM. `detail: 'slim'`
+ * (default) strips declarations / signatures / source locations.
+ */
+export function codeModelToFullExportDocument(
+  model: CodeModel,
+  options: CodeModelToIlographOptions & { detail?: 'slim' | 'full' } = {},
+): IlographDocument {
+  const scopeId = options.scopeContainerId?.trim()
+  const scope = scopeId ? (findContainer(model.root, scopeId) ?? model.root) : model.root
+  const description = options.description ?? `Full code-model export for ${model.name}.`
+
+  const rawResources =
+    scope === model.root
+      ? model.root.children.map((child) => containerToResource(child, model.relations))
+      : [containerToResource(scope, model.relations)]
+  const detail = options.detail ?? 'slim'
+  const resources = detail === 'slim' ? rawResources.map(slimExportResource) : rawResources
+
+  const scopedRelations =
+    scope === model.root
+      ? model.relations
+      : model.relations.filter(
+          (rel) =>
+            rel.kind === 'imports' &&
+            containerInScope(endpointContainerId(rel.from), scope.id) &&
+            containerInScope(endpointContainerId(rel.to), scope.id),
+        )
+
+  return {
+    description,
+    resources,
+    perspectives: [
+      {
+        name: 'dependencies',
+        orientation: 'leftToRight',
+        color: 'royalblue',
+        relations: containerImportRelations(scopedRelations),
+      },
+    ],
+  }
+}
+
 /**
  * Project a language-neutral code model into the current Triton Ilograph extension fields.
  *

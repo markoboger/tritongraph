@@ -1100,6 +1100,55 @@ async function setPythonViewMode(mode: PythonViewMode): Promise<void> {
   })
 }
 
+/** True when the active tab is CodeModel-backed (Python), i.e. a full-model export is available. */
+const activeTabHasCodeModel = computed(() => pythonTabModel.has(activeTab.value?.key ?? ''))
+
+/** Trigger a client-side download of `text` as `fileName`. */
+function downloadTextFile(fileName: string, text: string, mime = 'text/yaml'): void {
+  const blob = new Blob([text], { type: `${mime};charset=utf-8` })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+/**
+ * Export the active Python tab's complete code model (current drill scope, fully expanded) as one
+ * Ilograph YAML file, slimmed for LLM consumption. Unlike the YAML editor preview — which only
+ * mirrors the rendered diagram — this includes every sub-package, module and class plus all import
+ * edges within the scope.
+ */
+async function exportFullModelYaml(): Promise<void> {
+  const tab = activeTab.value
+  const entry = tab ? pythonTabModel.get(tab.key) : undefined
+  if (!tab || !entry) {
+    status.value = 'Full export is only available for Python diagrams.'
+    return
+  }
+  const { codeModelToFullExportDocument } = await import(
+    '../../packages/triton-core/src/codeModelToIlograph'
+  )
+  const doc = codeModelToFullExportDocument(entry.model, {
+    scopeContainerId: entry.scopeId,
+    detail: 'slim',
+    title: tab.title,
+    description: `Full code-model export for ${tab.title}.`,
+  })
+  const yaml = stringifyIlographYaml(doc)
+  const scopeLeaf = entry.scopeId ? `.${entry.scopeId.split(/[./]/).pop()}` : ''
+  const base = (tab.title || 'code-model').replace(/[^A-Za-z0-9._-]+/g, '-')
+  downloadTextFile(`${base}${scopeLeaf}.full.ilograph.yaml`, yaml)
+  const edgeCount = doc.perspectives?.[0]?.relations?.length ?? 0
+  const topCount = doc.resources?.length ?? 0
+  status.value = `Exported ${base}${scopeLeaf}.full.ilograph.yaml (${topCount} top resource${
+    topCount === 1 ? '' : 's'
+  }, ${edgeCount} import edge${edgeCount === 1 ? '' : 's'}).`
+}
+
 const nodeTypesMenuSig = computed(() =>
   collectNodeTypeKeys(nodes.value, activeTab.value?.key ?? '').sort().join('\n'),
 )
@@ -5191,6 +5240,15 @@ onUnmounted(() => {
               </span>
               <button type="button" class="btn side-yaml-bar__btn" @click="acceptYamlBaseline">
                 Accept baseline
+              </button>
+              <button
+                v-if="activeTabHasCodeModel"
+                type="button"
+                class="btn side-yaml-bar__btn"
+                title="Download the complete code model for the current scope (every package, module, class and import) as one Ilograph YAML, slimmed for feeding to an LLM."
+                @click="exportFullModelYaml"
+              >
+                Export full YAML
               </button>
             </div>
             <YamlDiffEditor class="yaml-diff" :original="yamlBaseline" :modified="yamlPreview" />
