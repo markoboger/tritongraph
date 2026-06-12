@@ -1746,6 +1746,13 @@ async function activateTabById(id: string): Promise<void> {
     await nextTick()
     return
   }
+  /** Flush the shared Vue Flow store first: it reconciles by node/edge id, so restoring a
+   *  snapshot directly over another tab's elements lets stale same-id edges (endpoints absent in
+   *  this tab) fail validation and silently vanish from the v-model. `openOrActivateTab` clears
+   *  the refs for the same reason. */
+  nodes.value = []
+  edges.value = []
+  await nextTick()
   /** Assign whole arrays so Vue Flow re-syncs from the saved snapshot (object identities differ
    *  per tab, which is fine — it gives a clean rebuild rather than mixing previous-tab state). */
   nodes.value = target.nodes

@@ -405,7 +405,14 @@ export function ilographDocumentToFlow(
       if (!froms.length || !tos.length) continue
       for (const f of froms) {
         for (const t of tos) {
-          const id = `e-${e++}`
+          /**
+           * Endpoint-derived id: all diagram tabs share one Vue Flow store keyed by edge id, so
+           * bare `e-<n>` ids collide across tabs and the store's stale same-id edges (endpoints
+           * absent in the activated tab) get dropped during reconciliation — silently deleting
+           * edges on tab switch. With endpoints in the id, a cross-tab collision implies matching
+           * endpoints, which reconciles harmlessly.
+           */
+          const id = `e-${e++}-${f}->${t}`
           const bidirectional = rel.arrowDirection === 'bidirectional'
           const stroke = strokeForIlographRelation(rel)
           const aggregate = isAggregateEdge(rel)
