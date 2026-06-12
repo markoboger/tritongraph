@@ -1183,7 +1183,9 @@ function parsePackageInnerTabKey(key: string | undefined): { parentKey: string; 
   const k = String(key ?? '')
   if (!k.startsWith('package-inner:')) return null
   const body = k.slice('package-inner:'.length)
-  const hash = body.indexOf('#')
+  /** Last `#` splits off the package id (it is URI-encoded, so it cannot contain a raw `#`);
+   *  the parent key may itself contain `#` (project-scoped `packages:` keys, nested drills). */
+  const hash = body.lastIndexOf('#')
   if (hash < 0) return null
   return {
     parentKey: body.slice(0, hash),
@@ -1212,7 +1214,7 @@ function isClassInheritanceChainPackageInnerKey(key: string | undefined): boolea
 function parseRuntimeTabKey(
   key: string,
 ): { workspacePath: string; workspaceName: string; projectId?: string } | null {
-  const prefixes = ['runtime-sbt:', 'runtime-packages:']
+  const prefixes = ['runtime-sbt:', 'runtime-packages:', 'runtime-python:']
   for (const prefix of prefixes) {
     if (!key.startsWith(prefix)) continue
     const body = key.slice(prefix.length)
@@ -3292,6 +3294,8 @@ function isRestorableTabKey(key: string): boolean {
     key.startsWith('packages:') ||
     key.startsWith('runtime-sbt:') ||
     key.startsWith('runtime-packages:') ||
+    key.startsWith('runtime-python:') ||
+    key.startsWith('py:') ||
     key.startsWith('docker:')
   )
 }
@@ -3428,6 +3432,29 @@ async function openTabFromUrlKey(key: string): Promise<boolean> {
     const parsed = parseRuntimeTabKey(trimmed)
     if (!parsed) return false
     await openRuntimePackagesTab(parsed.workspacePath, parsed.workspaceName, parsed.projectId)
+    return true
+  }
+  if (trimmed.startsWith('runtime-python:')) {
+    const parsed = parseRuntimeTabKey(trimmed)
+    if (!parsed) return false
+    await openRuntimePythonTab(parsed.workspacePath, parsed.workspaceName)
+    return true
+  }
+  if (trimmed.startsWith('py:')) {
+    const body = trimmed.slice('py:'.length)
+    const slash = body.indexOf('/')
+    if (slash < 0) return false
+    await openPythonExampleTab(body.slice(0, slash), body.slice(slash + 1))
+    return true
+  }
+  if (trimmed.startsWith('package-inner:')) {
+    const inner = parsePackageInnerTabKey(trimmed)
+    if (!inner) return false
+    /** Restore the parent first (recursively, so nested drill chains work); the drill re-projects
+     *  from the then-active parent tab's loaded data. */
+    const parentOpened = await openTabFromUrlKey(inner.parentKey)
+    if (!parentOpened) return false
+    await openPackageInnerDiagramTab(inner.packageId)
     return true
   }
   return false
