@@ -1009,6 +1009,13 @@ interface DiagramTab {
   projectLanguage?: string
   /** Current projection mode for CodeModel-backed (Python) tabs; drives the toolbar toggle. */
   pythonViewMode?: PythonViewMode
+  /**
+   * Node id the diagram was layer-drilled into when the user last left this tab, or `null` for the
+   * full overview. Saved nodes are always the clean (un-drilled) layout; this lets us re-apply the
+   * drill on re-activation so returning to a tab restores the focus the user had — while the fresh
+   * drill captures a new snapshot so they can still drill back out to the complete overview.
+   */
+  layerDrillId?: string | null
 }
 
 interface RuntimeWorkspaceBundle {
@@ -1732,8 +1739,36 @@ function snapshotActiveTab(): void {
   t.yamlBaseline = yamlBaseline.value
 }
 
+/**
+ * Before a tab is snapshotted on the way out, record which box it was drilled into and restore the
+ * un-drilled layout so the saved `nodes` are a clean overview. The GraphDrillIn component is shared
+ * across all diagram tabs: its `layerDrillId` / `layerSnapshot` refs describe the drill on the
+ * *current* tab only, and the next tab's document load nulls them (`resetNavigationAfterDocReplace`).
+ * Saving the drilled nodes as-is would strand the tab in a drilled state with no snapshot left to
+ * drill back out. Instead we persist the drilled id on the tab and re-apply it on re-activation
+ * (see {@link reapplyTabLayerDrill}), so returning restores the user's focus while a fresh snapshot
+ * still lets them drill back out to the full overview.
+ */
+async function recordAndClearOutgoingTabDrillState(): Promise<void> {
+  const t = activeTab.value
+  const drilledId = graphRef.value?.activeLayerDrillId?.() ?? null
+  if (t) t.layerDrillId = drilledId
+  if (!drilledId) return
+  graphRef.value?.clearLayerDrillForTabSwitch?.()
+  await nextTick()
+}
+
+/** Re-apply a tab's saved layer drill after its clean nodes are restored. Returns true if drilled. */
+async function reapplyTabLayerDrill(tab: DiagramTab): Promise<boolean> {
+  const id = tab.layerDrillId
+  if (!id) return false
+  const applied = await graphRef.value?.applyLayerDrill?.(id)
+  return applied === true
+}
+
 async function activateTabById(id: string): Promise<void> {
   if (activeTabId.value === id) return
+  await recordAndClearOutgoingTabDrillState()
   snapshotActiveTab()
   const target = tabs.value.find((t) => t.id === id)
   if (!target) return
@@ -1765,7 +1800,11 @@ async function activateTabById(id: string): Promise<void> {
   yamlBaseline.value = target.yamlBaseline
   await nextTick()
   graphRef.value?.refreshEdgeEmphasis?.()
-  await graphRef.value?.fitToViewport()
+  /** Restore the focus the user left this tab in. The drill re-captures a fresh snapshot, so they
+   *  can still drill back out to the complete overview without losing the hidden siblings. */
+  if (!(await reapplyTabLayerDrill(target))) {
+    await graphRef.value?.fitToViewport()
+  }
 }
 
 function reorderRuntimeHomeFirst(): void {
@@ -1982,6 +2021,7 @@ async function openOrActivateTab(
     }
     return
   }
+  await recordAndClearOutgoingTabDrillState()
   snapshotActiveTab()
   const tab: DiagramTab = {
     id: uid(),

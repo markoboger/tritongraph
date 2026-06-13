@@ -1618,6 +1618,31 @@ function resetNavigationAfterDocReplace() {
 }
 
 /**
+ * True when a layer drill is currently active. Lets the parent restore a clean overview before
+ * snapshotting a tab it is leaving (the shared drill component otherwise loses its snapshot when
+ * the next tab loads, stranding the outgoing tab in a drilled, unrecoverable state).
+ */
+function isLayerDrillActive(): boolean {
+  return layerDrillActive()
+}
+
+/** The node id currently layer-drilled into, or `null` for the full overview. */
+function activeLayerDrillId(): string | null {
+  const raw = (drillRef.value as { layerDrillId?: unknown } | null)?.layerDrillId
+  const id = unref(raw)
+  return typeof id === 'string' && id ? id : null
+}
+
+/**
+ * Synchronously restore the pre-drill layout into the node/edge model (no camera animation),
+ * for use on tab switch. Unlike {@link resetView}, this does not fit the viewport — the parent
+ * is about to swap the whole graph for another tab.
+ */
+function clearLayerDrillForTabSwitch(): void {
+  drillRef.value?.clearLayerDrill?.()
+}
+
+/**
  * After depth layout / layer drill, either anchor the graph at the diagram margin (zoom 1) or
  * enable pan rails + translateExtent when the laid-out bounds exceed the pane.
  *
@@ -1804,6 +1829,9 @@ defineExpose({
   relayoutViewport,
   refreshEdgeEmphasis: syncEdgeVisualState,
   layerDrillBusy,
+  isLayerDrillActive,
+  activeLayerDrillId,
+  clearLayerDrillForTabSwitch,
 })
 </script>
 
