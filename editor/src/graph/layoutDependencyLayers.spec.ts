@@ -669,12 +669,12 @@ describe('annotateAggregateVerticalPaths', () => {
     expect((out[0] as any)?.pathOptions?.centerY).toBeDefined()
   })
 
-  it('returns a plain edge (no smoothstep) when no detour is needed and no straight-overlap exists', () => {
+  it('tracks cross-row relations inside the target band so the run ends horizontal into the target', () => {
     const nodes = [
       { id: 'a', type: 'module', position: { x: 40, y: 40 }, width: 180, height: 72, data: {} },
       { id: 'b', type: 'module', position: { x: 320, y: 260 }, width: 180, height: 72, data: {} },
     ]
-    // Depth delta is 1 (no detour). Vertical overlap is 0, so straightY is undefined.
+    // No vertical overlap: a spans 40–112, b spans 260–332 → track at the target's center (296).
     const edges = [
       {
         id: 'e1',
@@ -686,8 +686,44 @@ describe('annotateAggregateVerticalPaths', () => {
       },
     ]
     const out = annotateAggregateVerticalPaths(nodes, edges, { width: 900, height: 600 })
-    expect(out[0]?.type).toBeUndefined()
-    expect((out[0] as any)?.pathOptions?.centerY).toBeUndefined()
+    expect(out[0]?.type).toBe('smoothstep')
+    expect((out[0] as any)?.pathOptions?.centerY).toBeCloseTo(296, 1)
+  })
+
+  it('separates relations with overlapping spans onto parallel tracks around the midline', () => {
+    const nodes = [
+      { id: 'a', type: 'module', position: { x: 40, y: 40 }, width: 180, height: 400, data: {} },
+      { id: 'b', type: 'module', position: { x: 320, y: 40 }, width: 180, height: 400, data: {} },
+      { id: 'c', type: 'module', position: { x: 600, y: 40 }, width: 180, height: 400, data: {} },
+    ]
+    const edges = [
+      // a→c spans the full width; b→c overlaps it on the right half. Same band midline (240).
+      { id: 'e1', source: 'a', target: 'c', sourceHandle: 'agg-out-0', targetHandle: 'agg-in-0', label: 'imports' },
+      { id: 'e2', source: 'b', target: 'c', sourceHandle: 'agg-out-0', targetHandle: 'agg-in-1', label: 'imports' },
+    ]
+    const out = annotateAggregateVerticalPaths(nodes, edges, { width: 900, height: 600 })
+    const y1 = (out[0] as any)?.pathOptions?.centerY
+    const y2 = (out[1] as any)?.pathOptions?.centerY
+    expect(y1).toBeDefined()
+    expect(y2).toBeDefined()
+    /** Shorter span (b→c) keeps the pure midline; the long pass-through shifts a full gap. */
+    expect(y2).toBeCloseTo(240, 1)
+    expect(Math.abs(y1 - y2)).toBeGreaterThanOrEqual(16)
+  })
+
+  it('gives backward relations a separate loop-run track at least one gap from the anchor track', () => {
+    const nodes = [
+      { id: 'left', type: 'module', position: { x: 40, y: 40 }, width: 180, height: 400, data: {} },
+      { id: 'right', type: 'module', position: { x: 320, y: 40 }, width: 180, height: 400, data: {} },
+    ]
+    const edges = [
+      { id: 'e1', source: 'right', target: 'left', sourceHandle: 'agg-out-0', targetHandle: 'agg-in-0', label: 'imports' },
+    ]
+    const out = annotateAggregateVerticalPaths(nodes, edges, { width: 900, height: 600 })
+    const po = (out[0] as any)?.pathOptions
+    expect(po?.centerY).toBeDefined()
+    expect(po?.loopRunY).toBeDefined()
+    expect(Math.abs(po.loopRunY - po.centerY)).toBeGreaterThanOrEqual(16)
   })
 
   it('skips hidden edges entirely', () => {
@@ -760,5 +796,28 @@ describe('applyHandleAnchorAlignment', () => {
     const out = applyHandleAnchorAlignment(nodes, edges)
     expect((out[0] as any)?.data?.anchorTops).toBeUndefined()
     expect((out[1] as any)?.data?.anchorTops).toBeUndefined()
+  })
+
+  it('anchors handles at the routed lane Y when the edge carries pathOptions.centerY', () => {
+    /** Full-height columns: overlap midpoint would be 50% for both — the lane must win. */
+    const nodes = [
+      { id: 'a', type: 'module', position: { x: 40, y: 100 }, width: 180, height: 400, data: {} },
+      { id: 'b', type: 'module', position: { x: 320, y: 100 }, width: 180, height: 400, data: {} },
+    ]
+    const edges = [
+      {
+        id: 'e1',
+        source: 'a',
+        target: 'b',
+        sourceHandle: 'agg-out-0',
+        targetHandle: 'agg-in-0',
+        label: 'imports',
+        pathOptions: { centerY: 140 },
+      },
+    ]
+    const out = applyHandleAnchorAlignment(nodes, edges)
+    /** Lane y=140 → 10% of a 400px box starting at y=100 (not the 50% overlap midpoint). */
+    expect((out[0] as any)?.data?.anchorTops?.aggOut?.['0']).toBeCloseTo(10, 3)
+    expect((out[1] as any)?.data?.anchorTops?.aggIn?.['0']).toBeCloseTo(10, 3)
   })
 })

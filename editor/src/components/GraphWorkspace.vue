@@ -7,12 +7,14 @@ import {
   getRectOfNodes,
   type Connection,
   type CoordinateExtent,
+  type EdgeTypesObject,
   type NodeTypesObject,
   useVueFlow,
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import '@vue-flow/node-resizer/dist/style.css'
-import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, unref, watch } from 'vue'
+import { computed, markRaw, nextTick, onMounted, onUnmounted, provide, reactive, ref, unref, watch } from 'vue'
+import LaneSmoothStepEdge from './diagram/LaneSmoothStepEdge'
 import type { AbstractionDojoResizeConfig } from './diagram/useAbstractionNodeResize'
 import DiagramContainerView from './diagram/DiagramContainerView.vue'
 import GraphDrillIn from './GraphDrillIn.vue'
@@ -747,6 +749,63 @@ watch(
   { flush: 'post' },
 )
 
+/**
+ * Handle anchors (`data.anchorTops`) move handles via CSS, but Vue Flow's cached handle bounds
+ * only refresh on `updateNodeInternals` — until then edges render from the stale positions,
+ * sitting a few pixels off their dots (visible right after load / tab switch, "fixed" by any
+ * manual relayout). Re-measure as soon as the anchors change.
+ */
+watch(
+  () => {
+    let sig = ''
+    for (const n of nodes.value) {
+      const tops = (n.data as { anchorTops?: unknown } | undefined)?.anchorTops
+      if (tops) sig += `${String(n.id)}:${JSON.stringify(tops)}|`
+    }
+    return sig
+  },
+  () => void nextTick(() => updateNodeInternals()),
+  { flush: 'post' },
+)
+
+/**
+ * Anchors are derived from node positions + edge tracks, but some passes move nodes after the
+ * route+align pair ran (e.g. fit-to-margin translation), leaving every anchor offset by the
+ * translation delta — handle dots then sit a few pixels off their lines until a manual relayout.
+ * Re-derive the anchors whenever positions or tracks settle; idempotent, so no churn when
+ * everything already matches.
+ */
+watch(
+  () => {
+    let sig = ''
+    for (const n of nodes.value) {
+      sig += `${String(n.id)}:${Math.round(Number(n.position?.x ?? 0) * 64)}:${Math.round(Number(n.position?.y ?? 0) * 64)}|`
+    }
+    for (const e of edges.value) {
+      const cy = (e as { pathOptions?: { centerY?: number } }).pathOptions?.centerY
+      if (typeof cy === 'number') sig += `${String(e.id)}:${Math.round(cy * 64)}|`
+    }
+    return sig
+  },
+  () => {
+    const anchorSig = (ns: readonly any[]): string =>
+      ns
+        .map((n) => {
+          const tops = (n.data as { anchorTops?: unknown } | undefined)?.anchorTops
+          return tops ? `${String(n.id)}:${JSON.stringify(tops)}` : ''
+        })
+        .join('|')
+    const aligned = applyHandleAnchorAlignment(nodes.value, edges.value)
+    if (anchorSig(aligned) !== anchorSig(nodes.value)) {
+      /** Write the store too — assigning only the v-model can be reverted by Vue Flow's
+       *  store→model write-back (same defensive pattern as {@link relayoutViewport}). */
+      setNodes(aligned)
+      nodes.value = aligned
+    }
+  },
+  { flush: 'post' },
+)
+
 /** Synced from GraphDrillIn so module chrome can show the pin only in zoom/layer-focus context. */
 const graphFocusUi = reactive({ containerFocusId: null as string | null })
 provide('tritonGraphFocusUi', graphFocusUi)
@@ -907,6 +966,9 @@ function tritonEmitLinkAction(nodeId: string, href: string) {
   emit('link-action', { nodeId, href })
 }
 provide('tritonEmitLinkAction', tritonEmitLinkAction)
+
+/** Overrides the built-in smoothstep so `pathOptions.centerX/centerY` lane routing renders. */
+const edgeTypes: EdgeTypesObject = { smoothstep: markRaw(LaneSmoothStepEdge) as never }
 
 const defaultEdgeOptions = {
   type: 'smoothstep' as const,
@@ -1746,6 +1808,7 @@ defineExpose({
           },
         ]"
         :node-types="nodeTypes"
+        :edge-types="edgeTypes"
         :default-edge-options="defaultEdgeOptions"
         :connection-mode="ConnectionMode.Strict"
         :nodes-draggable="props.nodesDraggable"
@@ -2101,7 +2164,8 @@ defineExpose({
   z-index: 1001 !important;
 }
 
-/* @vue-flow/core always renders a label rect with theme fill; hide it for caption-only labels. */
+/* Caption floats in the gap ABOVE its own track (see dependencyEdgeLabelStyle), so the line never
+ * strikes through the text — the @vue-flow/core label rect is not needed. */
 .flow.vue-flow .vue-flow__edge-textbg {
   display: none;
 }

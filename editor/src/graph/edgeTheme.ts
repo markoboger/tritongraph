@@ -28,10 +28,14 @@ export function dependencyEdgeStyle(color: string = DEP_EDGE_STROKE) {
   }
 }
 
-/** Nudge label above the path (SVG y grows downward). */
-function edgeLabelVerticalNudge(): Pick<CSSProperties, 'transform'> {
-  return { transform: 'translateY(-15px)' }
-}
+/**
+ * Lift the caption into the gap directly ABOVE its own edge track so the line runs just below the
+ * text instead of through it. Must stay under half the relation track spacing
+ * (`EDGE_TRACK_GAP_PX` = 18 in {@link layoutDependencyLayers}); otherwise the label reaches the
+ * line on the track above — the bug the old fixed `-15px` caused once tracks were packed 18px
+ * apart. 8px leaves ~3px of clearance to the track above and ~1.5px above its own line.
+ */
+const LABEL_ABOVE_TRACK_PX = 8
 
 /** Legible caption above the path; {@link GraphWorkspace} bumps opacity further on hover emphasis. */
 export function dependencyEdgeLabelStyle(
@@ -39,7 +43,7 @@ export function dependencyEdgeLabelStyle(
   emphasized: boolean = false,
 ): CSSProperties {
   return {
-    ...edgeLabelVerticalNudge(),
+    transform: `translateY(-${LABEL_ABOVE_TRACK_PX}px)`,
     opacity: emphasized ? 1 : 0.82,
     fill: color,
     fontSize: '11px',
