@@ -3,7 +3,7 @@
  * Vue Flow node for the Scala-package diagram. Sibling of {@link FlowProjectNode} so each diagram
  * can grow features independently (richer package metadata: members, imports drilldown, coverage,
  * sonarqube etc.). Hosts {@link PackageBox} for packages and, for flow `type: 'artefact'`, the same
- * node shell with {@link PackageBox} (`leaf-visual="artefact"`) when unfocused and {@link ScalaArtefactBox}
+ * node shell with {@link PackageBox} (`leaf-visual="artefact"`) when unfocused and {@link ArtefactBox}
  * when layer-drill focused.
  */
 import { useVueFlow } from '@vue-flow/core'
@@ -22,7 +22,7 @@ import PackageBox, {
   type InnerArtefactSummary,
   type InnerPackageSummary,
 } from './PackageBox.vue'
-import ScalaArtefactBox from './ScalaArtefactBox.vue'
+import ArtefactBox from './ArtefactBox.vue'
 import { useDiagramNodeActions } from './useDiagramNodeActions'
 import { useDiagramNodePinTool } from './useDiagramNodePinTool'
 
@@ -38,6 +38,12 @@ const props = defineProps<{
   id: string
   data: {
     label: string
+    /**
+     * Source language of an artefact leaf (`scala`, `python`, …). Drives the language-specific
+     * presentation (icon, panel labels/placeholders, syntax highlighting) via the language-profile
+     * registry. Set from `x-triton-language` in {@link ilographToFlow}; absent for packages.
+     */
+    language?: string
     subtitle?: string
     /**
      * Full one-line declaration shown in the focused header subtitle (Scala artefact leaves,
@@ -58,7 +64,7 @@ const props = defineProps<{
      * signature text plus the 0-indexed source row of its declaration — the box uses the row
      * to dispatch a per-method "open at line" click. Optional `endRow` adds a `loc` suffix per line.
      * Rendered as a Shiki code block in the
-     * focused Methods panel; `ScalaArtefactBox` falls back to a placeholder when the array
+     * focused Methods panel; `ArtefactBox` falls back to a placeholder when the array
      * is empty or missing (packages never set this).
      */
     methodSignatures?: ReadonlyArray<{ signature: string; startRow: number; endRow?: number }>
@@ -374,9 +380,10 @@ onUnmounted(() => {
     :anchor-tops="data.anchorTops"
     :root-el-ref="bindRootEl"
   >
-    <ScalaArtefactBox
+    <ArtefactBox
       v-if="isScalaArtefactLeaf && data.layerDrillFocus"
       :box-id="id"
+      :language="data.language"
       :label="data.label"
       :subtitle="data.subtitle"
       :declaration="data.declaration"
@@ -401,6 +408,7 @@ onUnmounted(() => {
       leaf-visual="artefact"
       :icon-url="data.iconUrl"
       :box-id="id"
+      :language="data.language"
       :label="data.label"
       :subtitle="data.subtitle ?? ''"
       :declaration="data.declaration"

@@ -22,11 +22,7 @@ import type {
 } from '../../ilograph/types'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
 import folderIconUrl from '../../assets/language-icons/folder.svg'
-import scalaIconUrl from '../../assets/language-icons/scala.svg'
-import scalaClassIconUrl from '../../assets/language-icons/scala-class.svg'
-import scalaTraitIconUrl from '../../assets/language-icons/scala-trait.svg'
-import scalaObjectIconUrl from '../../assets/language-icons/scala-object.svg'
-import scalaEnumIconUrl from '../../assets/language-icons/scala-enum.svg'
+import { languageProfile } from '../../graph/languageProfiles'
 import ShikiInlineCode from '../ShikiInlineCode.vue'
 import BoxEditDialog from '../common/BoxEditDialog.vue'
 import GeneralFocusedBox from '../common/GeneralFocusedBox.vue'
@@ -50,7 +46,6 @@ import { useInnerPackageDrill } from './useInnerPackageDrill'
 import { useInnerArtefactLayering } from './useInnerArtefactLayering'
 import { artefactPackageId } from './innerArtefactGraphHelpers'
 import { assignInnerArtefactLayers } from '../../graph/innerArtefactLayerLayout'
-import ScalaArtefactBox from './ScalaArtefactBox.vue'
 import InnerDiagramScrollRails from './InnerDiagramScrollRails.vue'
 import KindBadge from './KindBadge.vue'
 import {
@@ -65,17 +60,13 @@ import {
  * artefact based on its `subtitle`, which carries the Scala kind keyword as parsed by
  * tree-sitter (`'class' | 'case class' | 'object' | 'case object' | 'trait' | 'enum'`).
  * Anything outside that set (e.g. `def`, `val`, `type`, `given`) falls back to the
- * generic Scala lambda mark — matches the existing `kindBadge` letter scheme in
- * {@link ScalaArtefactBox}, but as image assets so the unfocused chrome stays purely
- * declarative without a per-kind text badge.
+ * language logo — matches the existing `kindBadge` letter scheme in {@link ArtefactBox}, but
+ * as image assets so the unfocused chrome stays purely declarative without a per-kind text badge.
+ * The per-language icon set comes from the language-profile registry, so non-Scala leaves get
+ * their own logo instead of a Scala glyph.
  */
-function scalaIconForKind(subtitle: string | undefined): string {
-  const k = artefactSubtitleSansMetrics(subtitle).toLowerCase()
-  if (k === 'class' || k === 'case class') return scalaClassIconUrl
-  if (k === 'object' || k === 'case object') return scalaObjectIconUrl
-  if (k === 'trait') return scalaTraitIconUrl
-  if (k === 'enum') return scalaEnumIconUrl
-  return scalaIconUrl
+function leafIconForKind(language: string | undefined, subtitle: string | undefined): string {
+  return languageProfile(language).kindIconUrl(artefactSubtitleSansMetrics(subtitle))
 }
 
 function kindBadgeForLeafArtefact(subtitle: string | undefined): string | null {
@@ -172,8 +163,14 @@ const props = withDefaults(
      * Forces the same horizontal compact header as {@link GeneralFocusedBox}`innerDiagramHost`.
      */
     innerDiagramDescendant?: boolean
-    /** Resolved from YAML `x-triton-icon` — overrides folder / Scala leaf icon when set. */
+    /** Resolved from YAML `x-triton-icon` — overrides folder / language leaf icon when set. */
     iconUrl?: string
+    /**
+     * Source language of an artefact leaf (`scala`, `python`, …). Selects the per-kind leaf icon and
+     * the header declaration's syntax highlighting via the language-profile registry. Ignored for
+     * package (folder) visuals.
+     */
+    language?: string
   }>(),
   {
     innerPackages: () => [],
@@ -208,7 +205,7 @@ const emit = defineEmits<{
   /**
    * Fired when the user clicks the Scala declaration line in the focused header. Parent
    * resolves it as an "open at the class declaration row" handoff — see
-   * `ScalaArtefactBox` for the wiring; plain (non-Scala) callers can simply ignore this
+   * `ArtefactBox` for the wiring; plain (non-artefact) callers can simply ignore this
    * event, the template only renders a clickable wrapper when `isScalaLeaf` is true.
    */
   'declaration-click': []
@@ -229,10 +226,13 @@ const focusedLegacyCompartments = computed<readonly BoxCompartment[]>(() =>
 
 const isScalaLeaf = computed(() => props.leafVisual === 'artefact')
 
+/** Shiki grammar for the focused header declaration, from the artefact's language profile. */
+const leafShikiLang = computed(() => languageProfile(props.language).shikiLang)
+
 const headerIconUrlForPackage = computed(() => {
   const u = props.iconUrl?.trim()
   if (u) return u
-  if (isScalaLeaf.value) return scalaIconForKind(props.subtitle)
+  if (isScalaLeaf.value) return leafIconForKind(props.language, props.subtitle)
   return folderIconUrl
 })
 
@@ -724,7 +724,7 @@ function onHeaderDblClick() {
   <!--
     Layer-drill focused root: shared box chrome (accent strip, focus outline, padding,
     tools cluster, tight layout, transitions) for both Scala packages and Scala artefact leaves.
-    Artefact-specific content is injected via slots so {@link ScalaArtefactBox} can reuse this shell
+    Artefact-specific content is injected via slots so {@link ArtefactBox} can reuse this shell
     without duplicating chrome — see `focused-tools-prefix`, `focused-header-icon`, `focused-body`.
   -->
   <div v-else-if="focused && !crossPackageFocused" class="package-box-host">
@@ -790,7 +790,7 @@ function onHeaderDblClick() {
           tabindex="-1"
           @click.stop="emit('declaration-click')"
         >
-          <ShikiInlineCode :code="declaration" lang="scala" />
+          <ShikiInlineCode :code="declaration" :lang="leafShikiLang" />
         </button>
         <span v-if="focusedDeclarationLocSuffix" class="subtitle__loc-suffix">{{ focusedDeclarationLocSuffix }}</span>
       </span>

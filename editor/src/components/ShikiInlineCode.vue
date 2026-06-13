@@ -1,19 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { highlightScalaInline } from '../highlight/shikiHighlighter'
+import { onMounted, ref, watch } from 'vue'
+import { highlightInline } from '../highlight/shikiHighlighter'
 
 const props = defineProps<{
   code: string
   /**
-   * Keep narrow at first: the diagram signatures are Scala declarations today.
-   * If/when we highlight other languages, widen this union and add new helpers.
+   * Shiki grammar name (e.g. `scala`, `python`, `typescript`). Supplied from the resolved
+   * {@link LanguageProfile}; unknown / unloaded grammars degrade to plain text. Defaults to `scala`.
    */
-  lang?: 'scala'
+  lang?: string
 }>()
 
 const html = ref<string>('')
-
-const effectiveLang = computed(() => props.lang ?? 'scala')
 
 async function render() {
   const code = String(props.code ?? '').trimEnd()
@@ -21,12 +19,7 @@ async function render() {
     html.value = ''
     return
   }
-  // Currently only Scala is supported.
-  if (effectiveLang.value === 'scala') {
-    html.value = await highlightScalaInline(code)
-    return
-  }
-  html.value = code
+  html.value = await highlightInline(code, props.lang ?? 'scala')
 }
 
 onMounted(() => void render())

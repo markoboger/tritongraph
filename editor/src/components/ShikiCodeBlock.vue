@@ -14,13 +14,17 @@
  * via event delegation on the root, and emit its 0-indexed position. Clicks that don't hit a
  * line (whitespace around the pre element, for instance) are ignored silently.
  */
-import { computed, onMounted, ref, watch } from 'vue'
-import { highlightScalaInline } from '../highlight/shikiHighlighter'
+import { onMounted, ref, watch } from 'vue'
+import { highlightInline } from '../highlight/shikiHighlighter'
 
 const props = defineProps<{
   code: string
-  /** Currently only Scala — widen when we need more languages (same pattern as ShikiInlineCode). */
-  lang?: 'scala'
+  /**
+   * Shiki grammar name (e.g. `scala`, `python`, `typescript`). Supplied by the artefact box from the
+   * resolved {@link LanguageProfile}. Unknown / unloaded grammars degrade to plain text in
+   * {@link highlightInline}. Defaults to `scala` for legacy callers.
+   */
+  lang?: string
   /**
    * Style lines as interactive (cursor, hover tint). Set by callers that listen to
    * `line-click`; omitted when the block is purely decorative, so static code blocks don't
@@ -36,19 +40,13 @@ const emit = defineEmits<{
 
 const html = ref<string>('')
 
-const effectiveLang = computed(() => props.lang ?? 'scala')
-
 async function render(): Promise<void> {
   const code = String(props.code ?? '').replace(/\s+$/, '')
   if (!code) {
     html.value = ''
     return
   }
-  if (effectiveLang.value === 'scala') {
-    html.value = await highlightScalaInline(code)
-    return
-  }
-  html.value = ''
+  html.value = await highlightInline(code, props.lang ?? 'scala')
 }
 
 onMounted(() => void render())

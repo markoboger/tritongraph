@@ -111,6 +111,8 @@ function normalizeInnerArtefactSpec(raw: unknown): TritonInnerArtefactSpec | nul
   const o = raw as Record<string, unknown>
   if (typeof o.id !== 'string' || !o.id) return null
   const name = typeof o.name === 'string' && o.name ? o.name : o.id
+  const language =
+    typeof o.language === 'string' && o.language.trim() ? String(o.language) : undefined
   const subtitle =
     typeof o.subtitle === 'string' && o.subtitle.trim() ? String(o.subtitle) : undefined
   const description =
@@ -132,6 +134,7 @@ function normalizeInnerArtefactSpec(raw: unknown): TritonInnerArtefactSpec | nul
   return {
     id: o.id,
     name,
+    ...(language ? { language } : {}),
     ...(subtitle ? { subtitle } : {}),
     ...(description ? { description } : {}),
     ...(declaration ? { declaration } : {}),
@@ -357,15 +360,24 @@ export function ilographDocumentToFlow(
         ...(tritonIconUrl ? { iconUrl: tritonIconUrl } : {}),
         ...(tritonIconKey ? { tritonIconKey } : {}),
         ...(!isGroup
-          ? {
-              language: languageIconForId(id),
-              // Skip synthetic sbt drill notes for Docker-tagged leaves or non-Scala languages.
-              ...(typeof tritonIconKey === 'string' && isDockerConceptIconKey(tritonIconKey.trim())
-                ? {}
-                : typeof res['x-triton-package-language'] === 'string'
-                ? {}
-                : { drillNote: drillNoteForModuleId(id) }),
-            }
+          ? (() => {
+              // Real per-leaf language from the CodeModel (`scala`, `python`, …) when present;
+              // otherwise fall back to the decorative hash so legacy/hand-edited docs still get a logo.
+              const rawLeafLanguage = res['x-triton-language']
+              const leafLanguage =
+                typeof rawLeafLanguage === 'string' && rawLeafLanguage.trim() ? rawLeafLanguage : undefined
+              const isNonScalaLeaf = leafLanguage !== undefined && leafLanguage !== 'scala'
+              // Skip synthetic sbt drill notes for Docker-tagged leaves, package-scope groups, or
+              // any leaf we know isn't Scala (the sbt note is Scala-specific).
+              const skipDrillNote =
+                (typeof tritonIconKey === 'string' && isDockerConceptIconKey(tritonIconKey.trim())) ||
+                typeof res['x-triton-package-language'] === 'string' ||
+                isNonScalaLeaf
+              return {
+                language: leafLanguage ?? languageIconForId(id),
+                ...(skipDrillNote ? {} : { drillNote: drillNoteForModuleId(id) }),
+              }
+            })()
           : {}),
         ...(innerPackages?.length ? { innerPackages } : {}),
         ...(innerArtefacts?.length ? { innerArtefacts } : {}),

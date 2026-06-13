@@ -25,6 +25,7 @@ type TritonInnerPackageSpec = {
 type TritonInnerArtefactSpec = {
   id: string
   name: string
+  language?: string
   subtitle?: string
   description?: string
   declaration?: string
@@ -49,6 +50,7 @@ type TritonCodeResource = IlographResource & {
   'x-triton-project-kind'?: 'project' | 'module' | 'general'
   'x-triton-package-scope'?: true
   'x-triton-package-language'?: string
+  'x-triton-language'?: string
   'x-triton-declaration'?: string
   'x-triton-constructor-signatures'?: readonly TritonMethodSignature[]
   'x-triton-method-signatures'?: readonly TritonMethodSignature[]
@@ -105,6 +107,7 @@ function artefactToInnerArtefact(artefact: CodeArtefact): TritonInnerArtefactSpe
   return {
     id: artefact.id,
     name: artefact.name,
+    language: artefact.language,
     subtitle: artefact.kind,
     ...(artefact.documentation ? { description: artefact.documentation } : {}),
     declaration: artefact.declaration,
@@ -330,6 +333,7 @@ function containerDirectArtefactLeafResources(container: CodeContainer): TritonC
     name: artefact.name,
     subtitle: artefact.kind,
     'x-triton-node-type': 'artefact',
+    'x-triton-language': artefact.language,
     'x-triton-declaration': artefact.declaration,
     'x-triton-source-file': artefact.source.file,
     'x-triton-source-row': artefact.source.startRow,

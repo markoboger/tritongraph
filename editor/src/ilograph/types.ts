@@ -52,7 +52,14 @@ export interface TritonMethodSignature {
 export type TritonInnerArtefactSpec = {
   id: string
   name: string
-  /** Scala kind keyword (`case class`, `object`, `trait`, …). */
+  /**
+   * Source language of this artefact (`scala`, `python`, `typescript`, …) — a `LanguageId` from the
+   * core `CodeModel`. Drives the language-specific presentation (icon, panel wording, syntax
+   * highlighting) via the language-profile registry. Absent for hand-edited YAML that predates
+   * language tagging; the box then falls back to the generic profile.
+   */
+  language?: string
+  /** Kind keyword (`case class`, `object`, `trait`, `class`, `function`, …). */
   subtitle?: string
   /** Human-written docs for the Documentation panel (optional; used by TS examples too). */
   description?: string
@@ -190,6 +197,14 @@ export interface IlographResource {
    * don't re-display.
    */
   'x-triton-package-language'?: string
+  /**
+   * Non-standard: source language of a single `artefact` leaf (`scala`, `python`, `typescript`, …) —
+   * a `LanguageId` from the core `CodeModel`. Unlike {@link x-triton-package-language} (which tags a
+   * whole package scope for the {@link GroupNode} logo), this is per-leaf and drives the artefact
+   * box's language-specific presentation (icon, panel wording, syntax highlighting). Read by
+   * {@link ilographToFlow} → `data.language`.
+   */
+  'x-triton-language'?: string
   /**
    * Non-standard: full one-line declaration for a Scala artefact leaf — `"object Demo extends App"`,
    * `"trait Animal extends Lifeform with Named"`. Set by {@link buildScalaPackageGraph} only on

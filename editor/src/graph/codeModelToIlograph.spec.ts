@@ -143,6 +143,7 @@ describe('codeModelToIlographDocument', () => {
     expect(directArtefact).toMatchObject({
       id: 'editor::class:App',
       'x-triton-node-type': 'artefact',
+      'x-triton-language': 'typescript',
       'x-triton-declaration': 'export class App',
       'x-triton-constructor-signatures': [{ signature: 'constructor(widget: Widget)', startRow: 24 }],
     })
@@ -166,5 +167,22 @@ describe('codeModelToIlographDocument', () => {
     expect(flow.nodes[0]?.data).toMatchObject({
       constructorSignatures: [{ signature: 'constructor(widget: Widget)', startRow: 24 }],
     })
+  })
+
+  it('carries the real leaf language into flow node data (drives language-specific presentation)', () => {
+    const flow = ilographDocumentToFlow({
+      resources: [{
+        id: 'app::function:get_analysis',
+        name: 'get_analysis',
+        subtitle: 'function',
+        'x-triton-node-type': 'artefact',
+        'x-triton-language': 'python',
+      }],
+    })
+
+    // The real language wins over the decorative hash so a Python def stops rendering Scala chrome.
+    expect(flow.nodes[0]?.data).toMatchObject({ language: 'python' })
+    // ...and the Scala-specific synthetic sbt drill note is suppressed for non-Scala leaves.
+    expect((flow.nodes[0]?.data as { drillNote?: string }).drillNote).toBeUndefined()
   })
 })

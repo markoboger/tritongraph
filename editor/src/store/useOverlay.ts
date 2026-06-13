@@ -62,14 +62,15 @@ export function useInnerArtefactOverlays(
 }
 
 /**
- * Reactive view onto the Scaladoc text for a `(workspace, nodeId)` artefact.
+ * Reactive view onto the captured doc-comment text for a `(workspace, nodeId)` artefact (Scaladoc,
+ * Python docstring, JSDoc, …).
  *
- * Returns `''` when no documentation has been captured for this artefact (the scanner
- * writes a row only when the source had a Scaladoc block preceding the definition). The
- * ref tracks the `scalaDocs` table listener so subsequent scans / workspace clears
- * automatically flow through to any component reading the ref.
+ * Returns `''` when no documentation has been captured for this artefact (the scanner writes a row
+ * only when the source had a doc block preceding the definition). The ref tracks the `scalaDocs`
+ * table listener so subsequent scans / workspace clears automatically flow through to any component
+ * reading the ref.
  */
-export function useScalaDoc(workspace: string, nodeId: string): Ref<string> {
+export function useArtefactDoc(workspace: string, nodeId: string): Ref<string> {
   const value = ref(getScalaDoc(workspace, nodeId))
   const off = onScalaDocChanged(() => {
     value.value = getScalaDoc(workspace, nodeId)
@@ -79,11 +80,12 @@ export function useScalaDoc(workspace: string, nodeId: string): Ref<string> {
 }
 
 /**
- * Reactive view onto the captured `sbt test` output block for a `(workspace, nodeId)` artefact.
+ * Reactive view onto the captured test-output block for a `(workspace, nodeId)` artefact (`sbt test`,
+ * `pytest`, …).
  *
  * Returns `{}` when no captured block exists (no log for this example, or no suite matched).
  */
-export function useScalaTestBlock(workspace: string, nodeId: string): Ref<ScalaTestBlockRow> {
+export function useArtefactTestBlock(workspace: string, nodeId: string): Ref<ScalaTestBlockRow> {
   const value = ref<ScalaTestBlockRow>(getScalaTestBlock(workspace, nodeId))
   const off = onScalaTestBlockChanged(() => {
     value.value = getScalaTestBlock(workspace, nodeId)
@@ -130,7 +132,7 @@ export function useScalaCoverageKeyed(workspaceRef: Ref<string>, nodeId: string)
  * Reactive view onto the "specs that mention/exercise this artefact" list for a `(workspace, nodeId)`.
  * Returns `{}` when no mapping has been loaded for this workspace.
  */
-export function useScalaSpecs(workspace: string, nodeId: string): Ref<ScalaSpecsRow> {
+export function useArtefactSpecs(workspace: string, nodeId: string): Ref<ScalaSpecsRow> {
   const value = ref<ScalaSpecsRow>(getScalaSpecs(workspace, nodeId))
   const off = onScalaSpecsChanged(() => {
     value.value = getScalaSpecs(workspace, nodeId)

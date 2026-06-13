@@ -1,14 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { TritonInnerArtefactSpec, TritonInnerPackageSpec } from '../../ilograph/types'
-import scalaIconUrl from '../../assets/language-icons/scala.svg'
-import scalaClassIconUrl from '../../assets/language-icons/scala-class.svg'
-import scalaTraitIconUrl from '../../assets/language-icons/scala-trait.svg'
-import scalaObjectIconUrl from '../../assets/language-icons/scala-object.svg'
-import scalaEnumIconUrl from '../../assets/language-icons/scala-enum.svg'
+import { languageProfile } from '../../graph/languageProfiles'
 import type { BoxMetricDemo } from '../common/boxMetricDemo'
 import DiagramLeafBox from './DiagramLeafBox.vue'
-import ScalaArtefactBox from './ScalaArtefactBox.vue'
+import ArtefactBox from './ArtefactBox.vue'
 import type { InnerEdgeDraw, PortEndpoint } from './innerArtefactGraphHelpers'
 import InnerArtefactEdgesSvg from './InnerArtefactEdgesSvg.vue'
 import {
@@ -109,13 +105,8 @@ const showInnerRelationLane = computed(
   () => props.innerArtefactLayerColumns.length > 1 && memberMemberRelationCount.value > 0,
 )
 
-function scalaIconForKind(subtitle: string | undefined): string {
-  const k = artefactSubtitleSansMetrics(subtitle).toLowerCase()
-  if (k === 'class' || k === 'case class') return scalaClassIconUrl
-  if (k === 'object' || k === 'case object') return scalaObjectIconUrl
-  if (k === 'trait') return scalaTraitIconUrl
-  if (k === 'enum') return scalaEnumIconUrl
-  return scalaIconUrl
+function leafIconForKind(language: string | undefined, subtitle: string | undefined): string {
+  return languageProfile(language).kindIconUrl(artefactSubtitleSansMetrics(subtitle))
 }
 
 function kindBadgeForInnerArtefact(cell: TritonInnerArtefactSpec | undefined): string | null {
@@ -221,8 +212,9 @@ const innerEndpointChipHovered = ref(false)
               >
                 <span class="package-box__artefact-anchor package-box__artefact-anchor--in" :class="{ 'package-box__artefact-anchor--emph': artefactEmphasized(artId) }" aria-hidden="true" />
                 <span class="package-box__artefact-anchor package-box__artefact-anchor--out" :class="{ 'package-box__artefact-anchor--emph': artefactEmphasized(artId) }" aria-hidden="true" />
-                <ScalaArtefactBox
+                <ArtefactBox
                   :box-id="artId"
+                  :language="artefactCell(artId)!.language"
                   :label="artefactCell(artId)!.name"
                   :subtitle="artefactCell(artId)!.subtitle ?? ''"
                   :declaration="artefactCell(artId)!.declaration"
@@ -273,7 +265,7 @@ const innerEndpointChipHovered = ref(false)
                   :icon-url="
                     kindBadgeForInnerArtefact(artefactCell(artId)!)
                       ? undefined
-                      : scalaIconForKind(artefactCell(artId)!.subtitle)
+                      : leafIconForKind(artefactCell(artId)!.language, artefactCell(artId)!.subtitle)
                   "
                   :kind-badge="kindBadgeForInnerArtefact(artefactCell(artId)!) ?? undefined"
                   :icon-alt="
@@ -331,8 +323,9 @@ const innerEndpointChipHovered = ref(false)
           >
             <span class="package-box__artefact-anchor package-box__artefact-anchor--in" :class="{ 'package-box__artefact-anchor--emph': artefactEmphasized(artId) }" aria-hidden="true" />
             <span class="package-box__artefact-anchor package-box__artefact-anchor--out" :class="{ 'package-box__artefact-anchor--emph': artefactEmphasized(artId) }" aria-hidden="true" />
-            <ScalaArtefactBox
+            <ArtefactBox
               :box-id="artId"
+              :language="artefactCell(artId)!.language"
               :label="artefactCell(artId)!.name"
               :subtitle="artefactCell(artId)!.subtitle ?? ''"
               :declaration="artefactCell(artId)!.declaration"
@@ -383,7 +376,7 @@ const innerEndpointChipHovered = ref(false)
               :icon-url="
                 kindBadgeForInnerArtefact(artefactCell(artId)!)
                   ? undefined
-                  : scalaIconForKind(artefactCell(artId)!.subtitle)
+                  : leafIconForKind(artefactCell(artId)!.language, artefactCell(artId)!.subtitle)
               "
               :kind-badge="kindBadgeForInnerArtefact(artefactCell(artId)!) ?? undefined"
               :icon-alt="
