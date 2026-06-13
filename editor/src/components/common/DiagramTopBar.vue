@@ -265,7 +265,10 @@ function onFocusDepthInput(ev: Event) {
   gap: 8px;
   flex-wrap: wrap;
   padding: 1px 8px 2px;
-  max-width: min(42%, 700px);
+  /* Stay content-sized and only wrap internally when the row genuinely overflows. The path
+     (left) shrinks via ellipsis first, so a hard width cap here is what forced a second row even
+     with empty space to the right. */
+  max-width: 100%;
 }
 
 .diagram-top-bar__check {

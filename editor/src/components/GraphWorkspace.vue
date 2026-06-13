@@ -838,6 +838,28 @@ function readFlowViewport(): { width: number; height: number } {
   }
 }
 
+/** Gap kept between the floating top bar and the first row of diagram boxes. */
+const TOP_BAR_CLEARANCE_PX = 6
+
+/**
+ * Top inset the camera must keep clear so the floating {@link DiagramTopBar} never overlaps the
+ * diagram. The bar is `position: absolute` over the pane and grows past {@link DIAGRAM_MARGIN_Y}
+ * whenever its controls wrap to a second row (or the path stacks above the controls under the
+ * 900px media query). Measuring its live height keeps the inset tight when the bar is one row and
+ * pushes the boxes down only as far as needed when it is taller.
+ */
+function readTopBarInset(): number {
+  if (typeof document === 'undefined') return DIAGRAM_MARGIN_Y
+  const wrap =
+    (flowShellRef.value?.closest('.flow-wrap') as HTMLElement | null) ??
+    (document.querySelector('.flow-wrap') as HTMLElement | null)
+  const bar = wrap?.querySelector('.diagram-top-bar') as HTMLElement | null
+  if (!bar) return DIAGRAM_MARGIN_Y
+  const h = bar.getBoundingClientRect().height
+  if (!Number.isFinite(h) || h <= 0) return DIAGRAM_MARGIN_Y
+  return Math.max(DIAGRAM_MARGIN_Y, Math.ceil(h) + TOP_BAR_CLEARANCE_PX)
+}
+
 const diagramModel = computed(() => {
   const vp = readFlowViewport()
   return buildDiagramRootModel(nodes.value, edges.value, { x: 0, y: 0, width: vp.width, height: vp.height })
@@ -1272,6 +1294,10 @@ function setupFlowShellResizeObserver(): void {
   }
   flowShellResizeObserver = new ResizeObserver(() => queueWorkspaceViewportStabilize())
   flowShellResizeObserver.observe(el)
+  // Also watch the floating top bar: when its controls wrap to a second row its height grows
+  // without resizing the shell, and the camera top inset ({@link readTopBarInset}) must refit.
+  const bar = el.closest('.flow-wrap')?.querySelector('.diagram-top-bar') as HTMLElement | null
+  if (bar) flowShellResizeObserver.observe(bar)
 }
 
 watch(flowShellRef, () => setupFlowShellResizeObserver(), { flush: 'post' })
@@ -1606,10 +1632,10 @@ async function applyPanRailsOrAnchorCamera(
   visibleNodes: any[],
   duration: number,
 ): Promise<void> {
+  const topInset = readTopBarInset()
   const px = DIAGRAM_MARGIN_X * 2
-  const py = DIAGRAM_MARGIN_Y * 2
   const usableW = Math.max(80, vp.width - px)
-  const usableH = Math.max(80, vp.height - py)
+  const usableH = Math.max(80, vp.height - topInset - DIAGRAM_MARGIN_Y)
   const widthOverflow = rect.width > usableW + PAN_RAIL_FIT_SLACK_PX
   const heightOverflow = rect.height > usableH + PAN_RAIL_FIT_SLACK_PX
   const heightMinReached = visibleNodes.some((node) => nodePixelHeight(node) <= nodeMinHeight(node) + 1)
@@ -1621,7 +1647,7 @@ async function applyPanRailsOrAnchorCamera(
   const zoom = 1
   const txLeft = DIAGRAM_MARGIN_X - rect.x * zoom
   const txRight = vp.width - DIAGRAM_MARGIN_X - (rect.x + rect.width) * zoom
-  const tyTop = DIAGRAM_MARGIN_Y - rect.y * zoom
+  const tyTop = topInset - rect.y * zoom
   const tyBot = vp.height - DIAGRAM_MARGIN_Y - (rect.y + rect.height) * zoom
   const xMax = Math.max(txLeft, txRight)
   const xMin = Math.min(txLeft, txRight)
