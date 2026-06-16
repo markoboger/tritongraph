@@ -17,7 +17,7 @@ function entry(
   imports: ParsedPythonImport[] = [],
 ): { filePath: string; summary: PythonFileSummary } {
   const filePath = `${modulePath.replaceAll('.', '/')}.py`
-  return { filePath, summary: { modulePath, filePath, imports, topLevel } }
+  return { filePath, summary: { modulePath, filePath, imports, topLevel, lineCount: 0 } }
 }
 
 const extendsEdges = (relations: readonly { kind: string; from: string; to: string }[]) =>

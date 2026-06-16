@@ -1,5 +1,9 @@
 import type { CodeArtefact, CodeContainer, CodeModel, CodeRelation } from './languageModel'
 import type { IlographDocument, IlographResource } from './ilographTypes'
+import { formatLinesOfCodeUnit } from './linesOfCodeFormat'
+
+/** Per-file physical line counts, keyed by `SourceLocation.file`. */
+type FileLineCounts = Readonly<Record<string, number>> | undefined
 
 export interface CodeModelToIlographOptions {
   resourceId?: string
@@ -191,7 +195,7 @@ function containerToModuleOverviewResource(container: CodeContainer): TritonCode
 function containerToResource(
   container: CodeContainer,
   relations: readonly CodeRelation[],
-  options: { omitModuleChildren?: boolean } = {},
+  options: { omitModuleChildren?: boolean; fileLineCounts?: FileLineCounts } = {},
 ): TritonCodeResource {
   const childContainers = options.omitModuleChildren
     ? container.children.filter((child) => child.kind !== 'module')
@@ -211,7 +215,7 @@ function containerToResource(
   return {
     id: container.id,
     name: container.name,
-    subtitle: containerSubtitle(container),
+    subtitle: withLoc(containerSubtitle(container), subtreeLoc(container, options.fileLineCounts)),
     ...(container.kind === 'module'
       ? { 'x-triton-project-kind': 'module' as const }
       : { 'x-triton-node-type': 'package' }),
@@ -226,6 +230,7 @@ function containerToResource(
 function containerToPackageScopeResource(
   container: CodeContainer,
   relations: readonly CodeRelation[],
+  counts?: FileLineCounts,
 ): TritonCodeResource {
   const childPackages = container.children.filter((child) => child.kind !== 'module')
   const innerPackages = childPackages.map(containerToInnerPackage)
@@ -245,7 +250,7 @@ function containerToPackageScopeResource(
   return {
     id: container.id,
     name: container.name,
-    subtitle: containerSubtitle(container),
+    subtitle: withLoc(containerSubtitle(container), subtreeLoc(container, counts)),
     'x-triton-node-type': 'package',
     ...(innerPackages.length ? { 'x-triton-inner-packages': innerPackages } : {}),
     ...(innerArtefacts.length ? { 'x-triton-inner-artefacts': innerArtefacts } : {}),
@@ -258,6 +263,32 @@ function collectContainerFiles(container: CodeContainer | RenderedContainer, out
   for (const artefact of container.artefacts) out.add(artefact.source.file)
   for (const child of container.children) collectContainerFiles(child, out)
   return out
+}
+
+/**
+ * Every source file in a container's subtree. Like `collectContainerFiles` but also includes each
+ * container's own `source.file`, so artefact-less modules / `__init__.py` packages still count
+ * toward the package's lines-of-code total. `RenderedContainer` carries no `source`, so it
+ * contributes via its artefacts only (same as `collectContainerFiles`).
+ */
+function collectSubtreeFiles(container: CodeContainer | RenderedContainer, out: Set<string> = new Set()): Set<string> {
+  if ('source' in container && container.source?.file) out.add(container.source.file)
+  for (const artefact of container.artefacts) out.add(artefact.source.file)
+  for (const child of container.children) collectSubtreeFiles(child, out)
+  return out
+}
+
+/** Sum physical lines across every file in the container's subtree; 0 when no counts are supplied. */
+function subtreeLoc(container: CodeContainer | RenderedContainer, counts: FileLineCounts): number {
+  if (!counts) return 0
+  let total = 0
+  for (const file of collectSubtreeFiles(container)) total += counts[file] ?? 0
+  return total
+}
+
+/** Append a `, N loc` / `, N.N kloc` suffix to a subtitle when the count is known and non-zero. */
+function withLoc(subtitle: string, loc: number): string {
+  return loc > 0 ? `${subtitle}, ${formatLinesOfCodeUnit(loc)}` : subtitle
 }
 
 function collapseContainerChain(container: CodeContainer): RenderedContainer {
@@ -361,7 +392,11 @@ function renderedContainerToInnerPackage(container: RenderedContainer): TritonIn
   }
 }
 
-function descendantPackageLeafResource(container: RenderedContainer, relations: readonly CodeRelation[]): TritonCodeResource {
+function descendantPackageLeafResource(
+  container: RenderedContainer,
+  relations: readonly CodeRelation[],
+  counts?: FileLineCounts,
+): TritonCodeResource {
   const innerRelations = relations
     .filter((rel) => rel.kind !== 'imports' && relationWithinContainer(rel, container.id))
     .map(relationToInnerRelation)
@@ -378,7 +413,7 @@ function descendantPackageLeafResource(container: RenderedContainer, relations: 
   return {
     id: container.id,
     name: container.name,
-    subtitle: containerArtefactBreakdown(container),
+    subtitle: withLoc(containerArtefactBreakdown(container), subtreeLoc(container, counts)),
     'x-triton-node-type': 'package',
     ...(innerPackages.length ? { 'x-triton-inner-packages': innerPackages } : {}),
     ...(innerArtefacts.length ? { 'x-triton-inner-artefacts': innerArtefacts } : {}),
@@ -390,11 +425,12 @@ function descendantPackageLeafResource(container: RenderedContainer, relations: 
 function containerToScopedPackageGraphResource(
   container: CodeContainer,
   relations: readonly CodeRelation[],
+  counts?: FileLineCounts,
 ): TritonCodeResource {
   const descendantPackages = collectRenderedDescendantContainers(container)
   const childResources = [
     ...containerDirectArtefactLeafResources(container),
-    ...descendantPackages.map((child) => descendantPackageLeafResource(child, relations)),
+    ...descendantPackages.map((child) => descendantPackageLeafResource(child, relations, counts)),
   ].sort((a, b) => a.id.localeCompare(b.id))
   const files = collectContainerFiles(container)
   const subtitleParts = [
@@ -410,7 +446,7 @@ function containerToScopedPackageGraphResource(
   return {
     id: container.id,
     name: container.name,
-    subtitle: subtitleParts.join(' · '),
+    subtitle: withLoc(subtitleParts.join(' · '), subtreeLoc(container, counts)),
     'x-triton-package-scope': true,
     'x-triton-package-language': container.language,
     children: childResources,
@@ -445,17 +481,19 @@ function scopedPackageGraphImportRelations(relations: readonly CodeRelation[], s
 function collectProjectGraphResources(
   containers: readonly CodeContainer[],
   relations: readonly CodeRelation[],
+  counts: FileLineCounts,
   out: TritonCodeResource[] = [],
 ): TritonCodeResource[] {
   for (const container of containers) {
     out.push(
       container.kind === 'module'
         ? containerToModuleOverviewResource(container)
-        : containerToResource(container, relations, { omitModuleChildren: true }),
+        : containerToResource(container, relations, { omitModuleChildren: true, fileLineCounts: counts }),
     )
     collectProjectGraphResources(
       container.children.filter((child) => child.kind === 'module'),
       relations,
+      counts,
       out,
     )
   }
@@ -562,7 +600,7 @@ function codeModelToNestedIlographDocument(
       if (childPackages.length) {
         return {
           description: options.description ?? `Code model projection for ${model.name}.`,
-          resources: [containerToScopedPackageGraphResource(scope, model.relations)],
+          resources: [containerToScopedPackageGraphResource(scope, model.relations, model.fileLineCounts)],
           perspectives: [
             {
               name: 'package imports',
@@ -575,7 +613,7 @@ function codeModelToNestedIlographDocument(
       }
       return {
         description: options.description ?? `Code model projection for ${model.name}.`,
-        resources: [containerToPackageScopeResource(scope, model.relations)],
+        resources: [containerToPackageScopeResource(scope, model.relations, model.fileLineCounts)],
         perspectives: [
           {
             name: 'dependencies',
@@ -590,7 +628,9 @@ function codeModelToNestedIlographDocument(
   const rootAsProject = options.rootResourceKind === 'project'
   const children = rootAsProject
     ? []
-    : model.root.children.map((container) => containerToResource(container, model.relations))
+    : model.root.children.map((container) =>
+        containerToResource(container, model.relations, { fileLineCounts: model.fileLineCounts }),
+      )
   const resources = rootAsProject
     ? [
         {
@@ -600,7 +640,7 @@ function codeModelToNestedIlographDocument(
           description: options.description ?? `Code model projection for ${model.name}.`,
           'x-triton-project-kind': 'project' as const,
         },
-        ...collectProjectGraphResources(model.root.children, model.relations),
+        ...collectProjectGraphResources(model.root.children, model.relations, model.fileLineCounts),
       ]
     : undefined
   const rootResource: TritonCodeResource = {
@@ -675,7 +715,7 @@ function codeModelToFlatModulesDocument(
         moduleResources.push({
           id: child.id,
           name: child.name,
-          subtitle: containerSubtitle(child),
+          subtitle: withLoc(containerSubtitle(child), subtreeLoc(child, model.fileLineCounts)),
           'x-triton-node-type': 'package',
           'x-triton-package-language': model.language,
           ...(innerArtefacts.length ? { 'x-triton-inner-artefacts': innerArtefacts } : {}),
@@ -785,7 +825,7 @@ function codeModelToPackageGraphDocument(
   // Leaf scope: no sub-packages — show this module's classes (inner artefacts + relations).
   if (scope.children.length === 0) {
     const leaf: TritonCodeResource = {
-      ...containerToResource(scope, model.relations),
+      ...containerToResource(scope, model.relations, { fileLineCounts: model.fileLineCounts }),
       'x-triton-package-language': model.language,
     }
     return {
@@ -798,7 +838,7 @@ function codeModelToPackageGraphDocument(
   const resources: TritonCodeResource[] = scope.children.map((child) => ({
     id: child.id,
     name: child.name,
-    subtitle: packageGraphSubtitle(child),
+    subtitle: withLoc(packageGraphSubtitle(child), subtreeLoc(child, model.fileLineCounts)),
     'x-triton-node-type': 'package',
     'x-triton-package-language': model.language,
   }))

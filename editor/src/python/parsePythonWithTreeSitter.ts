@@ -221,9 +221,10 @@ export async function summarizePython(
   sourceRoots: readonly string[] = [],
 ): Promise<PythonFileSummary> {
   const modulePath = filePathToModulePath(filePath, projectRoot, sourceRoots)
+  const lineCount = source === '' ? 0 : source.split(/\r\n|\n|\r/).length
   const parser = await getParser()
   const tree = parser.parse(source)
-  if (!tree) return { modulePath, filePath, imports: [], topLevel: [] }
+  if (!tree) return { modulePath, filePath, imports: [], topLevel: [], lineCount }
   const root = tree.rootNode
 
   const imports: ParsedPythonImport[] = []
@@ -251,5 +252,5 @@ export async function summarizePython(
 
   tree.delete()
 
-  return { modulePath, filePath, imports, topLevel }
+  return { modulePath, filePath, imports, topLevel, lineCount }
 }

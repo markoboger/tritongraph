@@ -43,6 +43,8 @@ export interface PythonFileSummary {
   filePath: string
   imports: ParsedPythonImport[]
   topLevel: ParsedPythonArtefact[]
+  /** Physical source lines in the file (newline-split). Feeds the package lines-of-code chrome. */
+  lineCount: number
 }
 
 // ─── CodeModel builder ────────────────────────────────────────────────────────────────────────────
@@ -178,6 +180,10 @@ export function buildPythonCodeModelFromSummaries(
   // Index all known module paths for import resolution
   const knownModules = new Set<string>(entries.map((e) => e.summary.modulePath))
 
+  // Physical line count per file, keyed by the same path stored in artefact/container source
+  // locations, so the diagram projection can roll lines-of-code up to each package box.
+  const fileLineCounts: Record<string, number> = {}
+
   // Build artefact index for inheritance resolution (simple name → artefact id)
   const artefactBySimpleName = new Map<string, string[]>()
   // All artefact ids, used to confirm an import-resolved base actually exists in the model.
@@ -186,6 +192,7 @@ export function buildPythonCodeModelFromSummaries(
   // Pass 1: build containers and artefacts
   for (const { filePath, summary } of entries) {
     const { modulePath, topLevel } = summary
+    fileLineCounts[filePath] = summary.lineCount ?? 0
     const segments = modulePath.split('.')
     const parentSegments = segments.slice(0, -1)
     const leafName = segments[segments.length - 1] ?? modulePath
@@ -285,5 +292,6 @@ export function buildPythonCodeModelFromSummaries(
     language: 'python',
     root: freezeContainer(root),
     relations,
+    fileLineCounts,
   }
 }

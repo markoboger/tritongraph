@@ -356,6 +356,14 @@ export function buildTypeScriptCodeModelFromFiles(
 ): CodeModel {
   const parsed = files.map((file) => parseFile(file, options))
   const byRel = new Map(parsed.map((p) => [p.file.relPath, p] as const))
+
+  // Physical line count per file, keyed by the same path stored in artefact source locations
+  // (`sourceFile ?? relPath`), so the diagram projection can roll lines-of-code up to package boxes.
+  const fileLineCounts: Record<string, number> = {}
+  for (const file of files) {
+    const key = file.sourceFile ?? normalizeRelPath(file.relPath)
+    fileLineCounts[key] = file.source === '' ? 0 : file.source.split(/\r\n|\n|\r/).length
+  }
   const root: MutableContainer = {
     id: '<root>',
     name: options.name ?? 'TypeScript',
@@ -487,6 +495,7 @@ export function buildTypeScriptCodeModelFromFiles(
     language: 'typescript',
     root: freezeContainer(root),
     relations,
+    fileLineCounts,
   }
 }
 
