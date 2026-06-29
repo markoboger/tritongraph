@@ -131,5 +131,11 @@ export interface CodeModel {
   language: LanguageId
   root: CodeContainer
   relations: readonly CodeRelation[]
+  /**
+   * Physical line count per source file, keyed by the same path stored in `SourceLocation.file`.
+   * Optional — languages that don't supply it simply render no lines-of-code chrome. Used by the
+   * diagram projection to show a `, N loc` figure on package boxes (see `codeModelToIlograph`).
+   */
+  fileLineCounts?: Readonly<Record<string, number>>
 }
 

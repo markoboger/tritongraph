@@ -452,6 +452,15 @@ function innerArtefactKindSubtitle(a: ScalaArtefact): string {
   return `${a.kind}, ${formatLinesOfCodeUnit(span)}`
 }
 
+/**
+ * Source language for a single artefact, derived from its own file (this scanner also handles
+ * Java/Kotlin/etc. that live under a Scala-style layout). Tags every leaf so the focused artefact box
+ * resolves the right language profile (icon, panel wording, highlighting); defaults to `scala`.
+ */
+function artefactLanguage(a: ScalaArtefact): string {
+  return detectLanguageFromFilePaths(a.file ? [a.file] : []) ?? 'scala'
+}
+
 /** Stable inner-list entries for artefacts declared in this package (layer-drill UI only). */
 function innerArtefactSpecsForNode(n: PackageTreeNode): TritonInnerArtefactSpec[] {
   if (!n.artefacts.length) return []
@@ -461,6 +470,7 @@ function innerArtefactSpecsForNode(n: PackageTreeNode): TritonInnerArtefactSpec[
     .map((a) => ({
       id: artefactResourceId(n.fqn, a),
       name: a.name,
+      language: artefactLanguage(a),
       subtitle: innerArtefactKindSubtitle(a),
       declaration: a.declaration,
       ...(a.constructorParams ? { constructorParams: a.constructorParams } : {}),
@@ -847,7 +857,7 @@ function detectLanguageFromFilePaths(files: readonly string[]): string | undefin
  * `Demo`, which read as "missing" at the top level.)
  *
  * Artefact leaves use `x-triton-node-type: 'artefact'` so Vue Flow renders them via the
- * `ScalaArtefactBox` path in {@link FlowPackageNode}. Their id is the same `artefactResourceId`
+ * `ArtefactBox` path in {@link FlowPackageNode}. Their id is the same `artefactResourceId`
  * used for inner-list entries, so {@link ScalaInheritanceEdge} / {@link ScalaGetsEdge}
  * endpoints line up if we ever emit artefact-level relations at the scope level.
  */
@@ -866,6 +876,7 @@ function scopeDirectArtefactLeafResources(scope: PackageTreeNode): IlographResou
         name: a.name,
         subtitle: innerArtefactKindSubtitle(a),
         'x-triton-node-type': 'artefact',
+        'x-triton-language': artefactLanguage(a),
         'x-triton-declaration': a.declaration,
         ...(a.constructorParams ? { 'x-triton-constructor-params': a.constructorParams } : {}),
         ...(a.methodSignatures.length ? { 'x-triton-method-signatures': a.methodSignatures } : {}),

@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./ilographTypes": "./src/ilographTypes.ts",
     "./codeModelToIlograph": "./src/codeModelToIlograph.ts",
     "./languageModel": "./src/languageModel.ts",
     "./parseBuildSbt": "./src/parseBuildSbt.ts",

@@ -247,16 +247,9 @@ async function fitOverviewCamera(): Promise<void> {
   const finalEdges = getEdges.value.map((e) => ({ ...e })) as GraphEdge[]
   await waitForGraphLayout()
   await runWithEdgesHiddenDuringAnimation(finalEdges, FIT_DURATION_MS, async () => {
-    const topVisible = getNodes.value.filter((n) => !n.parentNode && !n.hidden)
-    const singletonRootPackageScope =
-      topVisible.length === 1 &&
-      ((topVisible[0]?.type === 'group' &&
-        ((topVisible[0]?.data as Record<string, unknown> | undefined)?.packageScope === true)) ||
-        isLeafBoxNode(topVisible[0]!))
-    if (singletonRootPackageScope) {
-      await setViewport({ x: 0, y: 0, zoom: 1 }, { duration: FIT_DURATION_MS })
-      return
-    }
+    // A single root box must still anchor below the floating top bar. Delegate to the
+    // inset-aware workspace fit (zoom 1, top-left anchored at the top-bar inset) instead of a
+    // raw {x:0,y:0} snap, which tucked the box under the toolbar after a drill/overview fit.
     if (fitWorkspaceViewport) {
       await fitWorkspaceViewport({ duration: FIT_DURATION_MS })
       return
@@ -288,16 +281,9 @@ async function fitCameraAfterLayerDrillClear(): Promise<void> {
   }
   const finalEdges = getEdges.value.map((e) => ({ ...e })) as GraphEdge[]
   await runWithEdgesHiddenDuringAnimation(finalEdges, FIT_DURATION_MS, async () => {
-    const topVisible = getNodes.value.filter((n) => !n.parentNode && !n.hidden)
-    const singletonRootPackageScope =
-      topVisible.length === 1 &&
-      ((topVisible[0]?.type === 'group' &&
-        ((topVisible[0]?.data as Record<string, unknown> | undefined)?.packageScope === true)) ||
-        isLeafBoxNode(topVisible[0]!))
-    if (singletonRootPackageScope) {
-      await setViewport({ x: 0, y: 0, zoom: 1 }, { duration: FIT_DURATION_MS })
-      return
-    }
+    // A single root box must still anchor below the floating top bar. Delegate to the
+    // inset-aware workspace fit (zoom 1, top-left anchored at the top-bar inset) instead of a
+    // raw {x:0,y:0} snap, which tucked the box under the toolbar after a drill/overview fit.
     if (fitWorkspaceViewport) {
       await fitWorkspaceViewport({ duration: FIT_DURATION_MS })
       return

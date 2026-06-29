@@ -2,12 +2,15 @@
 import { computed, inject, ref, watch, type Ref } from 'vue'
 import { openInEditor, type OpenInEditorTarget } from '../../openInEditor'
 import { formatLinesOfCodeUnit, physicalLineSpanInclusive } from '../../graph/linesOfCodeDisplay'
-import { useScalaDoc, useScalaSpecs, useScalaTestBlock } from '../../store/useOverlay'
+import { languageProfile } from '../../graph/languageProfiles'
+import { useArtefactDoc, useArtefactSpecs, useArtefactTestBlock } from '../../store/useOverlay'
 import ShikiCodeBlock from '../ShikiCodeBlock.vue'
 import TestChecklistBlock from '../TestChecklistBlock.vue'
 
 const props = defineProps<{
   boxId: string
+  /** Source language (`scala`, `python`, …); drives panel labels, placeholders, and highlighting. */
+  language?: string
   description?: string
   constructorParams?: string
   constructorSignatures?: ReadonlyArray<{ signature: string; startRow: number; endRow?: number }>
@@ -18,15 +21,22 @@ const emit = defineEmits<{
   'open-in-editor': [line?: number]
 }>()
 
+const profile = computed(() => languageProfile(props.language))
+
 type PanelId = 'doc' | 'arguments' | 'methods' | 'coverage' | 'checklist' | 'issues'
-const PANEL_DEFS: ReadonlyArray<{ id: PanelId; label: string }> = [
+/**
+ * Panel chrome. Headers that are stable across languages stay literal; the constructor/parameter and
+ * methods/functions headers come from the resolved {@link LanguageProfile} so each language reads
+ * naturally (Scala "Constructors"/"Functions", Python "Parameters"/"Methods", …).
+ */
+const PANEL_DEFS = computed<ReadonlyArray<{ id: PanelId; label: string }>>(() => [
   { id: 'doc', label: 'Documentation' },
-  { id: 'arguments', label: 'Constructors' },
-  { id: 'methods', label: 'Functions' },
+  { id: 'arguments', label: profile.value.argumentsLabel },
+  { id: 'methods', label: profile.value.methodsLabel },
   { id: 'coverage', label: 'Tests and Specs' },
   { id: 'checklist', label: 'Test run checklist' },
   { id: 'issues', label: 'Issues' },
-] as const
+])
 
 const expandedPanel = ref<PanelId | null>(null)
 
@@ -113,9 +123,9 @@ const argumentsSnippet = computed(() => {
 })
 
 const workspaceKeyRef = inject<Ref<string>>('tritonWorkspaceKey')
-const scalaDocRef = useScalaDoc(workspaceKeyRef?.value ?? '', props.boxId)
-const testBlockRef = useScalaTestBlock(workspaceKeyRef?.value ?? '', props.boxId)
-const specsRowRef = useScalaSpecs(workspaceKeyRef?.value ?? '', props.boxId)
+const docRef = useArtefactDoc(workspaceKeyRef?.value ?? '', props.boxId)
+const testBlockRef = useArtefactTestBlock(workspaceKeyRef?.value ?? '', props.boxId)
+const specsRowRef = useArtefactSpecs(workspaceKeyRef?.value ?? '', props.boxId)
 
 const activeExampleRef = inject<Ref<{ root: string; dir: string } | null> | undefined>(
   'tritonActiveExample',
@@ -153,7 +163,7 @@ const specLinks = computed<SpecLink[]>(() => {
 const specsText = computed(() => specLinks.value.map((s) => s.declaration || `class ${s.name}`).join('\n'))
 
 const defaultPanelGrow = computed(() => {
-  const docLines = lineCount(String(scalaDocRef.value ?? ''))
+  const docLines = lineCount(String(docRef.value ?? ''))
   const argsLines = lineCount(argumentsSnippet.value)
   const methodsLines = lineCount(methodSignaturesText.value)
   const specLines = lineCount(specsText.value)
@@ -267,59 +277,50 @@ function onSpecLineClick(ev: { index: number }): void {
       <div class="artefact-body__panel-body">
         <template v-if="panel.id === 'doc'">
           <p v-if="props.description" class="artefact-body__doc">{{ props.description }}</p>
-          <p v-else-if="scalaDocRef" class="artefact-body__doc">{{ scalaDocRef }}</p>
-          <p v-else class="artefact-body__placeholder artefact-body__placeholder--small">
-            No Scaladoc comment precedes this declaration.
-          </p>
+          <p v-else-if="docRef" class="artefact-body__doc">{{ docRef }}</p>
+          <!-- Profile strings are trusted static data; they may embed <code> for keyword styling. -->
+          <p v-else class="artefact-body__placeholder artefact-body__placeholder--small" v-html="profile.docEmpty" />
         </template>
         <template v-else-if="panel.id === 'arguments'">
           <ShikiCodeBlock
             v-if="constructorSignaturesText"
             :code="constructorSignaturesText"
-            lang="scala"
+            :lang="profile.shikiLang"
             clickable
             @line-click="onConstructorLineClick"
           />
           <ShikiCodeBlock
             v-else-if="argumentsSnippet"
             :code="argumentsSnippet"
-            lang="scala"
+            :lang="profile.shikiLang"
             clickable
             @line-click="onArgumentsLineClick"
           />
-          <p v-else class="artefact-body__placeholder artefact-body__placeholder--small">
-            No constructors.
-          </p>
+          <p v-else class="artefact-body__placeholder artefact-body__placeholder--small" v-html="profile.argumentsEmpty" />
         </template>
         <template v-else-if="panel.id === 'methods'">
           <ShikiCodeBlock
             v-if="methodSignaturesText"
             :code="methodSignaturesText"
-            lang="scala"
+            :lang="profile.shikiLang"
             clickable
             @line-click="onMethodLineClick"
           />
-          <p v-else class="artefact-body__placeholder artefact-body__placeholder--small">
-            No <code>def</code> members found in this declaration.
-          </p>
+          <p v-else class="artefact-body__placeholder artefact-body__placeholder--small" v-html="profile.methodsEmpty" />
         </template>
         <template v-else-if="panel.id === 'coverage'">
           <ShikiCodeBlock
             v-if="specsText"
             :code="specsText"
-            lang="scala"
+            :lang="profile.shikiLang"
             clickable
             @line-click="onSpecLineClick"
           />
-          <p v-else class="artefact-body__placeholder artefact-body__placeholder--small">
-            No specs detected for this artefact from captured <code>sbt test</code> output.
-          </p>
+          <p v-else class="artefact-body__placeholder artefact-body__placeholder--small" v-html="profile.specsEmpty" />
         </template>
         <template v-else-if="panel.id === 'checklist'">
           <TestChecklistBlock v-if="testBlockRef.block" :text="testBlockRef.block" />
-          <p v-else class="artefact-body__placeholder artefact-body__placeholder--small">
-            No captured <code>sbt test</code> output for this artefact in this workspace.
-          </p>
+          <p v-else class="artefact-body__placeholder artefact-body__placeholder--small" v-html="profile.checklistEmpty" />
         </template>
         <template v-else-if="panel.id === 'issues'">
           <p class="artefact-body__placeholder">

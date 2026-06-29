@@ -1,5 +1,5 @@
 import yaml from 'js-yaml'
-import type { IlographDocument } from './ilographTypes.js'
+import type { IlographDocument } from 'triton-core/ilographTypes'
 
 export function stringifyIlographYaml(doc: IlographDocument): string {
   return yaml.dump(doc as object, {

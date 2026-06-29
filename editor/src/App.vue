@@ -23,13 +23,15 @@ import type {
 import { dojoFixtures, getDojoFixture } from './dojo'
 import sbtLogoUrl from './assets/language-icons/sbt.svg'
 import cubeIconUrl from './assets/language-icons/cube.svg'
+import pythonIconUrl from './assets/language-icons/python.svg'
 import stackedCubesIconUrl from './assets/language-icons/stacked-cubes.svg'
 import folderIconUrl from './assets/language-icons/folder.svg'
 import tritonIconUrl from './assets/language-icons/triton.svg'
 import { ilographDocumentToFlow } from './graph/ilographToFlow'
+import type { TritonFlowEdge, TritonFlowNode, TritonNodeData } from './graph/flowTypes'
 import { flowToIlographDocument } from './graph/flowToIlograph'
 import { slimEdgesForExport, slimNodesForExport } from './graph/slimFlow'
-import { boxColorForId } from './graph/boxColors'
+import { boxColorForId, isNamedBoxColor } from './graph/boxColors'
 import {
   artefactSubtitleSansMetrics,
   formatLinesOfCodeUnit,
@@ -54,6 +56,7 @@ import { drillNoteForModuleId } from './graph/sbtStyleDrillNotes'
 import { listSbtExamples } from './sbt/sbtExampleBuilds'
 import { computeSbtProjectScalaLineCounts } from './sbt/sbtProjectLineCounts'
 import { listTsExamples } from './ts/tsExampleDiagrams'
+import { listPythonExamples } from './python/pythonExampleDiagrams'
 import { parseBuildSbt } from './sbt/parseBuildSbt'
 import { sbtProjectsToIlographDocument } from './sbt/sbtProjectsToIlographDocument'
 import { getSbtTestLogFor } from './sbt/sbtTestLogLoader'
@@ -74,10 +77,8 @@ import {
   type StoredEditorLinkPreference,
   type StoredExternalEditorId,
 } from './store/editorLinkPreference'
-import {
-  buildScalaPackageGraph,
-  scalaPackageGraphToIlographDocument,
-} from './scala/scalaPackagesToIlograph'
+import { buildScalaPackageGraph } from './scala/scalaPackagesToIlograph'
+import { parseScalaFilesToDoc } from './composables/useCodeParser'
 import {
   COMPACT_LAYOUT_MAX_WIDTH_PX,
   COMPACT_LAYOUT_MAX_HEIGHT_PX,
@@ -111,9 +112,20 @@ import {
   setScalaTestBlock,
   whenOverlayStoreReady,
 } from './store/overlayStore'
+import type { CodeModel } from '../../packages/triton-core/src/languageModel'
 
-const nodes = ref<any[]>([])
-const edges = ref<any[]>([])
+/** Projection mode for CodeModel-backed (Python) diagrams; switchable via the toolbar toggle. */
+type PythonViewMode = 'package-graph' | 'flat-modules'
+/**
+ * Per-tab CodeModel for Python diagrams. Kept in a plain Map (not a ref): models are large and never
+ * rendered directly. Lets drill/toggle re-project from the model instead of the lossy flow-node
+ * rebuild. `scopeId` is the tab's base package scope (undefined for the workspace root, the drilled
+ * package id for inner tabs). The current mode lives on the reactive DiagramTab (`pythonViewMode`).
+ */
+const pythonTabModel = new Map<string, { model: CodeModel; scopeId?: string }>()
+
+const nodes = ref<TritonFlowNode[]>([])
+const edges = ref<TritonFlowEdge[]>([])
 const perspectiveName = ref<string | undefined>('dependencies')
 const fileName = ref('diagram.ilograph.yaml')
 /** Repo-relative source path the diagram was generated from (sbt build, YAML file, …). Shown top-left on the canvas and embedded in the AI prompt for context. */
@@ -373,34 +385,112 @@ function findInnerPackageSpec(
   return null
 }
 
+/**
+ * The single source language of the active diagram, read from any `x-triton-package-scope` group
+ * node (which carries the real `x-triton-package-language` string in its data). Leaf nodes only carry
+ * a decorative `languageIconForId` value, so they are not a reliable source. Used to re-stamp derived
+ * drill-down diagrams so they don't lose the language tag and fall back to synthetic sbt drill notes.
+ */
+function activeDiagramLanguage(): string | undefined {
+  // The tab records the analysed project's language directly (flat-modules diagrams don't carry it on
+  // any flow node). Fall back to a `x-triton-package-scope` group node for the Scala nested projection.
+  if (typeof activeTab.value?.projectLanguage === 'string') return activeTab.value.projectLanguage
+  for (const node of nodes.value) {
+    const data = (node.data ?? {}) as Record<string, unknown>
+    if (data.packageScope === true && typeof data.language === 'string') return data.language
+  }
+  return undefined
+}
+
+/**
+ * Gather every inner-artefact owned by `packageId` (and the relations among them) from across all
+ * flow nodes — not just the node being drilled. The flat-modules projection (Python/TypeScript) keeps
+ * each module's artefacts on its own flat leaf node rather than nested under the parent package, so
+ * reading only the owner node's `innerArtefacts` produces an empty drill-down diagram for packages.
+ */
+function collectArtefactsUnderPackage(packageId: string): {
+  innerArtefacts: TritonInnerArtefactSpec[]
+  innerArtefactRelations: TritonInnerArtefactRelationSpec[]
+  crossArtefactRelations: TritonInnerArtefactRelationSpec[]
+} {
+  const innerArtefacts: TritonInnerArtefactSpec[] = []
+  const seenArtefact = new Set<string>()
+  for (const node of nodes.value) {
+    const data = (node.data ?? {}) as Record<string, unknown>
+    if (!Array.isArray(data.innerArtefacts)) continue
+    for (const artefact of data.innerArtefacts as TritonInnerArtefactSpec[]) {
+      if (artefact?.id && packageOwnsArtefact(packageId, artefact.id) && !seenArtefact.has(artefact.id)) {
+        seenArtefact.add(artefact.id)
+        innerArtefacts.push(artefact)
+      }
+    }
+  }
+  const ownedIds = new Set(innerArtefacts.map((a) => a.id))
+  const innerArtefactRelations: TritonInnerArtefactRelationSpec[] = []
+  const crossArtefactRelations: TritonInnerArtefactRelationSpec[] = []
+  const seenRel = new Set<string>()
+  const relKey = (r: TritonInnerArtefactRelationSpec) => `${r.from}${r.to}${r.label ?? ''}`
+  for (const node of nodes.value) {
+    const data = (node.data ?? {}) as Record<string, unknown>
+    const rels = [
+      ...(Array.isArray(data.innerArtefactRelations)
+        ? (data.innerArtefactRelations as TritonInnerArtefactRelationSpec[])
+        : []),
+      ...(Array.isArray(data.crossArtefactRelations)
+        ? (data.crossArtefactRelations as TritonInnerArtefactRelationSpec[])
+        : []),
+    ]
+    for (const rel of rels) {
+      const key = relKey(rel)
+      if (seenRel.has(key)) continue
+      const hasFrom = ownedIds.has(rel.from)
+      const hasTo = ownedIds.has(rel.to)
+      if (hasFrom && hasTo) {
+        seenRel.add(key)
+        innerArtefactRelations.push(rel)
+      } else if (hasFrom || hasTo) {
+        seenRel.add(key)
+        crossArtefactRelations.push(rel)
+      }
+    }
+  }
+  return { innerArtefacts, innerArtefactRelations, crossArtefactRelations }
+}
+
 function packageDiagramDataForNode(packageId: string): {
   id: string
   name: string
   subtitle?: string
   description?: string
   boxColor?: string
+  language?: string
   innerPackages?: readonly TritonInnerPackageSpec[]
   innerArtefacts?: readonly TritonInnerArtefactSpec[]
   innerArtefactRelations?: readonly TritonInnerArtefactRelationSpec[]
   crossArtefactRelations?: readonly TritonInnerArtefactRelationSpec[]
 } | null {
-  const direct = nodes.value.find((node) => String(node.id) === packageId)
+  // The whole diagram is one language; re-stamp it on the derived drill-down so leaves don't lose it
+  // and fall back to synthetic sbt drill notes (see ilographToFlow drill-note gate).
+  const language = activeDiagramLanguage()
+  // Artefacts live on the flat module leaf nodes (flat-modules projection), not nested under the
+  // package being drilled — gather across all nodes so drilled packages aren't empty.
+  const { innerArtefacts, innerArtefactRelations, crossArtefactRelations } =
+    collectArtefactsUnderPackage(packageId)
+
+  const direct = (nodes.value as Array<{ id: string | number }>).find((node) => String(node.id) === packageId) as TritonFlowNode | undefined
   if (direct) {
-    const data = (direct.data ?? {}) as Record<string, unknown>
+    const data = direct.data as unknown as Record<string, unknown>
     return {
       id: packageId,
       name: String(data.label ?? packageId),
       ...(typeof data.subtitle === 'string' ? { subtitle: data.subtitle } : {}),
       ...(typeof data.description === 'string' ? { description: data.description } : {}),
       ...(typeof data.boxColor === 'string' ? { boxColor: data.boxColor } : {}),
+      ...(language ? { language } : {}),
       ...(Array.isArray(data.innerPackages) ? { innerPackages: data.innerPackages as TritonInnerPackageSpec[] } : {}),
-      ...(Array.isArray(data.innerArtefacts) ? { innerArtefacts: data.innerArtefacts as TritonInnerArtefactSpec[] } : {}),
-      ...(Array.isArray(data.innerArtefactRelations)
-        ? { innerArtefactRelations: data.innerArtefactRelations as TritonInnerArtefactRelationSpec[] }
-        : {}),
-      ...(Array.isArray(data.crossArtefactRelations)
-        ? { crossArtefactRelations: data.crossArtefactRelations as TritonInnerArtefactRelationSpec[] }
-        : {}),
+      ...(innerArtefacts.length ? { innerArtefacts } : {}),
+      ...(innerArtefactRelations.length ? { innerArtefactRelations } : {}),
+      ...(crossArtefactRelations.length ? { crossArtefactRelations } : {}),
     }
   }
 
@@ -411,24 +501,11 @@ function packageDiagramDataForNode(packageId: string): {
       packageId,
     )
     if (!found) continue
-    const innerArtefacts = Array.isArray(data.innerArtefacts)
-      ? (data.innerArtefacts as TritonInnerArtefactSpec[]).filter((artefact) => packageOwnsArtefact(packageId, artefact.id))
-      : []
-    const ownedIds = new Set(innerArtefacts.map((artefact) => artefact.id))
-    const innerArtefactRelations = Array.isArray(data.innerArtefactRelations)
-      ? (data.innerArtefactRelations as TritonInnerArtefactRelationSpec[]).filter(
-          (rel) => ownedIds.has(rel.from) && ownedIds.has(rel.to),
-        )
-      : []
-    const crossArtefactRelations = Array.isArray(data.crossArtefactRelations)
-      ? (data.crossArtefactRelations as TritonInnerArtefactRelationSpec[]).filter(
-          (rel) => ownedIds.has(rel.from) || ownedIds.has(rel.to),
-        )
-      : []
     return {
       id: found.id,
       name: found.name,
       ...(found.subtitle ? { subtitle: found.subtitle } : {}),
+      ...(language ? { language } : {}),
       ...(found.innerPackages?.length ? { innerPackages: found.innerPackages } : {}),
       ...(innerArtefacts.length ? { innerArtefacts } : {}),
       ...(innerArtefactRelations.length ? { innerArtefactRelations } : {}),
@@ -450,6 +527,7 @@ function packageDiagramDocument(data: NonNullable<ReturnType<typeof packageDiagr
         ...(data.description ? { description: data.description } : {}),
         ...(data.boxColor ? { color: data.boxColor } : {}),
         'x-triton-node-type': 'package',
+        ...(data.language ? { 'x-triton-package-language': data.language } : {}),
         ...(data.innerPackages?.length ? { 'x-triton-inner-packages': data.innerPackages } : {}),
         ...(data.innerArtefacts?.length ? { 'x-triton-inner-artefacts': data.innerArtefacts } : {}),
         ...(data.innerArtefactRelations?.length
@@ -476,13 +554,48 @@ function collectInnerPackageIds(pkgs: readonly TritonInnerPackageSpec[] | undefi
   }
 }
 
+/**
+ * Drill into a package on a CodeModel-backed (Python) tab by re-projecting the stored model scoped to
+ * that package — always as `package-graph` (drilling is the one-level navigation). The new tab keeps the
+ * model so it can drill deeper and be toggled to flat. Avoids the lossy flow-node rebuild.
+ */
+async function openPythonPackageDrillTab(
+  packageId: string,
+  parentKey: string,
+  parentEntry: { model: CodeModel },
+): Promise<void> {
+  const innerTabKey = `package-inner:${parentKey}#${encodeURIComponent(packageId)}`
+  const name = packageId.split('.').pop() || packageId
+  const { codeModelToIlographDocument } = await import('../../packages/triton-core/src/codeModelToIlograph')
+  pythonTabModel.set(innerTabKey, { model: parentEntry.model, scopeId: packageId })
+  await openOrActivateTab({ key: innerTabKey, title: name, iconUrl: folderIconUrl }, async () => {
+    sourcePath.value = `${sourcePath.value || parentKey}#${packageId}`
+    const doc = codeModelToIlographDocument(parentEntry.model, {
+      projectionMode: 'package-graph',
+      scopeContainerId: packageId,
+      title: name,
+    })
+    await applyDoc(stringifyIlographYaml(doc), `${name}.ilograph.yaml`, false, { moduleNodeType: 'package' })
+  })
+  const innerTab = tabs.value.find((t) => t.key === innerTabKey)
+  if (innerTab) {
+    innerTab.projectLanguage = parentEntry.model.language
+    innerTab.pythonViewMode = 'package-graph'
+  }
+}
+
 async function openPackageInnerDiagramTab(packageId: string): Promise<void> {
+  const parentKey = activeTab.value?.key ?? 'diagram'
+  const parentEntry = pythonTabModel.get(parentKey)
+  if (parentEntry) {
+    await openPythonPackageDrillTab(packageId, parentKey, parentEntry)
+    return
+  }
   const data = packageDiagramDataForNode(packageId)
   if (!data) {
     status.value = `Cannot open package diagram — package not found: ${packageId}`
     return
   }
-  const parentKey = activeTab.value?.key ?? 'diagram'
   const parentTab = tabs.value.find((t) => t.key === parentKey)
   const innerTabKey = `package-inner:${parentKey}#${encodeURIComponent(packageId)}`
   await openOrActivateTab(
@@ -519,6 +632,7 @@ async function openPackageInnerDiagramTab(packageId: string): Promise<void> {
   )
   const innerTab = tabs.value.find((t) => t.key === innerTabKey)
   if (innerTab) {
+    if (data.language) innerTab.projectLanguage = data.language
     if (typeof parentTab?.dojoDepth === 'number') innerTab.dojoDepth = parentTab.dojoDepth
     else if (parentKey === `dojo:${CLASS_STACKING_DOJO_ID}` && packageId === CLASS_STACKING_INNER_PACKAGE_ID) {
       innerTab.dojoDepth = dojoClassStackCount.value
@@ -707,6 +821,7 @@ const dojoMatrixArtefactCount = ref(
 /** All bundled examples (`build.sbt` files) across every registered examples-root. */
 const sbtExamplesAll = listSbtExamples()
 const tsExamplesAll = listTsExamples()
+const pythonExamplesAll = listPythonExamples()
 
 /** Tutorial-style bundled examples: 01–12 numbered prefixes (the `sbt-examples` tutorial set). */
 function isTutorialSbtFolder(dir: string): boolean {
@@ -754,6 +869,11 @@ const sbtExamplesLargeOss = sbtExamplesAll.filter(
 )
 const scalaExamples = sbtExamplesAll.filter((e) => e.root === 'scala-examples')
 const tsExamples = tsExamplesAll.filter((e) => e.root === 'ts-examples')
+const pythonExamples = pythonExamplesAll.filter((e) => e.root === 'python-examples')
+
+function pythonExampleSelectionId(root: string, dir: string): string {
+  return `py:${root}/${dir}`
+}
 const dojoExamples = computed(() => [
   { id: PACKAGE_STACKING_DOJO_ID, title: 'Package stacking' },
   { id: CLASS_STACKING_DOJO_ID, title: 'Class Stacking' },
@@ -832,6 +952,15 @@ const tritonStarterCards = computed<StarterCard[]>(() => {
       dockerConceptIcon: d.icon,
     })
   }
+  for (const e of pythonExamples) {
+    rows.push({
+      kind: 'python',
+      selectionId: pythonExampleSelectionId(e.root, e.dir),
+      title: exampleOptionLabel(e.dir),
+      subtitle: e.path,
+      group: 'Python',
+    })
+  }
   return rows
 })
 
@@ -871,6 +1000,22 @@ interface DiagramTab {
   sourceContent?: string
   sourceLanguage?: string
   sourceLine?: number
+  /**
+   * Source language of the analysed project (`python`, `scala`, `typescript`). Distinct from
+   * {@link sourceLanguage} (Monaco highlight mode for source-view tabs). Used to re-stamp derived
+   * drill-down diagrams with `x-triton-package-language` so they keep real language metadata instead
+   * of falling back to synthetic sbt drill notes.
+   */
+  projectLanguage?: string
+  /** Current projection mode for CodeModel-backed (Python) tabs; drives the toolbar toggle. */
+  pythonViewMode?: PythonViewMode
+  /**
+   * Node id the diagram was layer-drilled into when the user last left this tab, or `null` for the
+   * full overview. Saved nodes are always the clean (un-drilled) layout; this lets us re-apply the
+   * drill on re-activation so returning to a tab restores the focus the user had — while the fresh
+   * drill captures a new snapshot so they can still drill back out to the complete overview.
+   */
+  layerDrillId?: string | null
 }
 
 interface RuntimeWorkspaceBundle {
@@ -879,6 +1024,10 @@ interface RuntimeWorkspaceBundle {
   workspaceName: string
   buildSbt: { relPath: string; source: string } | null
   scalaFiles: Array<{ relPath: string; source: string }>
+  pyFiles: Array<{ relPath: string; source: string }>
+  /** Per-package Python source roots (workspace-relative, e.g. `nova-backend/src`). Stripped from
+   * file paths to derive module paths so `src/` layouts don't produce `src.app.…` prefixes. */
+  pythonSourceRoots: string[]
   testLog: { relPath: string; text: string } | null
   /** All discovered reports (multi-module); merged client-side for diagrams. */
   coverageReports: Array<{ relPath: string; xml: string }>
@@ -933,6 +1082,80 @@ const activeTab = computed<DiagramTab | undefined>(() =>
   tabs.value.find((t) => t.id === activeTabId.value),
 )
 
+/**
+ * Current Python projection mode for the active tab, or null when it isn't a CodeModel-backed tab.
+ * Reads the reactive `pythonViewMode` tab field (set only for Python tabs) — not the non-reactive
+ * `pythonTabModel` Map, so the toolbar toggle stays in sync.
+ */
+const activePythonViewMode = computed<PythonViewMode | null>(() => activeTab.value?.pythonViewMode ?? null)
+
+/** Toolbar toggle handler: re-project the active tab's stored CodeModel in the chosen mode. */
+async function setPythonViewMode(mode: PythonViewMode): Promise<void> {
+  const tab = activeTab.value
+  if (!tab) return
+  const entry = pythonTabModel.get(tab.key)
+  if (!entry || tab.pythonViewMode === mode) return
+  tab.pythonViewMode = mode
+  const { codeModelToIlographDocument } = await import('../../packages/triton-core/src/codeModelToIlograph')
+  const doc = codeModelToIlographDocument(entry.model, {
+    projectionMode: mode,
+    scopeContainerId: entry.scopeId,
+    title: tab.title,
+  })
+  await applyDoc(stringifyIlographYaml(doc), tab.fileName || `${tab.title}.ilograph.yaml`, false, {
+    moduleNodeType: 'package',
+  })
+}
+
+/** True when the active tab is CodeModel-backed (Python), i.e. a full-model export is available. */
+const activeTabHasCodeModel = computed(() => pythonTabModel.has(activeTab.value?.key ?? ''))
+
+/** Trigger a client-side download of `text` as `fileName`. */
+function downloadTextFile(fileName: string, text: string, mime = 'text/yaml'): void {
+  const blob = new Blob([text], { type: `${mime};charset=utf-8` })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+/**
+ * Export the active Python tab's complete code model (current drill scope, fully expanded) as one
+ * Ilograph YAML file, slimmed for LLM consumption. Unlike the YAML editor preview — which only
+ * mirrors the rendered diagram — this includes every sub-package, module and class plus all import
+ * edges within the scope.
+ */
+async function exportFullModelYaml(): Promise<void> {
+  const tab = activeTab.value
+  const entry = tab ? pythonTabModel.get(tab.key) : undefined
+  if (!tab || !entry) {
+    status.value = 'Full export is only available for Python diagrams.'
+    return
+  }
+  const { codeModelToFullExportDocument } = await import(
+    '../../packages/triton-core/src/codeModelToIlograph'
+  )
+  const doc = codeModelToFullExportDocument(entry.model, {
+    scopeContainerId: entry.scopeId,
+    detail: 'slim',
+    title: tab.title,
+    description: `Full code-model export for ${tab.title}.`,
+  })
+  const yaml = stringifyIlographYaml(doc)
+  const scopeLeaf = entry.scopeId ? `.${entry.scopeId.split(/[./]/).pop()}` : ''
+  const base = (tab.title || 'code-model').replace(/[^A-Za-z0-9._-]+/g, '-')
+  downloadTextFile(`${base}${scopeLeaf}.full.ilograph.yaml`, yaml)
+  const edgeCount = doc.perspectives?.[0]?.relations?.length ?? 0
+  const topCount = doc.resources?.length ?? 0
+  status.value = `Exported ${base}${scopeLeaf}.full.ilograph.yaml (${topCount} top resource${
+    topCount === 1 ? '' : 's'
+  }, ${edgeCount} import edge${edgeCount === 1 ? '' : 's'}).`
+}
+
 const nodeTypesMenuSig = computed(() =>
   collectNodeTypeKeys(nodes.value, activeTab.value?.key ?? '').sort().join('\n'),
 )
@@ -967,7 +1190,9 @@ function parsePackageInnerTabKey(key: string | undefined): { parentKey: string; 
   const k = String(key ?? '')
   if (!k.startsWith('package-inner:')) return null
   const body = k.slice('package-inner:'.length)
-  const hash = body.indexOf('#')
+  /** Last `#` splits off the package id (it is URI-encoded, so it cannot contain a raw `#`);
+   *  the parent key may itself contain `#` (project-scoped `packages:` keys, nested drills). */
+  const hash = body.lastIndexOf('#')
   if (hash < 0) return null
   return {
     parentKey: body.slice(0, hash),
@@ -996,7 +1221,7 @@ function isClassInheritanceChainPackageInnerKey(key: string | undefined): boolea
 function parseRuntimeTabKey(
   key: string,
 ): { workspacePath: string; workspaceName: string; projectId?: string } | null {
-  const prefixes = ['runtime-sbt:', 'runtime-packages:']
+  const prefixes = ['runtime-sbt:', 'runtime-packages:', 'runtime-python:']
   for (const prefix of prefixes) {
     if (!key.startsWith(prefix)) continue
     const body = key.slice(prefix.length)
@@ -1160,16 +1385,16 @@ function readFlowViewport(): { width: number; height: number } {
  *
  * Skipped when no workspace is active (boot path: tab not yet selected).
  */
-function applyOverlayToFlowNodes(nodeList: any[]): void {
+function applyOverlayToFlowNodes(nodeList: TritonFlowNode[]): void {
   const ws = activeWorkspaceKey.value
   for (const node of nodeList) {
-    const data = (node.data ??= {})
+    const data = (node.data ?? ({} as TritonNodeData))
     if (typeof data.description === 'string' && data.scannerDescription === undefined) {
       data.scannerDescription = data.description
     }
     if (!ws) continue
     const ov = getNodeOverlay(ws, String(node.id))
-    if (ov.color) data.boxColor = ov.color
+    if (ov.color && isNamedBoxColor(ov.color)) data.boxColor = ov.color
     if (ov.pinned === true) data.pinned = true
     if (typeof ov.notes === 'string' && ov.notes) data.notes = ov.notes
     if (typeof ov.posX === 'number' && typeof ov.posY === 'number') {
@@ -1393,6 +1618,15 @@ async function fetchRuntimeWorkspaceBundle(
           source: String(f?.source ?? ''),
         }))
       : [],
+    pyFiles: Array.isArray(body.pyFiles)
+      ? body.pyFiles.map((f) => ({
+          relPath: String(f?.relPath ?? ''),
+          source: String(f?.source ?? ''),
+        }))
+      : [],
+    pythonSourceRoots: Array.isArray(body.pythonSourceRoots)
+      ? body.pythonSourceRoots.map((r) => String(r))
+      : [],
     testLog:
       body.testLog && typeof body.testLog === 'object'
         ? {
@@ -1473,6 +1707,14 @@ async function selectExample(id: string) {
     const slug = id.slice('docker:'.length).trim()
     if (!slug) return
     await openDockerExampleTab(slug)
+    return
+  }
+  if (id.startsWith('py:')) {
+    const body = id.slice('py:'.length)
+    const slash = body.indexOf('/')
+    if (slash < 0) return
+    await openPythonExampleTab(body.slice(0, slash), body.slice(slash + 1))
+    return
   }
 }
 
@@ -1497,8 +1739,36 @@ function snapshotActiveTab(): void {
   t.yamlBaseline = yamlBaseline.value
 }
 
+/**
+ * Before a tab is snapshotted on the way out, record which box it was drilled into and restore the
+ * un-drilled layout so the saved `nodes` are a clean overview. The GraphDrillIn component is shared
+ * across all diagram tabs: its `layerDrillId` / `layerSnapshot` refs describe the drill on the
+ * *current* tab only, and the next tab's document load nulls them (`resetNavigationAfterDocReplace`).
+ * Saving the drilled nodes as-is would strand the tab in a drilled state with no snapshot left to
+ * drill back out. Instead we persist the drilled id on the tab and re-apply it on re-activation
+ * (see {@link reapplyTabLayerDrill}), so returning restores the user's focus while a fresh snapshot
+ * still lets them drill back out to the full overview.
+ */
+async function recordAndClearOutgoingTabDrillState(): Promise<void> {
+  const t = activeTab.value
+  const drilledId = graphRef.value?.activeLayerDrillId?.() ?? null
+  if (t) t.layerDrillId = drilledId
+  if (!drilledId) return
+  graphRef.value?.clearLayerDrillForTabSwitch?.()
+  await nextTick()
+}
+
+/** Re-apply a tab's saved layer drill after its clean nodes are restored. Returns true if drilled. */
+async function reapplyTabLayerDrill(tab: DiagramTab): Promise<boolean> {
+  const id = tab.layerDrillId
+  if (!id) return false
+  const applied = await graphRef.value?.applyLayerDrill?.(id)
+  return applied === true
+}
+
 async function activateTabById(id: string): Promise<void> {
   if (activeTabId.value === id) return
+  await recordAndClearOutgoingTabDrillState()
   snapshotActiveTab()
   const target = tabs.value.find((t) => t.id === id)
   if (!target) return
@@ -1513,6 +1783,13 @@ async function activateTabById(id: string): Promise<void> {
     await nextTick()
     return
   }
+  /** Flush the shared Vue Flow store first: it reconciles by node/edge id, so restoring a
+   *  snapshot directly over another tab's elements lets stale same-id edges (endpoints absent in
+   *  this tab) fail validation and silently vanish from the v-model. `openOrActivateTab` clears
+   *  the refs for the same reason. */
+  nodes.value = []
+  edges.value = []
+  await nextTick()
   /** Assign whole arrays so Vue Flow re-syncs from the saved snapshot (object identities differ
    *  per tab, which is fine — it gives a clean rebuild rather than mixing previous-tab state). */
   nodes.value = target.nodes
@@ -1523,7 +1800,11 @@ async function activateTabById(id: string): Promise<void> {
   yamlBaseline.value = target.yamlBaseline
   await nextTick()
   graphRef.value?.refreshEdgeEmphasis?.()
-  await graphRef.value?.fitToViewport()
+  /** Restore the focus the user left this tab in. The drill re-captures a fresh snapshot, so they
+   *  can still drill back out to the complete overview without losing the hidden siblings. */
+  if (!(await reapplyTabLayerDrill(target))) {
+    await graphRef.value?.fitToViewport()
+  }
 }
 
 function reorderRuntimeHomeFirst(): void {
@@ -1740,6 +2021,7 @@ async function openOrActivateTab(
     }
     return
   }
+  await recordAndClearOutgoingTabDrillState()
   snapshotActiveTab()
   const tab: DiagramTab = {
     id: uid(),
@@ -3052,6 +3334,8 @@ function isRestorableTabKey(key: string): boolean {
     key.startsWith('packages:') ||
     key.startsWith('runtime-sbt:') ||
     key.startsWith('runtime-packages:') ||
+    key.startsWith('runtime-python:') ||
+    key.startsWith('py:') ||
     key.startsWith('docker:')
   )
 }
@@ -3190,6 +3474,29 @@ async function openTabFromUrlKey(key: string): Promise<boolean> {
     await openRuntimePackagesTab(parsed.workspacePath, parsed.workspaceName, parsed.projectId)
     return true
   }
+  if (trimmed.startsWith('runtime-python:')) {
+    const parsed = parseRuntimeTabKey(trimmed)
+    if (!parsed) return false
+    await openRuntimePythonTab(parsed.workspacePath, parsed.workspaceName)
+    return true
+  }
+  if (trimmed.startsWith('py:')) {
+    const body = trimmed.slice('py:'.length)
+    const slash = body.indexOf('/')
+    if (slash < 0) return false
+    await openPythonExampleTab(body.slice(0, slash), body.slice(slash + 1))
+    return true
+  }
+  if (trimmed.startsWith('package-inner:')) {
+    const inner = parsePackageInnerTabKey(trimmed)
+    if (!inner) return false
+    /** Restore the parent first (recursively, so nested drill chains work); the drill re-projects
+     *  from the then-active parent tab's loaded data. */
+    const parentOpened = await openTabFromUrlKey(inner.parentKey)
+    if (!parentOpened) return false
+    await openPackageInnerDiagramTab(inner.packageId)
+    return true
+  }
   return false
 }
 
@@ -3259,6 +3566,57 @@ async function openTsExampleTab(root: string, dir: string, file: string): Promis
       })
     },
   )
+}
+
+function importPythonModules() {
+  return Promise.all([
+    import('./python/parsePythonWithTreeSitter'),
+    import('../../packages/triton-core/src/pythonCodeModel'),
+    import('../../packages/triton-core/src/codeModelToIlograph'),
+  ])
+}
+
+async function openPythonExampleTab(root: string, dir: string): Promise<void> {
+  const hit = pythonExamplesAll.find((e) => e.root === root && e.dir === dir)
+  if (!hit) {
+    status.value = `Cannot open Python example — not found: ${root}/${dir}`
+    return
+  }
+  await openOrActivateTab(
+    { key: pythonExampleSelectionId(root, dir), title: `Python: ${dir}`, iconUrl: pythonIconUrl },
+    async () => {
+      sourcePath.value = hit.path
+      try {
+        const [{ summarizePython }, { buildPythonCodeModelFromSummaries }, { codeModelToIlographDocument }] =
+          await importPythonModules()
+        const fileEntries = Object.entries(hit.files)
+        const summaries = await Promise.all(
+          fileEntries.map(([relPath, source]) => summarizePython(source, relPath, `${root}/${dir}`)),
+        )
+        const codeModel = buildPythonCodeModelFromSummaries(
+          summaries.map((s, i) => ({ filePath: fileEntries[i]![0], summary: s })),
+          { name: `Python: ${dir}` },
+        )
+        pythonTabModel.set(pythonExampleSelectionId(root, dir), { model: codeModel })
+        const ilographDoc = codeModelToIlographDocument(codeModel, {
+          resourceId: dir,
+          title: `Python: ${dir}`,
+          description: `Bundled Python example: \`${root}/${dir}/\``,
+          projectionMode: 'package-graph',
+        })
+        await applyDoc(stringifyIlographYaml(ilographDoc), `${dir}.python.ilograph.yaml`, true, {
+          moduleNodeType: 'package',
+        })
+      } catch (err) {
+        status.value = `Failed to load Python example: ${(err as Error).message}`
+      }
+    },
+  )
+  const tab = tabs.value.find((t) => t.key === pythonExampleSelectionId(root, dir))
+  if (tab) {
+    tab.projectLanguage = 'python'
+    tab.pythonViewMode = 'package-graph'
+  }
 }
 
 async function openTsPackagesTab(root: string, dir: string, file: string, moduleId: string): Promise<void> {
@@ -3452,6 +3810,22 @@ async function openRuntimePackagesTab(workspacePath: string, workspaceName: stri
   )
 }
 
+async function openRuntimePythonTab(workspacePath: string, workspaceName: string): Promise<void> {
+  await openOrActivateTab(
+    {
+      key: `runtime-python:${workspacePath}::${workspaceName}`,
+      title: workspaceName,
+      iconUrl: pythonIconUrl,
+    },
+    () => loadPythonPackagesForRuntimeWorkspace(workspacePath, workspaceName),
+  )
+  const tab = tabs.value.find((t) => t.key === `runtime-python:${workspacePath}::${workspaceName}`)
+  if (tab) {
+    tab.projectLanguage = 'python'
+    tab.pythonViewMode = 'package-graph'
+  }
+}
+
 async function reloadActiveRuntimeTab(): Promise<void> {
   const session = runtimeWorkspaceSession.value
   const fromActive = activeRuntimeWorkspace.value
@@ -3469,6 +3843,11 @@ async function reloadActiveRuntimeTab(): Promise<void> {
   if (key.startsWith('runtime-packages:')) {
     const parsed = parseRuntimeTabKey(key)
     await loadScalaPackagesForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName, parsed?.projectId)
+    snapshotActiveTab()
+    return
+  }
+  if (key.startsWith('runtime-python:')) {
+    await loadPythonPackagesForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName)
     snapshotActiveTab()
     return
   }
@@ -3508,6 +3887,14 @@ async function reloadActiveExampleTab(): Promise<void> {
     if (slash < 0) return
     const projectId = body.includes('#') ? body.slice(body.indexOf('#') + 1) : ''
     await loadScalaPackagesForExample(cleaned.slice(0, slash), cleaned.slice(slash + 1), projectId || undefined)
+    snapshotActiveTab()
+    return
+  }
+  if (key.startsWith('py:')) {
+    const body = key.slice('py:'.length)
+    const slash = body.indexOf('/')
+    if (slash < 0) return
+    await openPythonExampleTab(body.slice(0, slash), body.slice(slash + 1))
     snapshotActiveTab()
   }
 }
@@ -3638,7 +4025,6 @@ async function loadScalaPackagesForExample(root: string, dir: string, projectId?
   }
   status.value = `Parsing ${files.length} Scala file${files.length === 1 ? '' : 's'} with tree-sitter…`
   try {
-    const graph = await buildScalaPackageGraph(files)
     const sourceLabel = projectScope
       ? `${root}/${dir}/${normalizeProjectBaseDir(projectScope) || '.'}/`
       : `${root}/${dir}/`
@@ -3647,7 +4033,7 @@ async function loadScalaPackagesForExample(root: string, dir: string, projectId?
     const reps = getScoverageReportsFor(root, dir)
     const parsedTestLog = log?.text ? parseSbtTestLog(log.text) : undefined
     const parsedCoverage = reps.length ? mergeParsedScoverageXml(reps.map((r) => parseScoverageXml(r.xml))) : undefined
-    const ilographDoc = scalaPackageGraphToIlographDocument(graph, {
+    const { graph, doc: ilographDoc } = await parseScalaFilesToDoc(files, {
       title: projectScope ? `Scala packages: ${dir}:${projectScope.id}` : `Scala packages: ${dir}`,
       sourcePath: sourceLabel,
     })
@@ -3803,14 +4189,13 @@ async function loadScalaPackagesForRuntimeWorkspace(workspacePath: string, works
       return
     }
     status.value = `Parsing ${files.length} Scala file${files.length === 1 ? '' : 's'} from ${workspaceName}…`
-    const graph = await buildScalaPackageGraph(files)
     const sourceLabel = projectScope
       ? `${workspacePath}/${normalizeProjectBaseDir(projectScope) || '.'}/`
       : `${workspacePath}/`
     sourcePath.value = sourceLabel
     const parsedTestLog = bundle.testLog?.text ? parseSbtTestLog(bundle.testLog.text) : undefined
     const mergedRuntimeCoverage = mergeParsedCoverageFromRuntimeBundle(bundle)
-    const ilographDoc = scalaPackageGraphToIlographDocument(graph, {
+    const { graph, doc: ilographDoc } = await parseScalaFilesToDoc(files, {
       title: projectScope ? `Scala packages: ${workspaceName}:${projectScope.id}` : `Scala packages: ${workspaceName}`,
       sourcePath: sourceLabel,
     })
@@ -3867,6 +4252,47 @@ async function loadScalaPackagesForRuntimeWorkspace(workspacePath: string, works
       : `Loaded ${files.length} Scala file${files.length === 1 ? '' : 's'} from runtime workspace ${workspaceName}.`
   } catch (err) {
     status.value = `Failed to load runtime Scala workspace: ${(err as Error).message}`
+  }
+}
+
+async function loadPythonPackagesForRuntimeWorkspace(workspacePath: string, workspaceName: string): Promise<void> {
+  status.value = `Loading Python workspace from ${workspaceName} via Triton runtime…`
+  try {
+    const bundle = await fetchRuntimeWorkspaceBundle(workspacePath, workspaceName)
+    const files = bundle.pyFiles
+    if (!files.length) {
+      sourcePath.value = `${workspacePath}/`
+      nodes.value = []
+      edges.value = []
+      yamlBaseline.value = yamlPreview.value
+      status.value = `No .py files found under ${workspacePath}.`
+      return
+    }
+    status.value = `Parsing ${files.length} Python file${files.length === 1 ? '' : 's'} from ${workspaceName}…`
+    sourcePath.value = `${workspacePath}/`
+    const [{ summarizePython }, { buildPythonCodeModelFromSummaries }, { codeModelToIlographDocument }] =
+      await importPythonModules()
+    const summaries = await Promise.all(
+      files.map((f) => summarizePython(f.source, f.relPath, workspacePath, bundle.pythonSourceRoots)),
+    )
+    const codeModel = buildPythonCodeModelFromSummaries(
+      summaries.map((s, i) => ({ filePath: files[i]!.relPath, summary: s })),
+      { name: `Python packages: ${workspaceName}` },
+    )
+    pythonTabModel.set(`runtime-python:${workspacePath}::${workspaceName}`, { model: codeModel })
+    const ilographDoc = codeModelToIlographDocument(codeModel, {
+      resourceId: workspaceName,
+      title: `Python packages: ${workspaceName}`,
+      description: `Source: \`${workspacePath}/\``,
+      projectionMode: 'package-graph',
+    })
+    const yaml = stringifyIlographYaml(ilographDoc)
+    await applyDoc(yaml, `${workspaceName}.packages.runtime.ilograph.yaml`, false, {
+      moduleNodeType: 'package',
+    })
+    status.value = `Loaded ${files.length} Python file${files.length === 1 ? '' : 's'} from runtime workspace ${workspaceName}.`
+  } catch (err) {
+    status.value = `Failed to load runtime Python workspace: ${(err as Error).message}`
   }
 }
 
@@ -4227,9 +4653,9 @@ function computeSbtDiff(original: string, modified: string): SbtDiff {
 }
 
 function descriptionForModuleName(name: string): string {
-  const hit = nodes.value.find(
+  const hit = (nodes.value as Array<{ type?: string | null; data: unknown }>).find(
     (n) => isLeafBoxNode(n) && String((n.data as { label?: string })?.label ?? '') === name,
-  )
+  ) as TritonFlowNode | undefined
   const d = (hit?.data as { description?: string } | undefined)?.description
   return typeof d === 'string' ? d.trim() : ''
 }
@@ -4721,6 +5147,7 @@ onUnmounted(() => {
           :metric-tooltips-enabled="metricTooltipsEnabled"
           :focus-relation-depth="focusRelationDepth"
           :metric-visibility="metricVisibility"
+          :view-mode="activePythonViewMode"
           @update:node-type-visible="setNodeTypeVisible"
           @update:relation-type-visible="setRelationTypeVisible"
           @update:metric-tooltips-enabled="(v) => (metricTooltipsEnabled = v)"
@@ -4728,6 +5155,7 @@ onUnmounted(() => {
           @update:metric-visible="
             (metricKey, visible) => (metricVisibility = { ...metricVisibility, [metricKey]: visible })
           "
+          @update:view-mode="(m) => void setPythonViewMode(m)"
         />
         <div
           v-if="!activeSourceTab && activeTab?.kind !== 'runtime' && ideSession"
@@ -4766,7 +5194,7 @@ onUnmounted(() => {
             :ide-session="ideSession"
             :status-message="status"
             @open-sbt="(p) => void openRuntimeSbtTab(p.workspacePath, p.workspaceName)"
-            @open-packages="(p) => void openRuntimePackagesTab(p.workspacePath, p.workspaceName)"
+            @open-packages="(p) => p.kind === 'python' ? void openRuntimePythonTab(p.workspacePath, p.workspaceName) : void openRuntimePackagesTab(p.workspacePath, p.workspaceName)"
             @select-example="(id) => void selectExample(id)"
             @open-workspace-test-log="(p) => void openRuntimeWorkspaceTestLogTab(p.workspacePath, p.workspaceName)"
           />
@@ -4886,6 +5314,15 @@ onUnmounted(() => {
               </span>
               <button type="button" class="btn side-yaml-bar__btn" @click="acceptYamlBaseline">
                 Accept baseline
+              </button>
+              <button
+                v-if="activeTabHasCodeModel"
+                type="button"
+                class="btn side-yaml-bar__btn"
+                title="Download the complete code model for the current scope (every package, module, class and import) as one Ilograph YAML, slimmed for feeding to an LLM."
+                @click="exportFullModelYaml"
+              >
+                Export full YAML
               </button>
             </div>
             <YamlDiffEditor class="yaml-diff" :original="yamlBaseline" :modified="yamlPreview" />

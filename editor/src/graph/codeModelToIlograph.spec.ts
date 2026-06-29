@@ -143,6 +143,7 @@ describe('codeModelToIlographDocument', () => {
     expect(directArtefact).toMatchObject({
       id: 'editor::class:App',
       'x-triton-node-type': 'artefact',
+      'x-triton-language': 'typescript',
       'x-triton-declaration': 'export class App',
       'x-triton-constructor-signatures': [{ signature: 'constructor(widget: Widget)', startRow: 24 }],
     })
@@ -151,6 +152,71 @@ describe('codeModelToIlographDocument', () => {
       orientation: 'leftToRight',
       relations: [{ from: 'editor/graph', to: 'editor/components', label: 'imports' }],
     })
+  })
+
+  it('appends lines-of-code to package subtitles when fileLineCounts is supplied', () => {
+    const baseModel: CodeModel = {
+      id: 'loc-demo',
+      name: 'loc-demo',
+      language: 'python',
+      root: {
+        id: 'loc-demo',
+        name: 'loc-demo',
+        kind: 'workspace',
+        language: 'python',
+        artefacts: [],
+        children: [
+          {
+            id: 'api',
+            name: 'api',
+            kind: 'package',
+            language: 'python',
+            source: { file: 'api/__init__.py', startRow: 0 },
+            artefacts: [{
+              id: 'api::class:Router',
+              name: 'Router',
+              kind: 'class',
+              language: 'python',
+              declaration: 'class Router',
+              source: { file: 'api/router.py', startRow: 0, endRow: 40 },
+              members: [],
+            }],
+            children: [],
+          },
+          {
+            id: 'util',
+            name: 'util',
+            kind: 'package',
+            language: 'python',
+            source: { file: 'util/__init__.py', startRow: 0 },
+            artefacts: [{
+              id: 'util::function:slugify',
+              name: 'slugify',
+              kind: 'function',
+              language: 'python',
+              declaration: 'def slugify(value)',
+              source: { file: 'util/text.py', startRow: 0, endRow: 9 },
+              members: [],
+            }],
+            children: [],
+          },
+        ],
+      },
+      relations: [],
+    }
+
+    const withCounts = codeModelToIlographDocument(
+      { ...baseModel, fileLineCounts: { 'api/__init__.py': 12, 'api/router.py': 88, 'util/text.py': 30 } },
+      { projectionMode: 'package-graph' },
+    )
+    const apiPkg = withCounts.resources?.find((r) => (r as { id?: string }).id === 'api')
+    // 12 (__init__.py) + 88 (router.py) summed across the package subtree.
+    expect((apiPkg as { subtitle?: string }).subtitle).toMatch(/, 100 loc$/)
+
+    // Without counts, no LOC suffix is added.
+    const noCounts = codeModelToIlographDocument(baseModel, { projectionMode: 'package-graph' })
+    const apiNoLoc = noCounts.resources?.find((r) => (r as { id?: string }).id === 'api')
+    expect((apiNoLoc as { subtitle?: string }).subtitle).not.toMatch(/loc/)
   })
 
   it('normalizes top-level constructor signatures for artefact leaves', () => {
@@ -166,5 +232,22 @@ describe('codeModelToIlographDocument', () => {
     expect(flow.nodes[0]?.data).toMatchObject({
       constructorSignatures: [{ signature: 'constructor(widget: Widget)', startRow: 24 }],
     })
+  })
+
+  it('carries the real leaf language into flow node data (drives language-specific presentation)', () => {
+    const flow = ilographDocumentToFlow({
+      resources: [{
+        id: 'app::function:get_analysis',
+        name: 'get_analysis',
+        subtitle: 'function',
+        'x-triton-node-type': 'artefact',
+        'x-triton-language': 'python',
+      }],
+    })
+
+    // The real language wins over the decorative hash so a Python def stops rendering Scala chrome.
+    expect(flow.nodes[0]?.data).toMatchObject({ language: 'python' })
+    // ...and the Scala-specific synthetic sbt drill note is suppressed for non-Scala leaves.
+    expect((flow.nodes[0]?.data as { drillNote?: string }).drillNote).toBeUndefined()
   })
 })

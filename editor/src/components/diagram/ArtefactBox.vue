@@ -18,12 +18,15 @@
 import { computed } from 'vue'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
 import { artefactSubtitleSansMetrics } from '../../graph/linesOfCodeDisplay'
+import { languageProfile } from '../../graph/languageProfiles'
 import PackageBox from './PackageBox.vue'
-import ScalaArtefactPanels from './ScalaArtefactPanels.vue'
+import ArtefactPanels from './ArtefactPanels.vue'
 import KindBadge from './KindBadge.vue'
 
 const props = defineProps<{
   boxId: string
+  /** Source language (`scala`, `python`, …); drives the kind badge, icon, and panel presentation. */
+  language?: string
   label: string
   /** The Scala kind keyword — `class`, `case class`, `object`, `trait`, `enum`, `def`, … */
   subtitle?: string
@@ -101,33 +104,16 @@ const emit = defineEmits<{
 
 const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
 
+const profile = computed(() => languageProfile(props.language))
+
 /**
- * Map a Scala kind keyword to a single-letter badge. The mapping is intentionally short and
- * lossy — the full kind keyword is shown as the subtitle, the badge is a quick eyeball cue. We
- * fall back to the first uppercased letter so future kinds (e.g. `given`) still render something
- * meaningful without requiring a code change here.
+ * Single-letter kind badge for the focused header. The full kind keyword is shown as the subtitle;
+ * the badge is just a quick eyeball cue. Resolved through the language profile so each language can
+ * tune the mapping; the shared default falls back to the first uppercased letter for unknown kinds.
  */
-const kindBadge = computed(() => {
-  const k = artefactSubtitleSansMetrics(props.subtitle).toLowerCase()
-  if (!k) return '?'
-  // TypeScript kinds (used by TS example inner artefacts).
-  if (k === 'interface') return 'I'
-  if (k === 'class') return 'C'
-  if (k === 'function') return 'ƒ'
-  if (k === 'type') return 'τ'
-  if (k === 'enum') return 'E'
-  // Scala kinds.
-  if (k === 'case class' || k === 'class') return 'C'
-  if (k === 'case object' || k === 'object') return 'O'
-  if (k === 'trait') return 'T'
-  if (k === 'enum') return 'E'
-  if (k === 'def') return 'ƒ'
-  if (k === 'val') return 'v'
-  if (k === 'var') return 'V'
-  if (k === 'type') return 'τ'
-  if (k === 'given') return 'G'
-  return k.charAt(0).toUpperCase()
-})
+const kindBadge = computed(() =>
+  profile.value.kindBadge(artefactSubtitleSansMetrics(props.subtitle)),
+)
 </script>
 
 <template>
@@ -157,8 +143,9 @@ const kindBadge = computed(() => {
     </template>
 
     <template #focused-body>
-      <ScalaArtefactPanels
+      <ArtefactPanels
         :box-id="boxId"
+        :language="language"
         :description="description"
         :constructor-params="constructorParams"
         :constructor-signatures="constructorSignatures"

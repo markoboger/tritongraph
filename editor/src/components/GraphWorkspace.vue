@@ -7,12 +7,14 @@ import {
   getRectOfNodes,
   type Connection,
   type CoordinateExtent,
+  type EdgeTypesObject,
   type NodeTypesObject,
   useVueFlow,
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import '@vue-flow/node-resizer/dist/style.css'
-import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, unref, watch, withDefaults } from 'vue'
+import { computed, markRaw, nextTick, onMounted, onUnmounted, provide, reactive, ref, unref, watch } from 'vue'
+import LaneSmoothStepEdge from './diagram/LaneSmoothStepEdge'
 import type { AbstractionDojoResizeConfig } from './diagram/useAbstractionNodeResize'
 import DiagramContainerView from './diagram/DiagramContainerView.vue'
 import GraphDrillIn from './GraphDrillIn.vue'
@@ -747,6 +749,63 @@ watch(
   { flush: 'post' },
 )
 
+/**
+ * Handle anchors (`data.anchorTops`) move handles via CSS, but Vue Flow's cached handle bounds
+ * only refresh on `updateNodeInternals` — until then edges render from the stale positions,
+ * sitting a few pixels off their dots (visible right after load / tab switch, "fixed" by any
+ * manual relayout). Re-measure as soon as the anchors change.
+ */
+watch(
+  () => {
+    let sig = ''
+    for (const n of nodes.value) {
+      const tops = (n.data as { anchorTops?: unknown } | undefined)?.anchorTops
+      if (tops) sig += `${String(n.id)}:${JSON.stringify(tops)}|`
+    }
+    return sig
+  },
+  () => void nextTick(() => updateNodeInternals()),
+  { flush: 'post' },
+)
+
+/**
+ * Anchors are derived from node positions + edge tracks, but some passes move nodes after the
+ * route+align pair ran (e.g. fit-to-margin translation), leaving every anchor offset by the
+ * translation delta — handle dots then sit a few pixels off their lines until a manual relayout.
+ * Re-derive the anchors whenever positions or tracks settle; idempotent, so no churn when
+ * everything already matches.
+ */
+watch(
+  () => {
+    let sig = ''
+    for (const n of nodes.value) {
+      sig += `${String(n.id)}:${Math.round(Number(n.position?.x ?? 0) * 64)}:${Math.round(Number(n.position?.y ?? 0) * 64)}|`
+    }
+    for (const e of edges.value) {
+      const cy = (e as { pathOptions?: { centerY?: number } }).pathOptions?.centerY
+      if (typeof cy === 'number') sig += `${String(e.id)}:${Math.round(cy * 64)}|`
+    }
+    return sig
+  },
+  () => {
+    const anchorSig = (ns: readonly any[]): string =>
+      ns
+        .map((n) => {
+          const tops = (n.data as { anchorTops?: unknown } | undefined)?.anchorTops
+          return tops ? `${String(n.id)}:${JSON.stringify(tops)}` : ''
+        })
+        .join('|')
+    const aligned = applyHandleAnchorAlignment(nodes.value, edges.value)
+    if (anchorSig(aligned) !== anchorSig(nodes.value)) {
+      /** Write the store too — assigning only the v-model can be reverted by Vue Flow's
+       *  store→model write-back (same defensive pattern as {@link relayoutViewport}). */
+      setNodes(aligned)
+      nodes.value = aligned
+    }
+  },
+  { flush: 'post' },
+)
+
 /** Synced from GraphDrillIn so module chrome can show the pin only in zoom/layer-focus context. */
 const graphFocusUi = reactive({ containerFocusId: null as string | null })
 provide('tritonGraphFocusUi', graphFocusUi)
@@ -777,6 +836,28 @@ function readFlowViewport(): { width: number; height: number } {
     width: Math.max(200, w),
     height: Math.max(200, h),
   }
+}
+
+/** Gap kept between the floating top bar and the first row of diagram boxes. */
+const TOP_BAR_CLEARANCE_PX = 6
+
+/**
+ * Top inset the camera must keep clear so the floating {@link DiagramTopBar} never overlaps the
+ * diagram. The bar is `position: absolute` over the pane and grows past {@link DIAGRAM_MARGIN_Y}
+ * whenever its controls wrap to a second row (or the path stacks above the controls under the
+ * 900px media query). Measuring its live height keeps the inset tight when the bar is one row and
+ * pushes the boxes down only as far as needed when it is taller.
+ */
+function readTopBarInset(): number {
+  if (typeof document === 'undefined') return DIAGRAM_MARGIN_Y
+  const wrap =
+    (flowShellRef.value?.closest('.flow-wrap') as HTMLElement | null) ??
+    (document.querySelector('.flow-wrap') as HTMLElement | null)
+  const bar = wrap?.querySelector('.diagram-top-bar') as HTMLElement | null
+  if (!bar) return DIAGRAM_MARGIN_Y
+  const h = bar.getBoundingClientRect().height
+  if (!Number.isFinite(h) || h <= 0) return DIAGRAM_MARGIN_Y
+  return Math.max(DIAGRAM_MARGIN_Y, Math.ceil(h) + TOP_BAR_CLEARANCE_PX)
 }
 
 const diagramModel = computed(() => {
@@ -907,6 +988,9 @@ function tritonEmitLinkAction(nodeId: string, href: string) {
   emit('link-action', { nodeId, href })
 }
 provide('tritonEmitLinkAction', tritonEmitLinkAction)
+
+/** Overrides the built-in smoothstep so `pathOptions.centerX/centerY` lane routing renders. */
+const edgeTypes: EdgeTypesObject = { smoothstep: markRaw(LaneSmoothStepEdge) as never }
 
 const defaultEdgeOptions = {
   type: 'smoothstep' as const,
@@ -1210,6 +1294,10 @@ function setupFlowShellResizeObserver(): void {
   }
   flowShellResizeObserver = new ResizeObserver(() => queueWorkspaceViewportStabilize())
   flowShellResizeObserver.observe(el)
+  // Also watch the floating top bar: when its controls wrap to a second row its height grows
+  // without resizing the shell, and the camera top inset ({@link readTopBarInset}) must refit.
+  const bar = el.closest('.flow-wrap')?.querySelector('.diagram-top-bar') as HTMLElement | null
+  if (bar) flowShellResizeObserver.observe(bar)
 }
 
 watch(flowShellRef, () => setupFlowShellResizeObserver(), { flush: 'post' })
@@ -1530,6 +1618,31 @@ function resetNavigationAfterDocReplace() {
 }
 
 /**
+ * True when a layer drill is currently active. Lets the parent restore a clean overview before
+ * snapshotting a tab it is leaving (the shared drill component otherwise loses its snapshot when
+ * the next tab loads, stranding the outgoing tab in a drilled, unrecoverable state).
+ */
+function isLayerDrillActive(): boolean {
+  return layerDrillActive()
+}
+
+/** The node id currently layer-drilled into, or `null` for the full overview. */
+function activeLayerDrillId(): string | null {
+  const raw = (drillRef.value as { layerDrillId?: unknown } | null)?.layerDrillId
+  const id = unref(raw)
+  return typeof id === 'string' && id ? id : null
+}
+
+/**
+ * Synchronously restore the pre-drill layout into the node/edge model (no camera animation),
+ * for use on tab switch. Unlike {@link resetView}, this does not fit the viewport — the parent
+ * is about to swap the whole graph for another tab.
+ */
+function clearLayerDrillForTabSwitch(): void {
+  drillRef.value?.clearLayerDrill?.()
+}
+
+/**
  * After depth layout / layer drill, either anchor the graph at the diagram margin (zoom 1) or
  * enable pan rails + translateExtent when the laid-out bounds exceed the pane.
  *
@@ -1544,10 +1657,10 @@ async function applyPanRailsOrAnchorCamera(
   visibleNodes: any[],
   duration: number,
 ): Promise<void> {
+  const topInset = readTopBarInset()
   const px = DIAGRAM_MARGIN_X * 2
-  const py = DIAGRAM_MARGIN_Y * 2
   const usableW = Math.max(80, vp.width - px)
-  const usableH = Math.max(80, vp.height - py)
+  const usableH = Math.max(80, vp.height - topInset - DIAGRAM_MARGIN_Y)
   const widthOverflow = rect.width > usableW + PAN_RAIL_FIT_SLACK_PX
   const heightOverflow = rect.height > usableH + PAN_RAIL_FIT_SLACK_PX
   const heightMinReached = visibleNodes.some((node) => nodePixelHeight(node) <= nodeMinHeight(node) + 1)
@@ -1559,7 +1672,7 @@ async function applyPanRailsOrAnchorCamera(
   const zoom = 1
   const txLeft = DIAGRAM_MARGIN_X - rect.x * zoom
   const txRight = vp.width - DIAGRAM_MARGIN_X - (rect.x + rect.width) * zoom
-  const tyTop = DIAGRAM_MARGIN_Y - rect.y * zoom
+  const tyTop = topInset - rect.y * zoom
   const tyBot = vp.height - DIAGRAM_MARGIN_Y - (rect.y + rect.height) * zoom
   const xMax = Math.max(txLeft, txRight)
   const xMin = Math.min(txLeft, txRight)
@@ -1716,6 +1829,9 @@ defineExpose({
   relayoutViewport,
   refreshEdgeEmphasis: syncEdgeVisualState,
   layerDrillBusy,
+  isLayerDrillActive,
+  activeLayerDrillId,
+  clearLayerDrillForTabSwitch,
 })
 </script>
 
@@ -1746,6 +1862,7 @@ defineExpose({
           },
         ]"
         :node-types="nodeTypes"
+        :edge-types="edgeTypes"
         :default-edge-options="defaultEdgeOptions"
         :connection-mode="ConnectionMode.Strict"
         :nodes-draggable="props.nodesDraggable"
@@ -2101,7 +2218,8 @@ defineExpose({
   z-index: 1001 !important;
 }
 
-/* @vue-flow/core always renders a label rect with theme fill; hide it for caption-only labels. */
+/* Caption floats in the gap ABOVE its own track (see dependencyEdgeLabelStyle), so the line never
+ * strikes through the text — the @vue-flow/core label rect is not needed. */
 .flow.vue-flow .vue-flow__edge-textbg {
   display: none;
 }

@@ -6,6 +6,7 @@ import type {
   TritonInnerArtefactSpec,
   TritonInnerPackageSpec,
 } from '../ilograph/types'
+import type { TritonFlowEdge, TritonFlowNode } from './flowTypes'
 import type { BoxCompartment, BoxCompartmentRow } from '../diagram/boxCompartments'
 import { resourceKey, splitRefs } from '../ilograph/refs'
 import { boxColorForId, isNamedBoxColor } from './boxColors'
@@ -110,6 +111,8 @@ function normalizeInnerArtefactSpec(raw: unknown): TritonInnerArtefactSpec | nul
   const o = raw as Record<string, unknown>
   if (typeof o.id !== 'string' || !o.id) return null
   const name = typeof o.name === 'string' && o.name ? o.name : o.id
+  const language =
+    typeof o.language === 'string' && o.language.trim() ? String(o.language) : undefined
   const subtitle =
     typeof o.subtitle === 'string' && o.subtitle.trim() ? String(o.subtitle) : undefined
   const description =
@@ -131,6 +134,7 @@ function normalizeInnerArtefactSpec(raw: unknown): TritonInnerArtefactSpec | nul
   return {
     id: o.id,
     name,
+    ...(language ? { language } : {}),
     ...(subtitle ? { subtitle } : {}),
     ...(description ? { description } : {}),
     ...(declaration ? { declaration } : {}),
@@ -229,7 +233,7 @@ function normalizeBoxCompartment(raw: unknown): BoxCompartment | null {
 export function ilographDocumentToFlow(
   doc: IlographDocument,
   options: FlowFromIlographOptions = {},
-): { nodes: any[]; edges: any[]; perspectiveName: string | undefined } {
+): { nodes: TritonFlowNode[]; edges: TritonFlowEdge[]; perspectiveName: string | undefined } {
   const flat: { res: IlographResource; parentId: string | undefined }[] = []
   flattenResources(doc.resources, undefined, flat)
 
@@ -241,7 +245,7 @@ export function ilographDocumentToFlow(
   const pinnedIds = new Set(editor?.pinnedModuleIds ?? [])
 
   const moduleType = options.moduleNodeType ?? 'module'
-  const nodes: any[] = flat.map(({ res, parentId }, i) => {
+  const nodes: TritonFlowNode[] = flat.map(({ res, parentId }, i) => {
     const id = resourceKey(res)
     const pos = saved?.[id] ?? defaultPosition(i)
     const isGroup = flat.some((x) => x.parentId === id)
@@ -356,13 +360,24 @@ export function ilographDocumentToFlow(
         ...(tritonIconUrl ? { iconUrl: tritonIconUrl } : {}),
         ...(tritonIconKey ? { tritonIconKey } : {}),
         ...(!isGroup
-          ? {
-              language: languageIconForId(id),
-              // Skip synthetic sbt drill notes for Docker-tagged leaves (`sbtStyleDrillNotes`).
-              ...(typeof tritonIconKey === 'string' && isDockerConceptIconKey(tritonIconKey.trim())
-                ? {}
-                : { drillNote: drillNoteForModuleId(id) }),
-            }
+          ? (() => {
+              // Real per-leaf language from the CodeModel (`scala`, `python`, …) when present;
+              // otherwise fall back to the decorative hash so legacy/hand-edited docs still get a logo.
+              const rawLeafLanguage = res['x-triton-language']
+              const leafLanguage =
+                typeof rawLeafLanguage === 'string' && rawLeafLanguage.trim() ? rawLeafLanguage : undefined
+              const isNonScalaLeaf = leafLanguage !== undefined && leafLanguage !== 'scala'
+              // Skip synthetic sbt drill notes for Docker-tagged leaves, package-scope groups, or
+              // any leaf we know isn't Scala (the sbt note is Scala-specific).
+              const skipDrillNote =
+                (typeof tritonIconKey === 'string' && isDockerConceptIconKey(tritonIconKey.trim())) ||
+                typeof res['x-triton-package-language'] === 'string' ||
+                isNonScalaLeaf
+              return {
+                language: leafLanguage ?? languageIconForId(id),
+                ...(skipDrillNote ? {} : { drillNote: drillNoteForModuleId(id) }),
+              }
+            })()
           : {}),
         ...(innerPackages?.length ? { innerPackages } : {}),
         ...(innerArtefacts?.length ? { innerArtefacts } : {}),
@@ -393,7 +408,7 @@ export function ilographDocumentToFlow(
   })
 
   const perspective = pickDependencyPerspective(doc, options.preferredPerspectiveName)
-  const edges: any[] = []
+  const edges: TritonFlowEdge[] = []
   let e = 0
   if (perspective?.relations) {
     for (const rel of perspective.relations) {
@@ -402,7 +417,14 @@ export function ilographDocumentToFlow(
       if (!froms.length || !tos.length) continue
       for (const f of froms) {
         for (const t of tos) {
-          const id = `e-${e++}`
+          /**
+           * Endpoint-derived id: all diagram tabs share one Vue Flow store keyed by edge id, so
+           * bare `e-<n>` ids collide across tabs and the store's stale same-id edges (endpoints
+           * absent in the activated tab) get dropped during reconciliation — silently deleting
+           * edges on tab switch. With endpoints in the id, a cross-tab collision implies matching
+           * endpoints, which reconciles harmlessly.
+           */
+          const id = `e-${e++}-${f}->${t}`
           const bidirectional = rel.arrowDirection === 'bidirectional'
           const stroke = strokeForIlographRelation(rel)
           const aggregate = isAggregateEdge(rel)

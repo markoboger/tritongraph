@@ -2,10 +2,14 @@ export interface IlographRelation {
   from?: string
   to?: string
   label?: string
+  description?: string
   arrowDirection?: 'forward' | 'backward' | 'bidirectional'
+  color?: string
+  secondary?: boolean
 }
 
 export interface IlographPerspective {
+  id?: string
   name: string
   color?: string
   relations?: IlographRelation[]
@@ -26,6 +30,7 @@ export interface TritonProjectCompartment {
 }
 
 export interface IlographResource {
+  id?: string
   name: string
   subtitle?: string
   description?: string
@@ -35,6 +40,7 @@ export interface IlographResource {
 }
 
 export interface IlographDocument {
+  title?: string
   description?: string
   resources?: IlographResource[]
   perspectives?: IlographPerspective[]

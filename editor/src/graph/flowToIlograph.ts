@@ -22,11 +22,14 @@ function exportResourceName(n: ExportFlowNode): string {
  *     drift on every refactor (add an import → every row below moves) and produce massive
  *     noisy diffs that have nothing to do with the graph structure.
  *
- * Keeping only `id` / `name` / `subtitle` (the Scala kind keyword: `class`, `trait`, …)
- * means a YAML diff between two scans highlights real graph changes — artefacts added,
- * removed, renamed, or changing kind — instead of every line-number shift. Runtime UI
- * features (focused method list, Arguments panel, open-in-editor) still work on the live
- * scanner data held in flow nodes; only the serialized form is slim.
+ * Keeping `id` / `name` / `subtitle` (the kind keyword: `class`, `trait`, `function`, …) plus
+ * `language` means a YAML diff between two scans highlights real graph changes — artefacts added,
+ * removed, renamed, or changing kind — instead of every line-number shift. `language` is retained
+ * because it's light, stable, and required for the focused artefact box to pick the right
+ * language profile (icon, panel wording, highlighting) after a tab-switch YAML round-trip; dropping
+ * it made every inner artefact fall back to the generic grey leaf. Runtime UI features (focused
+ * method list, Arguments panel, open-in-editor) still work on the live scanner data held in flow
+ * nodes; only the serialized form is slim.
  */
 function slimInnerArtefactForExport(raw: unknown): TritonInnerArtefactSpec | null {
   if (!raw || typeof raw !== 'object') return null
@@ -35,9 +38,11 @@ function slimInnerArtefactForExport(raw: unknown): TritonInnerArtefactSpec | nul
   const name = typeof a.name === 'string' ? a.name : ''
   if (!id || !name) return null
   const subtitle = typeof a.subtitle === 'string' && a.subtitle ? a.subtitle : undefined
+  const language = typeof a.language === 'string' && a.language ? a.language : undefined
   return {
     id,
     name,
+    ...(language ? { language } : {}),
     ...(subtitle ? { subtitle } : {}),
   }
 }
@@ -98,6 +103,13 @@ function buildResourceTree(nodes: ExportFlowNode[]): IlographResource[] {
       }
       const desc = descriptionForExport(n)
       if (desc) res.description = desc
+      // Preserve the artefact leaf's real source language so the focused box keeps its
+      // language-specific presentation across tab-switch YAML round-trips. Only emit it for
+      // artefact leaves (other leaves carry a decorative hash language that shouldn't round-trip).
+      const leafLanguage = (n.data as Record<string, unknown> | undefined)?.language
+      if (n.type === 'artefact' && typeof leafLanguage === 'string' && leafLanguage) {
+        res['x-triton-language'] = leafLanguage
+      }
       const ip = (n.data as Record<string, unknown> | undefined)?.innerPackages
       if (Array.isArray(ip) && ip.length) {
         res['x-triton-inner-packages'] = ip as NonNullable<IlographResource['x-triton-inner-packages']>

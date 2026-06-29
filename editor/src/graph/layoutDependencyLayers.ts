@@ -1343,7 +1343,7 @@ function worldTopLeft(nodeId: string, byId: Map<string, any>): { x: number; y: n
 function stripRoutingFromEdge(edge: any): any {
   const po = edge.pathOptions
   if (!po || typeof po !== 'object') return { ...edge }
-  const { centerX: _cx, centerY: _cy, ...rest } = po
+  const { centerX: _cx, centerY: _cy, loopRunY: _lr, ...rest } = po
   const keys = Object.keys(rest)
   if (!keys.length) {
     const { pathOptions: _p, ...e2 } = edge
@@ -1439,8 +1439,11 @@ export function annotateParallelAggregateEdgeOffsets(
   return out
 }
 
-const AGG_LANE_STAGGER_PX = 5
 const STRAIGHT_EDGE_MIN_VERTICAL_OVERLAP = 18
+/** Vertical distance between parallel relation tracks — enough for an edge label to stay legible. */
+const EDGE_TRACK_GAP_PX = 18
+/** Horizontal slack added to a relation's span when testing for track collisions. */
+const EDGE_TRACK_SPAN_MARGIN_PX = 8
 
 function worldNodeBounds(nodeId: string, byId: Map<string, any>): { left: number; right: number; top: number; bottom: number } | null {
   const node = byId.get(nodeId)
@@ -1472,149 +1475,141 @@ function straightHorizontalRelationY(
 }
 
 /**
- * Route depth-relation smoothstep edges through the region’s top/bottom padding lanes (outside the
- * module stack band) with a small stagger so parallel lines stay separated and off boxes.
+ * Assign each same-region depth relation a horizontal track at the middle of its endpoints'
+ * shared vertical band — the shortest connection. When an already-placed relation runs within
+ * {@link EDGE_TRACK_GAP_PX} of that track and their horizontal spans overlap, nudge outward in
+ * alternating ±track-gap steps until a free track is found, so parallel imports separate locally
+ * instead of detouring through the region's far top/bottom padding. Endpoints on different rows
+ * (no shared band) get a track inside the target box's band — one vertical step at the source,
+ * then a perfectly horizontal run into the target — and join the same collision bookkeeping.
  */
 export function annotateAggregateVerticalPaths(
-  nodes: readonly any[],
-  edges: readonly any[],
-  rootViewport: ViewportSize,
-): any[] {
-  const byId = new Map<string, any>(nodes.map((n) => [String(n.id), n]))
-
-  type SlotEdge = { id: string; slot: number }
-  const bySourceRegion = new Map<string, SlotEdge[]>()
-
-  for (const e of edges) {
-    if ((e as { hidden?: boolean }).hidden) continue
-    if (!edgeContributesToClasspathDepth(e)) continue
-    const src = byId.get(String(e.source))
-    const tgt = byId.get(String(e.target))
-    if (!src || !tgt) continue
-    if (parentKey(src) !== parentKey(tgt)) continue
-    const region = parentKey(src) ?? '__root__'
-    const key = `${region}|${e.source}`
-    const sh = String((e as { sourceHandle?: string }).sourceHandle ?? '')
-    const m = sh.match(/^agg-out-(\d+)$/)
-    const slot = m ? Number(m[1]) : 0
-    const list = bySourceRegion.get(key) ?? []
-    list.push({ id: String((e as { id: string }).id), slot })
-    bySourceRegion.set(key, list)
-  }
-
-  const indexInFan = new Map<string, { idx: number; count: number }>()
-  for (const list of bySourceRegion.values()) {
-    list.sort((a, b) => a.slot - b.slot || a.id.localeCompare(b.id))
-    const n = list.length
-    for (let i = 0; i < n; i++) {
-      indexInFan.set(list[i]!.id, { idx: i, count: n })
-    }
-  }
-
-  const depthMemo = new Map<string | undefined, Map<string, number>>()
-  function depthsIn(region: string | undefined): Map<string, number> {
-    if (!depthMemo.has(region)) {
-      depthMemo.set(region, dependencyDepthsInRegion(nodes, edges, region))
-    }
-    return depthMemo.get(region)!
-  }
-
-  return edges.map((edge) => {
-    if (!edgeContributesToClasspathDepth(edge)) return { ...edge }
-    const src = byId.get(String(edge.source))
-    const tgt = byId.get(String(edge.target))
-    if (!src || !tgt) return { ...edge }
-    if (parentKey(src) !== parentKey(tgt)) return { ...edge }
-
-    const regionParent = parentKey(src)
-    const fan = indexInFan.get(String(edge.id))
-    const parallelCount = Math.max(1, fan?.count ?? 1)
-    const dmap = depthsIn(regionParent)
-    const d1 = dmap.get(String(src.id))
-    const d2 = dmap.get(String(tgt.id))
-    const depthOk = d1 !== undefined && d2 !== undefined
-    const depthDelta = depthOk ? Math.abs(d1 - d2) : 0
-    /** Skip lane detour when a single shallow edge can run horizontally; use lanes when skipping columns or fanning parallels. */
-    const needDetour = (depthOk && depthDelta >= 2) || parallelCount > 1
-    if (!needDetour) {
-      const straightY = straightHorizontalRelationY(String(src.id), String(tgt.id), byId)
-      if (straightY !== undefined) {
-        const plain = stripRoutingFromEdge({ ...edge })
-        return {
-          ...plain,
-          type: 'smoothstep',
-          pathOptions: {
-            ...(plain.pathOptions && typeof plain.pathOptions === 'object' ? plain.pathOptions : {}),
-            centerY: straightY,
-          },
-        }
-      }
-      const plain = stripRoutingFromEdge({ ...edge })
-      const { type: _t, ...rest } = plain
-      return { ...rest }
-    }
-
-    const regionH =
-      regionParent === undefined
-        ? rootViewport.height
-        : Number(byId.get(regionParent)?.style?.height) || GROUP_MIN_H
-
-    const geo = regionStackMetrics(regionH, regionParent)
-    const originY = regionParent === undefined ? 0 : worldTopLeft(regionParent, byId).y
-
-    const idx = fan?.idx ?? 0
-    const count = parallelCount
-    const useTop = idx % 2 === 0
-    const baseLane = useTop ? geo.laneTopCenterY : geo.laneBottomCenterY
-    const mid = (count - 1) / 2
-    const staggerRaw = (idx - mid) * AGG_LANE_STAGGER_PX
-    const maxSt = Math.max(6, geo.laneEach * 0.38 - 1)
-    const stagger = Math.max(-maxSt, Math.min(maxSt, staggerRaw))
-    const centerY = originY + baseLane + stagger
-
-    const baseOpts = edge.pathOptions && typeof edge.pathOptions === 'object' ? { ...edge.pathOptions } : {}
-    return {
-      ...edge,
-      type: 'smoothstep',
-      pathOptions: { ...baseOpts, centerY },
-    }
-  })
-}
-
-/**
- * For edges whose endpoints differ by ≥2 depth columns within the same parent region,
- * set smoothstep `pathOptions.centerY` to the reserved top or bottom routing lane so
- * the path does not run through intermediate modules.
- */
-export function annotateCrossLayerEdgePathOptions(
   nodes: readonly any[],
   edges: readonly any[],
   _rootViewport: ViewportSize,
 ): any[] {
   const byId = new Map<string, any>(nodes.map((n) => [String(n.id), n]))
 
-  return edges.map((edge) => {
+  type TrackRequest = {
+    index: number
+    region: string
+    base: number
+    /** Nudge candidates stay inside this band so endpoints keep an unclamped anchor on the track. */
+    bandTop: number
+    bandBottom: number
+    left: number
+    right: number
+    /** Source exit sits right of the target entry → the run must loop back (extra run track). */
+    backward: boolean
+  }
+  const requests: TrackRequest[] = []
+
+  edges.forEach((edge, index) => {
+    if ((edge as { hidden?: boolean }).hidden) return
+    if (!edgeContributesToClasspathDepth(edge)) return
     const src = byId.get(String(edge.source))
     const tgt = byId.get(String(edge.target))
-    if (!src || !tgt) return stripRoutingFromEdge({ ...edge })
+    if (!src || !tgt) return
+    if (parentKey(src) !== parentKey(tgt)) return
+    const srcB = worldNodeBounds(String(src.id), byId)
+    const tgtB = worldNodeBounds(String(tgt.id), byId)
+    if (!srcB || !tgtB) return
+    const overlapTop = Math.max(srcB.top, tgtB.top)
+    const overlapBottom = Math.min(srcB.bottom, tgtB.bottom)
+    if (!Number.isFinite(overlapTop) || !Number.isFinite(overlapBottom)) return
+    /** Shared band when the boxes overlap vertically (track → straight horizontal line); the
+     *  target box's own band otherwise, so the run ends perfectly horizontal INTO the target
+     *  and the single vertical step stays on the source side. */
+    const hasOverlap = overlapBottom - overlapTop >= STRAIGHT_EDGE_MIN_VERTICAL_OVERLAP
+    const bandTop = hasOverlap ? overlapTop : tgtB.top
+    const bandBottom = hasOverlap ? overlapBottom : tgtB.bottom
+    const left = Math.min(srcB.right, tgtB.left) - EDGE_TRACK_SPAN_MARGIN_PX
+    const right = Math.max(srcB.right, tgtB.left) + EDGE_TRACK_SPAN_MARGIN_PX
+    requests.push({
+      index,
+      region: parentKey(src) ?? '__root__',
+      base: roundWorldY((bandTop + bandBottom) / 2),
+      bandTop,
+      bandBottom,
+      left,
+      right,
+      backward: tgtB.left < srcB.right,
+    })
+  })
 
-    const pkS = parentKey(src)
-    const pkT = parentKey(tgt)
-    if (pkS !== pkT) return stripRoutingFromEdge({ ...edge })
+  /** Shorter spans first: local relations keep the pure midline, long pass-throughs shift. */
+  const order = [...requests].sort(
+    (a, b) => a.right - a.left - (b.right - b.left) || a.index - b.index,
+  )
 
-    /** Cross-column banding used to live here; all labeled depth relations now use {@link annotateAggregateVerticalPaths}. */
-    return stripRoutingFromEdge({ ...edge })
+  type PlacedTrack = { left: number; right: number; y: number }
+  const placedByRegion = new Map<string, PlacedTrack[]>()
+  const trackYByIndex = new Map<number, number>()
+  const loopRunYByIndex = new Map<number, number>()
+
+  /** First non-colliding ±gap candidate from `base`, preferring tracks inside the band. */
+  function allocateTrack(req: TrackRequest, base: number, placed: PlacedTrack[]): number {
+    const collides = (y: number): boolean =>
+      placed.some(
+        (p) => p.right > req.left && p.left < req.right && Math.abs(p.y - y) < EDGE_TRACK_GAP_PX - 0.5,
+      )
+    if (!collides(base)) return base
+    let fallback: number | undefined
+    for (let step = 1; step <= 24; step++) {
+      const k = Math.ceil(step / 2)
+      const sign = step % 2 === 1 ? 1 : -1
+      const cand = roundWorldY(base + sign * k * EDGE_TRACK_GAP_PX)
+      if (collides(cand)) continue
+      if (cand >= req.bandTop + 4 && cand <= req.bandBottom - 4) return cand
+      fallback = fallback ?? cand
+    }
+    return fallback ?? base
+  }
+
+  for (const req of order) {
+    const placed = placedByRegion.get(req.region) ?? []
+    const y = allocateTrack(req, req.base, placed)
+    placed.push({ left: req.left, right: req.right, y })
+    trackYByIndex.set(req.index, y)
+    if (req.backward) {
+      /** Backward relations enter/exit at `y` but loop their long run on a second free track —
+       *  a straight line would hide entirely behind the two boxes. Base = `y` is occupied by
+       *  the anchor entry just pushed, so this lands at least one gap away. */
+      const runY = allocateTrack(req, y, placed)
+      placed.push({ left: req.left, right: req.right, y: runY })
+      loopRunYByIndex.set(req.index, runY)
+    }
+    placedByRegion.set(req.region, placed)
+  }
+
+  return edges.map((edge, index) => {
+    const trackY = trackYByIndex.get(index)
+    if (trackY === undefined) {
+      /** Hidden edges keep their previous routing so a relation-filter toggle doesn't show
+       *  unrouted edges before the next relayout pass; everything else sheds stale routing. */
+      return (edge as { hidden?: boolean }).hidden ? { ...edge } : stripRoutingFromEdge({ ...edge })
+    }
+    const loopRunY = loopRunYByIndex.get(index)
+    const plain = stripRoutingFromEdge({ ...edge })
+    return {
+      ...plain,
+      type: 'smoothstep',
+      pathOptions: {
+        ...(plain.pathOptions && typeof plain.pathOptions === 'object' ? plain.pathOptions : {}),
+        centerY: trackY,
+        ...(loopRunY !== undefined ? { loopRunY } : {}),
+      },
+    }
   })
 }
 
-/** Cross-layer classpath routing, aggregate handle fan-out, then aggregate vertical lanes. */
+/** Aggregate handle fan-out, then collision-aware midline track assignment. */
 export function routeSmoothstepEdgesInViewport(
   nodes: readonly any[],
   edges: readonly any[],
   rootViewport: ViewportSize,
 ): any[] {
-  const afterDepth = annotateCrossLayerEdgePathOptions(nodes, edges, rootViewport)
-  const afterHandles = annotateParallelAggregateEdgeOffsets(nodes, afterDepth)
+  const afterHandles = annotateParallelAggregateEdgeOffsets(nodes, edges)
   return annotateAggregateVerticalPaths(nodes, afterHandles, rootViewport)
 }
 
@@ -1687,7 +1682,16 @@ export function applyHandleAnchorAlignment(nodes: readonly any[], edges: readonl
     if (!isLayerDrillBoxNode(src) || !isLayerDrillBoxNode(tgt)) continue
     if (parentKey(src) !== parentKey(tgt)) continue
 
+    /** Prefer the routed lane Y so endpoints exit/enter next to the lane the edge travels in
+     *  (clamped into the box by {@link worldYToLocalTopPct}); without it, full-height columns
+     *  give every pair the same overlap midpoint and all edges collapse onto one rail. */
+    const po = (e as { pathOptions?: { centerY?: unknown } }).pathOptions
+    const laneY =
+      po && typeof po === 'object' && typeof po.centerY === 'number' && Number.isFinite(po.centerY)
+        ? roundWorldY(po.centerY)
+        : undefined
     const midY =
+      laneY ??
       straightHorizontalRelationY(s, t, byId) ??
       roundWorldY((worldCenterYForNode(s, byId) + worldCenterYForNode(t, byId)) / 2)
 

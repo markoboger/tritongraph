@@ -9,6 +9,8 @@ defineProps<{
   metricTooltipsEnabled: boolean
   focusRelationDepth: number
   metricVisibility: Record<'coverage' | 'debt' | 'issues', boolean>
+  /** Projection mode for CodeModel-backed (Python) tabs; null hides the toggle for other tabs. */
+  viewMode?: 'package-graph' | 'flat-modules' | null
 }>()
 
 const emit = defineEmits<{
@@ -17,6 +19,7 @@ const emit = defineEmits<{
   'update:metric-tooltips-enabled': [visible: boolean]
   'update:focus-relation-depth': [depth: number]
   'update:metric-visible': [metricKey: 'coverage' | 'debt' | 'issues', visible: boolean]
+  'update:view-mode': [mode: 'package-graph' | 'flat-modules']
 }>()
 
 function displayNodeLabel(nodeKey: string): string {
@@ -77,6 +80,32 @@ function onFocusDepthInput(ev: Event) {
       class="diagram-top-bar__relations"
       aria-label="Diagram controls"
     >
+      <template v-if="viewMode">
+        <span class="diagram-top-bar__group-label">View</span>
+        <div class="diagram-top-bar__viewmode" role="group" aria-label="Diagram view mode">
+          <button
+            type="button"
+            class="diagram-top-bar__viewmode-btn"
+            :class="{ 'diagram-top-bar__viewmode-btn--active': viewMode === 'package-graph' }"
+            :aria-pressed="viewMode === 'package-graph'"
+            title="Top-level packages with rolled-up dependencies; click a package to drill in"
+            @click="emit('update:view-mode', 'package-graph')"
+          >
+            Package graph
+          </button>
+          <button
+            type="button"
+            class="diagram-top-bar__viewmode-btn"
+            :class="{ 'diagram-top-bar__viewmode-btn--active': viewMode === 'flat-modules' }"
+            :aria-pressed="viewMode === 'flat-modules'"
+            title="Every module in the current scope, flat (no rollup)"
+            @click="emit('update:view-mode', 'flat-modules')"
+          >
+            Flat modules
+          </button>
+        </div>
+        <span class="diagram-top-bar__sep" aria-hidden="true" />
+      </template>
       <template v-if="nodeTypes.length">
         <span class="diagram-top-bar__group-label">Nodes</span>
         <label
@@ -236,7 +265,10 @@ function onFocusDepthInput(ev: Event) {
   gap: 8px;
   flex-wrap: wrap;
   padding: 1px 8px 2px;
-  max-width: min(42%, 700px);
+  /* Stay content-sized and only wrap internally when the row genuinely overflows. The path
+     (left) shrinks via ellipsis first, so a hard width cap here is what forced a second row even
+     with empty space to the right. */
+  max-width: 100%;
 }
 
 .diagram-top-bar__check {
@@ -286,6 +318,25 @@ function onFocusDepthInput(ev: Event) {
   width: 1px;
   height: 12px;
   background: rgba(100, 116, 139, 0.35);
+}
+
+.diagram-top-bar__viewmode {
+  display: inline-flex;
+  border: 1px solid rgba(100, 116, 139, 0.4);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.diagram-top-bar__viewmode-btn {
+  border: none;
+  background: transparent;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: inherit;
+}
+.diagram-top-bar__viewmode-btn--active {
+  background: #2563eb;
+  color: #fff;
 }
 
 @media (max-width: 900px) {

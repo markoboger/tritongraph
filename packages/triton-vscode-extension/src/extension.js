@@ -380,9 +380,11 @@ function probeWorkspace(folder) {
     return {
       kind: 'none',
       isScalaSbt: false,
+      isPython: false,
       hasBuildSbt: false,
       hasProjectDir: false,
       hasScalaSources: false,
+      hasPyMarker: false,
       buildFile: '',
     }
   }
@@ -395,12 +397,24 @@ function probeWorkspace(folder) {
   const hasProjectDir = fileExists(projectDir)
   const hasScalaSources = fileExists(scalaMain) || fileExists(scalaTest)
   const isScalaSbt = hasBuildSbt || hasProjectDir || hasScalaSources
+  const hasPyMarker =
+    fileExists(path.join(root, 'pyproject.toml')) ||
+    fileExists(path.join(root, 'setup.py')) ||
+    fileExists(path.join(root, 'setup.cfg'))
+  const isPython = !isScalaSbt && hasPyMarker
+
+  let kind = 'generic'
+  if (isScalaSbt) kind = 'scala-sbt'
+  else if (isPython) kind = 'python'
+
   return {
-    kind: isScalaSbt ? 'scala-sbt' : 'generic',
+    kind,
     isScalaSbt,
+    isPython,
     hasBuildSbt,
     hasProjectDir,
     hasScalaSources,
+    hasPyMarker,
     buildFile: hasBuildSbt ? buildFile : '',
   }
 }
@@ -540,9 +554,9 @@ async function openDiagram(options = {}) {
   }
 
   logWorkspaceSummary(out, folder, workspaceProbe)
-  if (folder && !workspaceProbe.isScalaSbt) {
+  if (folder && !workspaceProbe.isScalaSbt && !workspaceProbe.isPython) {
     vscode.window.showWarningMessage(
-      'Triton did not detect a Scala/sbt workspace marker. The browser will still open, but analysis may not match your project yet.',
+      'Triton did not detect a Scala/sbt or Python workspace marker. The browser will still open, but analysis may not match your project yet.',
     )
   }
 

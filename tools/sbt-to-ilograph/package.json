@@ -12,6 +12,7 @@
     "generate:built": "node dist/cli.js"
   },
   "dependencies": {
+    "triton-core": "file:../../packages/triton-core",
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {
