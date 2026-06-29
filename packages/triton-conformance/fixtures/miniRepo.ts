@@ -16,6 +16,7 @@ import type {
   ChangedFact,
   ViolationRecord,
 } from '../src/types'
+import type { IlographDocument } from '../../triton-core/src/ilographTypes'
 import { buildMatchKey } from '../src/matchKey'
 
 export const topology: ResolvedTopology = {
@@ -30,6 +31,43 @@ export const topology: ResolvedTopology = {
   allowedEdges: [
     { from: 'api', to: 'domain' },
     { from: 'infra', to: 'domain' },
+  ],
+}
+
+/**
+ * The same topology in Ilograph form (the refined "Soll" as authored). `resolveTopology` must
+ * compile this back into `topology` above — that round-trip is the Increment 2 check.
+ */
+export const topologyDocument: IlographDocument = {
+  title: 'mini-repo',
+  resources: [
+    {
+      id: 'domain',
+      name: 'Domain',
+      children: [
+        { id: 'app.domain.order', name: 'order' },
+        { id: 'app.domain.pricing', name: 'pricing' },
+      ],
+    },
+    {
+      id: 'api',
+      name: 'API',
+      children: [{ id: 'app.api.routes', name: 'routes' }],
+    },
+    {
+      id: 'infra',
+      name: 'Infra',
+      children: [{ id: 'app.infra.db', name: 'db' }],
+    },
+  ],
+  perspectives: [
+    {
+      name: 'dependencies',
+      relations: [
+        { from: 'api', to: 'domain' },
+        { from: 'infra', to: 'domain' },
+      ],
+    },
   ],
 }
 
