@@ -684,11 +684,16 @@ function dirHasPythonMarker(dirPath) {
 }
 
 /**
- * Discover the source roots of every Python package under `workspacePath`. For each directory that
- * carries a marker (pyproject.toml/setup.py/setup.cfg), the source root is `<dir>/src` when that
- * exists (the common `src/` layout — e.g. nova-modulith's sub-packages) or `<dir>` otherwise.
+ * Discover the source roots of every Python package under `workspacePath`. A package is recognised
+ * two ways:
+ *  - A directory carrying a marker (pyproject.toml/setup.py/setup.cfg) is a *project* root; the
+ *    package lives inside it, so the source root is `<dir>/src` when that exists (the common `src/`
+ *    layout — e.g. nova-modulith's sub-packages) or `<dir>` otherwise.
+ *  - A directory carrying `__init__.py` is *itself* part of the namespace (a bare package, e.g.
+ *    `bookshop/` with no packaging config), so the source root is its parent (clamped to the
+ *    workspace root → `.` when the package is the workspace root itself).
  *
- * Returns workspace-relative POSIX paths (e.g. `nova-backend/src`, `infrastructure`). Stops
+ * Returns workspace-relative POSIX paths (e.g. `nova-backend/src`, `infrastructure`, `.`). Stops
  * descending once a package is found (one package per subtree) and skips ignored/test/build dirs,
  * so it stays cheap even on large monorepos. The editor strips the longest matching root from each
  * file path to derive the module path (so `nova-backend/src/app/iam.py` → `app.iam`).
@@ -704,6 +709,16 @@ function discoverPythonSourceRoots(workspacePath) {
       const rel = normalizeRelPath(workspacePath, sourceRoot)
       roots.add(rel === '' ? '.' : rel)
       return // one package per subtree
+    }
+    if (fileExists(path.join(dirPath, '__init__.py'))) {
+      // Bare package dir: the dir itself is part of the namespace, so the source root is its parent
+      // (clamped to the workspace root). The walk only reaches here after descending through
+      // non-package ancestors, so this is the top of the package.
+      const parent = path.dirname(dirPath)
+      const sourceRoot = pathIsInsideRoot(parent, workspacePath) ? parent : workspacePath
+      const rel = normalizeRelPath(workspacePath, sourceRoot)
+      roots.add(rel === '' ? '.' : rel)
+      return // whole subtree belongs to this namespace
     }
     let entries = []
     try {
@@ -722,9 +737,10 @@ function discoverPythonSourceRoots(workspacePath) {
   return [...roots].sort()
 }
 
-/** True when `relPath` lies under one of the discovered source roots (segment boundary). */
+/** True when `relPath` lies under one of the discovered source roots (segment boundary). A `.` root
+ * means the whole workspace is the namespace, so every file is under it. */
 function isUnderSourceRoot(relPath, sourceRoots) {
-  return sourceRoots.some((r) => relPath === r || relPath.startsWith(`${r}/`))
+  return sourceRoots.some((r) => r === '.' || relPath === r || relPath.startsWith(`${r}/`))
 }
 
 function collectPythonFiles(workspacePath, sourceRoots = []) {
