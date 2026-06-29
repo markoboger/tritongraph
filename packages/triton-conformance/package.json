@@ -1,0 +1,15 @@
+{
+  "name": "triton-conformance",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./types": "./src/types.ts",
+    "./matchKey": "./src/matchKey.ts",
+    "./validate": "./src/validate.ts"
+  },
+  "dependencies": {
+    "typescript": "^6.0.3"
+  }
+}
