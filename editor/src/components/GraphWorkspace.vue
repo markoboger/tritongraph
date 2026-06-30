@@ -29,6 +29,7 @@ import {
   mergeEdgeHiddenForInvisibleEndpoints,
   routeSmoothstepEdgesInViewport,
 } from '../graph/layoutDependencyLayers'
+import { buildLayerBandNodes, graphNodesOnly } from '../graph/layerBands'
 import { TRITON_WORKSPACE_FLOW_ID } from '../graph/tritonVueFlowId'
 import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE } from '../graph/handles'
 import { boxColorForId } from '../graph/boxColors'
@@ -76,6 +77,8 @@ const props = withDefaults(
     nodeTypeVisibility?: Record<string, boolean>
     /** When a key is `false`, edges with that relation label are hidden (merged into `hidden`). */
     relationTypeVisibility?: Record<string, boolean>
+    /** Draw a faint coloured box behind each dependency-layer column (visual only). */
+    showLayerBands?: boolean
     /** Breakpoint-layouts dojo: show resize handles and optional linked resize across listed node ids. */
     abstractionDojoResize?: AbstractionDojoResizeConfig | null
     /** Relation distance shown around a focused Scala artefact. */
@@ -102,6 +105,8 @@ const emit = defineEmits<{
 const {
   fitView,
   screenToFlowCoordinate,
+  getNodes,
+  getEdges,
   setNodes,
   setEdges,
   updateNodeInternals,
@@ -711,6 +716,9 @@ watch(
   { deep: true },
 )
 
+/** Toggling layer bands just adds or strips the band overlay — no relayout needed. */
+watch(() => props.showLayerBands, () => syncLayerBands())
+
 watch(
   () => {
     // Only serialize hidden nodes — produces a much shorter string than serializing all N nodes,
@@ -862,7 +870,7 @@ function readTopBarInset(): number {
 
 const diagramModel = computed(() => {
   const vp = readFlowViewport()
-  return buildDiagramRootModel(nodes.value, edges.value, { x: 0, y: 0, width: vp.width, height: vp.height })
+  return buildDiagramRootModel(graphNodesOnly(nodes.value), edges.value, { x: 0, y: 0, width: vp.width, height: vp.height })
 })
 
 async function relayoutViewport(opts?: { skipDrillReapply?: boolean }) {
@@ -870,7 +878,9 @@ async function relayoutViewport(opts?: { skipDrillReapply?: boolean }) {
   await nextTick()
   await doubleRaf()
   const vp = readFlowViewport()
-  const laidOut = layoutDepthInViewport(nodes.value, edges.value, vp)
+  // Strip prior layer bands so they never feed back into the layout.
+  const graphNodes = graphNodesOnly(nodes.value)
+  const laidOut = layoutDepthInViewport(graphNodes, edges.value, vp)
   const routedEdges = mergeEdgeHiddenForInvisibleEndpoints(
     routeSmoothstepEdgesInViewport(laidOut, edges.value, vp),
     laidOut,
@@ -901,12 +911,27 @@ async function relayoutViewport(opts?: { skipDrillReapply?: boolean }) {
     opts?.skipDrillReapply && !layerDrillActive()
       ? false
       : ((await drillRef.value?.reapplyLayerDrill?.()) ?? false)
+  // Drill re-apply rebuilds its own bands (via tritonSyncLayerBands); only the overview path here.
   if (reapplied) return
   /** Keep the full graph anchored after geometry changes; skip while drill is active or pending. */
   if (!layerDrillBusy()) {
     await fitToViewport({ duration: 0 })
   }
+  syncLayerBands()
 }
+
+/**
+ * (Re)build the decorative layer-band nodes from the current visible node set — works for both the
+ * overview and a focused drill (reads live store geometry). Stripped first so it is idempotent.
+ */
+function syncLayerBands(): void {
+  const graphNodes = graphNodesOnly(getNodes.value)
+  const next = props.showLayerBands
+    ? [...buildLayerBandNodes(graphNodes, getEdges.value), ...graphNodes]
+    : graphNodes
+  setNodes(next)
+}
+provide('tritonSyncLayerBands', syncLayerBands)
 
 provide('tritonRelayoutViewport', relayoutViewport)
 
@@ -1182,7 +1207,7 @@ async function createModuleFromSourceHandle(
   await doubleRaf()
   const vp = readFlowViewport()
   const withEdge = [...edges.value, newEdge]
-  nodes.value = layoutDepthInViewport([...nodes.value, newNode as any], withEdge, vp)
+  nodes.value = layoutDepthInViewport([...graphNodesOnly(nodes.value), newNode as any], withEdge, vp)
   edges.value = mergeEdgeHiddenForInvisibleEndpoints(
     routeSmoothstepEdgesInViewport(nodes.value, withEdge, vp),
     nodes.value,
@@ -1568,7 +1593,7 @@ async function handleConnect(conn: Connection) {
   await doubleRaf()
 
   const vp = readFlowViewport()
-  const laidOut = layoutDepthInViewport(nodes.value, combinedEdges, vp)
+  const laidOut = layoutDepthInViewport(graphNodesOnly(nodes.value), combinedEdges, vp)
   const routedEdges = mergeEdgeHiddenForInvisibleEndpoints(
     routeSmoothstepEdgesInViewport(laidOut, combinedEdges, vp),
     laidOut,
@@ -1827,6 +1852,7 @@ defineExpose({
   fitToViewport,
   applyLayerDrill,
   relayoutViewport,
+  syncLayerBands,
   refreshEdgeEmphasis: syncEdgeVisualState,
   layerDrillBusy,
   isLayerDrillActive,

@@ -4,6 +4,7 @@ import { computed, nextTick, onMounted, onUnmounted, provide, ref, shallowRef, w
 import FlowProjectNode from './components/diagram/FlowProjectNode.vue'
 import FlowPackageNode from './components/diagram/FlowPackageNode.vue'
 import GroupNode from './components/GroupNode.vue'
+import LayerBandNode from './components/LayerBandNode.vue'
 import GraphWorkspace from './components/GraphWorkspace.vue'
 import DiagramTopBar from './components/common/DiagramTopBar.vue'
 import TritonRuntimeHome from './components/TritonRuntimeHome.vue'
@@ -183,6 +184,8 @@ const metricVisibility = ref<Record<'coverage' | 'debt' | 'issues', boolean>>({
   debt: false,
   issues: false,
 })
+/** Draw a faint coloured box behind each dependency-layer column (visual only). */
+const showLayerBands = ref(false)
 
 function requestedPerspectiveFromUrl(): string {
   if (typeof window === 'undefined') return ''
@@ -1363,6 +1366,7 @@ const nodeTypes = {
   package: FlowPackageNode,
   artefact: FlowPackageNode,
   group: GroupNode,
+  'layer-band': LayerBandNode,
 } as NodeTypesObject
 
 function readFlowViewport(): { width: number; height: number } {
@@ -1498,6 +1502,8 @@ async function applyDoc(
     })
   }
   await nextTick()
+  // A fresh diagram is laid out via fitToViewport (not relayout), so seed the layer bands here.
+  graphRef.value?.syncLayerBands?.()
   yamlBaseline.value = yamlPreview.value
 }
 
@@ -5156,6 +5162,7 @@ onUnmounted(() => {
           :metric-tooltips-enabled="metricTooltipsEnabled"
           :focus-relation-depth="focusRelationDepth"
           :metric-visibility="metricVisibility"
+          :layers-visible="showLayerBands"
           :view-mode="activePythonViewMode"
           @update:node-type-visible="setNodeTypeVisible"
           @update:relation-type-visible="setRelationTypeVisible"
@@ -5164,6 +5171,7 @@ onUnmounted(() => {
           @update:metric-visible="
             (metricKey, visible) => (metricVisibility = { ...metricVisibility, [metricKey]: visible })
           "
+          @update:layers-visible="(v) => (showLayerBands = v)"
           @update:view-mode="(m) => void setPythonViewMode(m)"
         />
         <div
@@ -5223,6 +5231,7 @@ onUnmounted(() => {
             :node-types="nodeTypes"
             :node-type-visibility="nodeTypeVisibility"
             :relation-type-visibility="relationTypeVisibility"
+            :show-layer-bands="showLayerBands"
             :abstraction-dojo-resize="abstractionDojoResizeForGraph"
             :focus-relation-depth="focusRelationDepth"
             :nodes-draggable="activeTab?.key === `dojo:${BREAKPOINT_LAYOUTS_DOJO_ID}`"

@@ -9,6 +9,8 @@ defineProps<{
   metricTooltipsEnabled: boolean
   focusRelationDepth: number
   metricVisibility: Record<'coverage' | 'debt' | 'issues', boolean>
+  /** Draw a faint coloured box behind each dependency-layer column (visual only). */
+  layersVisible: boolean
   /** Projection mode for CodeModel-backed (Python) tabs; null hides the toggle for other tabs. */
   viewMode?: 'package-graph' | 'flat-modules' | null
 }>()
@@ -19,6 +21,7 @@ const emit = defineEmits<{
   'update:metric-tooltips-enabled': [visible: boolean]
   'update:focus-relation-depth': [depth: number]
   'update:metric-visible': [metricKey: 'coverage' | 'debt' | 'issues', visible: boolean]
+  'update:layers-visible': [visible: boolean]
   'update:view-mode': [mode: 'package-graph' | 'flat-modules']
 }>()
 
@@ -48,6 +51,11 @@ function onTooltipToggle(ev: Event) {
 function onMetricToggle(metricKey: 'coverage' | 'debt' | 'issues', ev: Event) {
   const target = ev.target as HTMLInputElement | null
   emit('update:metric-visible', metricKey, !!target?.checked)
+}
+
+function onLayersToggle(ev: Event) {
+  const target = ev.target as HTMLInputElement | null
+  emit('update:layers-visible', !!target?.checked)
 }
 
 function onFocusDepthInput(ev: Event) {
@@ -175,6 +183,19 @@ function onFocusDepthInput(ev: Event) {
           @change="onMetricToggle('issues', $event)"
         />
         <span class="diagram-top-bar__check-text">Issues</span>
+      </label>
+      <span class="diagram-top-bar__sep" aria-hidden="true" />
+      <label
+        class="diagram-top-bar__check"
+        title="Shade each dependency-layer column"
+      >
+        <input
+          type="checkbox"
+          aria-label="Show dependency layers"
+          :checked="layersVisible"
+          @change="onLayersToggle"
+        />
+        <span class="diagram-top-bar__check-text">Layers</span>
       </label>
       <span class="diagram-top-bar__sep" aria-hidden="true" />
       <label

@@ -28,6 +28,7 @@ import {
   type LayerFlipRect,
 } from '../graph/layerDrillFlip'
 import { isLayerDrillBoxNode, isLeafBoxNode } from '../graph/nodeKinds'
+import { graphNodesOnly } from '../graph/layerBands'
 
 const {
   getNodes,
@@ -46,6 +47,8 @@ const {
 
 const graphFocusUi = inject<{ containerFocusId: string | null } | undefined>('tritonGraphFocusUi', undefined)
 const afterLayerDrillOut = inject<(() => void | Promise<void>) | undefined>('tritonAfterLayerDrillOut', undefined)
+/** Rebuild the decorative layer bands from the current (focused) node set after a drill settles. */
+const syncLayerBands = inject<(() => void) | undefined>('tritonSyncLayerBands', undefined)
 const shouldSuppressPaneClick =
   inject<(() => boolean) | undefined>('tritonShouldSuppressPaneClick', undefined)
 const fitWorkspaceViewport = inject<
@@ -734,6 +737,13 @@ async function applyLayerDrill(moduleId: string) {
     return
   }
 
+  // Layer bands are decorative overlay nodes — keep them out of drill geometry and the snapshot.
+  if (getNodes.value.some((n) => n.type === 'layer-band')) {
+    setNodes(graphNodesOnly(getNodes.value))
+    nodes = getNodes.value
+    edges = getEdges.value
+  }
+
   if (!layerDrillId.value && focusedId.value) {
     layerDrillReturnFocusId.value = focusedId.value
   }
@@ -1062,6 +1072,7 @@ async function applyLayerDrill(moduleId: string) {
   })
   setNodes(stripLayerFlipsFromNodes(getNodes.value))
   flowEl?.classList.remove(FLIP_FLOW_CLASS)
+  syncLayerBands?.()
 }
 
 async function zoomIntoContainer(id: string) {

@@ -42,6 +42,8 @@ export interface TritonNodeData {
   notes?: string
   innerArtefactPinned?: Record<string, boolean>
   innerArtefactColors?: Record<string, string>
+  // Decorative layer-band nodes only (see layerBands.ts).
+  depth?: number
 }
 
 export type TritonFlowNode = Node<TritonNodeData>
