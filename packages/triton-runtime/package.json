@@ -7,7 +7,7 @@
     "pg": "^8.20.0"
   },
   "scripts": {
-    "start": "node ./src/cli.js"
+    "start": "node --env-file-if-exists=../../.env ./src/cli.js"
   },
   "bin": {
     "triton-runtime": "./src/cli.js"
