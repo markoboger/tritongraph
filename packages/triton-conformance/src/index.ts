@@ -10,3 +10,5 @@ export {
   observedImportsFromFacts,
 } from './ruleEngine'
 export type { ObservedImport } from './ruleEngine'
+export { summaryToChangedFact, parsePythonSignature } from './astExtractor'
+// NB: gitDiff.ts is Node-only (child_process) and intentionally not re-exported here.
