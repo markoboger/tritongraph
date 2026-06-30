@@ -2069,13 +2069,6 @@ async function openConformanceCheckerTab(): Promise<void> {
   )
 }
 
-/** From a violation, jump back to where the diagrams live (the runtime home overview).
- *  ponytail: once the checker runs against a live project, target that project's diagram tab here. */
-async function goToDiagramOverview(): Promise<void> {
-  const home = tabs.value.find((t) => t.key === RUNTIME_HOME_TAB_KEY)
-  if (home) await activateTabById(home.id)
-}
-
 /**
  * Linear chain: `import-link-1` → … → `import-link-n` with `imports` edges (dependent on the left,
  * imported symbol on the right), matching {@link layoutDependencyLayers} classpath semantics.
@@ -5219,7 +5212,7 @@ onUnmounted(() => {
         <div v-else-if="activeTab?.kind === 'checker'" class="triton-tab-page">
           <ConformanceChecker
             :runtime-base-url="effectiveRuntimeUrl"
-            @open-diagram="() => void goToDiagramOverview()"
+            @open-diagram="(t) => void openPythonExampleTab('python-examples', t.dir)"
           />
         </div>
         <div v-else class="diagram-with-yaml-toggle">

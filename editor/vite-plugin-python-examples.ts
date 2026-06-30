@@ -30,7 +30,8 @@ function collectPythonFiles(
       if (shouldSkipDir(child.name)) continue
       const abs = path.join(cur, child.name)
       if (fs.statSync(abs).isDirectory()) { stack.push(abs); continue }
-      if (!child.name.endsWith('.py')) continue
+      // .py for parsing; architecture-rules.yaml so the conformance checker can use project rules.
+      if (!child.name.endsWith('.py') && child.name !== 'architecture-rules.yaml') continue
       addWatchFile(abs)
       const relPath = path.relative(exampleDir, abs).replace(/\\/g, '/')
       out.push({ relPath, source: fs.readFileSync(abs, 'utf8') })

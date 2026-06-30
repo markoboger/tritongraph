@@ -1,4 +1,31 @@
-import type { ArchitectureRule, RulePredicate } from './types'
+import type { ArchitectureRule, ResolvedTopology, RulePredicate } from './types'
+
+/** Component names that look like an inner/domain layer — must stay framework-agnostic. */
+const INNER_LAYER = /domain|core|model|entit/i
+
+/**
+ * Fallback Soll rules when a project ships no `architecture-rules.yaml` (Increment 7b). A single
+ * semantic "no framework leak" rule, scoped to components whose name looks like an inner layer. If
+ * none match, the scope is empty and only the deterministic rule-engine runs.
+ */
+export function defaultRules(topology: ResolvedTopology): ArchitectureRule[] {
+  const inner = topology.components.filter((c) => INNER_LAYER.test(c))
+  if (inner.length === 0) return []
+  return [
+    {
+      id: 'no-framework-leak',
+      category: 'semantic-framework-leak',
+      kind: 'semantic',
+      scope: { components: inner },
+      statement:
+        'Domain/core/model logic must not depend on or reference framework or infrastructure ' +
+        'concepts (web request/response types, ORM session objects, HTTP clients, DI containers), ' +
+        'neither via import nor via function signatures. It is the inner layer and must stay ' +
+        'framework-agnostic.',
+      severity: 'error',
+    },
+  ]
+}
 
 /**
  * Validate a parsed `architecture-rules.yaml` (spec §3.1b) into typed rules.

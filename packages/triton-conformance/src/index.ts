@@ -3,7 +3,9 @@ export { buildMatchKey, matchKeyOf } from './matchKey'
 export { validateViolationRecord } from './validate'
 export type { ValidationResult } from './validate'
 export { resolveTopology, componentOf } from './topology'
-export { parseArchitectureRules } from './rules'
+export { parseArchitectureRules, defaultRules } from './rules'
+export { deriveTopologyFromCodeModel } from './deriveTopology'
+export type { DeriveTopologyOptions } from './deriveTopology'
 export {
   runRuleEngine,
   observedImportsFromCodeModel,
