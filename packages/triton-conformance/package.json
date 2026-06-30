@@ -17,7 +17,8 @@
     "./reporter": "./src/reporter.ts"
   },
   "scripts": {
-    "build": "tsc --project tsconfig.build.json"
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/cli.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "js-yaml": "^4.1.0",
@@ -25,6 +26,7 @@
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0"
   }
 }
