@@ -18,3 +18,8 @@ export { createOpenAiClient, VIOLATIONS_SCHEMA, promptHash } from './llmClient'
 export type { LlmClient, LlmRequest, LlmResponse, OpenAiClientOptions } from './llmClient'
 export { checkFactWithLlm } from './llmChecker'
 export type { LlmCheckOptions, LlmCheckOutput } from './llmChecker'
+export { check } from './check'
+export type { CheckInput } from './check'
+export { formatReport, exitCode, allViolations } from './reporter'
+export { filePathToModulePath } from './modulePath'
+// NB: cli.ts and cliExtractor.ts are Node-only (child_process/fs) — not re-exported here.

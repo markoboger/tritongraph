@@ -1,7 +1,7 @@
 /**
- * ponytail: minimal stand-in for the one Node API gitDiff.ts uses, so the package typechecks
- * without pulling a full toolchain. Superseded automatically once @types/node is installed (it is a
- * declared devDependency). Remove this file when that happens.
+ * ponytail: minimal stand-ins for the Node/js-yaml surface the CLI and gitDiff use, so the package
+ * typechecks without a full toolchain installed. Superseded automatically once @types/node and
+ * @types/js-yaml are installed (both declared as devDependencies). Remove this file when that happens.
  */
 declare module 'node:child_process' {
   export function execFileSync(
@@ -9,4 +9,22 @@ declare module 'node:child_process' {
     args: readonly string[],
     options: { cwd?: string; encoding: 'utf8' },
   ): string
+}
+
+declare module 'node:fs' {
+  export function readFileSync(path: string, encoding: 'utf8'): string
+}
+
+declare module 'js-yaml' {
+  export function load(text: string): unknown
+  export function dump(value: unknown): string
+  const _default: { load: typeof load; dump: typeof dump }
+  export default _default
+}
+
+declare const process: {
+  argv: string[]
+  env: Record<string, string | undefined>
+  cwd(): string
+  exit(code: number): never
 }
