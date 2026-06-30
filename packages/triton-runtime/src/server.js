@@ -2232,6 +2232,54 @@ function createRuntimeServer(options = {}) {
       return
     }
 
+    // Conformance checker LLM proxy (deployment shape, spec §6). Holds the API key server-side so it
+    // never reaches the browser; all conformance logic runs in the editor and calls this as its
+    // LlmClient. This shape does NOT measure — measurements are taken by the CLI core (C-8).
+    if (method === 'POST' && pathname === '/api/conformance/llm') {
+      const apiKey = process.env.CONFORMANCE_API_KEY
+      if (!apiKey) {
+        sendJson(res, 501, { ok: false, error: 'llm_not_configured' })
+        return
+      }
+      const body = safeJsonParse(await collectBody(req))
+      if (!body || !Array.isArray(body.messages)) {
+        sendJson(res, 400, { ok: false, error: 'invalid_json' })
+        return
+      }
+      const baseUrl = (process.env.CONFORMANCE_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '')
+      const model = body.model || process.env.CONFORMANCE_MODEL || 'openai/gpt-4o-mini'
+      try {
+        const upstream = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model,
+            messages: body.messages,
+            temperature: 0,
+            seed: 42,
+            response_format: body.schema
+              ? { type: 'json_schema', json_schema: { name: body.schemaName || 'conformance_violations', schema: body.schema, strict: true } }
+              : undefined,
+          }),
+        })
+        if (!upstream.ok) {
+          sendJson(res, 502, { ok: false, error: 'upstream_error', status: upstream.status, detail: await upstream.text() })
+          return
+        }
+        const data = await upstream.json()
+        sendJson(res, 200, {
+          ok: true,
+          text: data.choices?.[0]?.message?.content ?? '',
+          model: data.model ?? model,
+          promptTokens: data.usage?.prompt_tokens ?? 0,
+          completionTokens: data.usage?.completion_tokens ?? 0,
+        })
+      } catch (err) {
+        sendJson(res, 502, { ok: false, error: 'llm_request_failed', detail: String((err && err.message) || err) })
+      }
+      return
+    }
+
     if (method === 'GET' && pathname === '/api/courses') {
       if (typeof config.persistence.listCourses !== 'function') {
         sendJson(res, 501, { ok: false, error: 'courses_not_supported' })

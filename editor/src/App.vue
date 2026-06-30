@@ -7,6 +7,7 @@ import GroupNode from './components/GroupNode.vue'
 import GraphWorkspace from './components/GraphWorkspace.vue'
 import DiagramTopBar from './components/common/DiagramTopBar.vue'
 import TritonRuntimeHome from './components/TritonRuntimeHome.vue'
+import ConformanceChecker from './components/ConformanceChecker.vue'
 import type { StarterCard } from './triton/tritonStarterCard'
 import { dockerDiagramExamples } from './triton/dockerDiagramExamples'
 import { dockerBrandIconUrl, isDockerConceptIconKey } from './triton/dockerConceptIcons'
@@ -985,7 +986,7 @@ interface DiagramTab {
   id: string
   key: string
   title: string
-  kind?: 'diagram' | 'source' | 'runtime'
+  kind?: 'diagram' | 'source' | 'runtime' | 'checker'
   iconUrl?: string
   /** Tooltip on the tab + value used by the source-path overlay when this tab is active. */
   sourcePath: string
@@ -2008,7 +2009,7 @@ watch(editorLinkPreferenceDialogOpen, (open) => {
 })
 
 async function openOrActivateTab(
-  spec: { key: string; title: string; iconUrl?: string; kind?: 'diagram' | 'source' },
+  spec: { key: string; title: string; iconUrl?: string; kind?: 'diagram' | 'source' | 'checker' },
   loader: () => Promise<void>,
 ): Promise<void> {
   const existing = tabs.value.find((t) => t.key === spec.key)
@@ -2058,6 +2059,21 @@ async function openBuiltinTab(): Promise<void> {
     { key: 'builtin', title: 'example.ilograph.yaml' },
     () => loadBuiltinExample(),
   )
+}
+
+/** Conformance checker subpage (deployment shape). No diagram to load — the component renders itself. */
+async function openConformanceCheckerTab(): Promise<void> {
+  await openOrActivateTab(
+    { key: 'conformance-checker', title: 'Conformance', kind: 'checker' },
+    async () => {},
+  )
+}
+
+/** From a violation, jump back to where the diagrams live (the runtime home overview).
+ *  ponytail: once the checker runs against a live project, target that project's diagram tab here. */
+async function goToDiagramOverview(): Promise<void> {
+  const home = tabs.value.find((t) => t.key === RUNTIME_HOME_TAB_KEY)
+  if (home) await activateTabById(home.id)
 }
 
 /**
@@ -5197,6 +5213,13 @@ onUnmounted(() => {
             @open-packages="(p) => p.kind === 'python' ? void openRuntimePythonTab(p.workspacePath, p.workspaceName) : void openRuntimePackagesTab(p.workspacePath, p.workspaceName)"
             @select-example="(id) => void selectExample(id)"
             @open-workspace-test-log="(p) => void openRuntimeWorkspaceTestLogTab(p.workspacePath, p.workspaceName)"
+            @open-conformance-checker="() => void openConformanceCheckerTab()"
+          />
+        </div>
+        <div v-else-if="activeTab?.kind === 'checker'" class="triton-tab-page">
+          <ConformanceChecker
+            :runtime-base-url="effectiveRuntimeUrl"
+            @open-diagram="() => void goToDiagramOverview()"
           />
         </div>
         <div v-else class="diagram-with-yaml-toggle">

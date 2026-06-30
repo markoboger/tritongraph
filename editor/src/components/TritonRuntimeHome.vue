@@ -120,6 +120,7 @@ const emit = defineEmits<{
   openPackages: [payload: { workspacePath: string; workspaceName: string; kind?: string }]
   selectExample: [selectionId: string]
   openWorkspaceTestLog: [payload: { workspacePath: string; workspaceName: string }]
+  openConformanceChecker: []
 }>()
 
 const workspacePathInput = ref('')
@@ -1279,6 +1280,13 @@ watch(
             aria-hidden="true"
           />
           <h1>Triton Architecture Explorer</h1>
+          <button
+            type="button"
+            class="runtime-home__btn runtime-home__btn--primary"
+            @click="emit('openConformanceChecker')"
+          >
+            Conformance Checker
+          </button>
         </div>
         <p>
           Use <strong>Add local repo</strong> (folder), <strong>Add new repo</strong> (GitHub / GitLab), and
