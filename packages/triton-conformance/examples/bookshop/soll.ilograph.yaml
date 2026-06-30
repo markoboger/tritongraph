@@ -1,0 +1,44 @@
+# Target architecture ("Soll") for the rich_repo bookshop, clean-architecture layering.
+# Components are the resources referenced by the perspective relations; every nested module belongs
+# to its component. The relations are the allowed-edge whitelist — anything not listed is forbidden.
+#
+# Real, conformant edges in rich_repo:
+#   api -> application, api -> domain, application -> domain, application -> infrastructure,
+#   infrastructure -> domain.  domain depends on nothing (inner layer).
+resources:
+  - id: domain
+    name: Domain
+    children:
+      - { id: bookshop.domain }
+      - { id: bookshop.domain.book }
+      - { id: bookshop.domain.catalog }
+      - { id: bookshop.domain.order }
+      - { id: bookshop.domain.pricing }
+  - id: application
+    name: Application
+    children:
+      - { id: bookshop.application }
+      - { id: bookshop.application.checkout }
+      - { id: bookshop.application.inventory }
+  - id: api
+    name: API
+    children:
+      - { id: bookshop.api }
+      - { id: bookshop.api.catalog_routes }
+      - { id: bookshop.api.checkout_routes }
+  - id: infrastructure
+    name: Infrastructure
+    children:
+      - { id: bookshop.infrastructure }
+      - { id: bookshop.infrastructure.book_repository }
+      - { id: bookshop.infrastructure.order_repository }
+      - { id: bookshop.infrastructure.payment_gateway }
+
+perspectives:
+  - name: dependencies
+    relations:
+      - { from: api, to: application }
+      - { from: api, to: domain }
+      - { from: application, to: domain }
+      - { from: application, to: infrastructure }
+      - { from: infrastructure, to: domain }

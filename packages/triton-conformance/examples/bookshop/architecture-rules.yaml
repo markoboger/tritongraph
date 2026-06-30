@@ -1,0 +1,12 @@
+# Explicit architecture rules for the bookshop. The forbidden-edge / cycle checks are derived from
+# the topology automatically; this file holds the semantic rules the LLM judges.
+rules:
+  - id: no-domain-framework-coupling
+    category: semantic-framework-leak
+    kind: semantic
+    scope: { components: [domain] }
+    statement: >
+      Domain logic must not depend on or reference framework or infrastructure concepts (web
+      request/response types, ORM session objects, HTTP clients, DI containers), neither via import
+      nor via function signatures. The domain is the inner layer and must stay framework-agnostic.
+    severity: error
