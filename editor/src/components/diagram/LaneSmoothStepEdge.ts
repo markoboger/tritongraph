@@ -1,6 +1,6 @@
 import { defineComponent, h, inject } from 'vue'
 import { BaseEdge, Position, getSmoothStepPath } from '@vue-flow/core'
-import { ADDED_EDGE_COLOR, gitDiffKey, importEdgeKey } from '../../graph/gitDiffOverlay'
+import { ADDED_EDGE_COLOR, gitDiffImportEdgeColor, gitDiffKey, isGhostEdge } from '../../graph/gitDiffOverlay'
 
 /**
  * Drop-in replacement for Vue Flow's built-in `SmoothStepEdge` that honors the
@@ -151,16 +151,31 @@ export default defineComponent({
     'loopRunY',
   ],
   compatConfig: { MODE: 3 },
+  /**
+   * We forward `attrs` into `h(BaseEdge, ...)` ourselves. Without this, Vue *also*
+   * auto-applies the component's raw `$attrs` onto that same root vnode after render,
+   * re-merging the original (pre-diff) edge style on top of ours — silently reverting
+   * any stroke color override — and dumping every unrelated fallthrough attribute
+   * (`source`, `data`, `sourceNode`, ...) onto the rendered `<path>` element.
+   */
+  inheritAttrs: false,
   setup(props: Record<string, unknown>, { attrs }: { attrs: Record<string, unknown> }) {
     const gitDiff = inject(gitDiffKey, null)
-    /** Tint an edge green when the git-diff overlay is on and its import was added this revision. */
-    function addedImportOverride(): Record<string, unknown> {
-      if (!gitDiff?.visible.value) return {}
-      const key = importEdgeKey(String(attrs.source ?? ''), String(attrs.target ?? ''))
-      if (!gitDiff.importDiff.value.added.has(key)) return {}
-      const style = { ...(attrs.style as object), stroke: ADDED_EDGE_COLOR, strokeWidth: 2 }
-      const marker = attrs.markerEnd ? { ...(attrs.markerEnd as object), color: ADDED_EDGE_COLOR } : undefined
-      return marker ? { style, markerEnd: marker } : { style }
+    /** Tint the line, label, and (via CSS var) the endpoint handle dots to match the diff status. */
+    function diffOverride(): Record<string, unknown> {
+      if (isGhostEdge(attrs.id as string | undefined)) return {}
+      const color = gitDiffImportEdgeColor(gitDiff, String(attrs.source ?? ''), String(attrs.target ?? ''))
+      if (!color) return {}
+      const added = color === ADDED_EDGE_COLOR
+      return {
+        style: {
+          ...(attrs.style as object),
+          stroke: color,
+          strokeWidth: added ? 2 : undefined,
+          opacity: added ? 1 : 0.5,
+        },
+        labelStyle: { ...(props.labelStyle as object), fill: color },
+      }
     }
     return () => {
       const sourcePosition = (props.sourcePosition as Position | undefined) ?? Position.Bottom
@@ -203,7 +218,7 @@ export default defineComponent({
           centerY,
         } as Parameters<typeof getSmoothStepPath>[0])
       }
-      return h(BaseEdge as never, { path, labelX, labelY, ...attrs, ...props, ...addedImportOverride() })
+      return h(BaseEdge as never, { path, labelX, labelY, ...attrs, ...props, ...diffOverride() })
     }
   },
 })

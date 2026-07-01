@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { gitDiffImportEdgeColor, gitDiffKey, isGhostEdge } from '../../graph/gitDiffOverlay'
 import {
   aggregateFanTopPctForUsedSlots,
   aggregateSourceHandleId,
@@ -18,6 +19,7 @@ const props = defineProps<{
 }>()
 
 const { getEdges } = useVueFlow()
+const gitDiff = inject(gitDiffKey, null)
 const measureVersion = ref(0)
 let measureRaf = 0
 let ro: ResizeObserver | null = null
@@ -26,6 +28,16 @@ const used = computed(() => usedHandlesForNode(props.nodeId, getEdges.value))
 
 function edgeVisible(e: { hidden?: boolean }): boolean {
   return !(e as { hidden?: boolean }).hidden
+}
+
+/** Match the edge renderer's diff tint so a handle dot never disagrees with the line it anchors. */
+function strokeForHit(hit: { id?: string; source?: unknown; target?: unknown; label?: unknown; style?: unknown } | undefined): string {
+  if (!hit) return '#64748b'
+  if (!isGhostEdge(hit.id)) {
+    const diffColor = gitDiffImportEdgeColor(gitDiff, String(hit.source ?? ''), String(hit.target ?? ''))
+    if (diffColor) return diffColor
+  }
+  return strokeColorForFlowEdge(hit)
 }
 
 const strokeAggInBySlot = computed(() => {
@@ -39,7 +51,7 @@ const strokeAggInBySlot = computed(() => {
         String(e.target) === props.nodeId &&
         String(e.targetHandle ?? aggregateTargetHandleId(0)) === hid,
     )
-    out[slot] = hit ? strokeColorForFlowEdge(hit) : '#64748b'
+    out[slot] = strokeForHit(hit)
   }
   return out
 })
@@ -55,7 +67,7 @@ const strokeAggOutBySlot = computed(() => {
         String(e.source) === props.nodeId &&
         String(e.sourceHandle ?? aggregateSourceHandleId(0)) === hid,
     )
-    out[slot] = hit ? strokeColorForFlowEdge(hit) : '#64748b'
+    out[slot] = strokeForHit(hit)
   }
   return out
 })

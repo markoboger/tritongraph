@@ -73,6 +73,7 @@ function walk(container: CodeContainer, churn: ChurnByFile, out: Record<string, 
 /** Added import edges tint green; removed ones become dashed-red ghost lines. */
 export const ADDED_EDGE_COLOR = '#16a34a'
 export const REMOVED_EDGE_COLOR = '#dc2626'
+export const UNCHANGED_EDGE_COLOR = '#94a3b8'
 export const GHOST_EDGE_ID_PREFIX = 'gitdiff-ghost:'
 
 /** Container-import changes between two revisions. Keys are `${fromModule}->${toModule}`. */
@@ -160,4 +161,20 @@ export function useGitDiffStatus(nodeId: () => string): ComputedRef<DiffStatus |
     if (!ctx || !ctx.visible.value) return null
     return ctx.statusById.value[nodeId()] ?? 'unchanged'
   })
+}
+
+/**
+ * The color an import edge (and everything drawn to match it — line, label, handle dots) should
+ * use while the diff overlay is on, or `null` when it's off (then normal colours apply). Shared so
+ * the edge renderer and the handle-dot component agree on the same green/grey without duplicating
+ * the added-vs-unchanged check.
+ */
+export function gitDiffImportEdgeColor(
+  ctx: GitDiffContext | null | undefined,
+  source: string,
+  target: string,
+): string | null {
+  if (!ctx?.visible.value) return null
+  const key = importEdgeKey(source, target)
+  return ctx.importDiff.value.added.has(key) ? ADDED_EDGE_COLOR : UNCHANGED_EDGE_COLOR
 }
