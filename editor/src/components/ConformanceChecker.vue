@@ -437,7 +437,7 @@ function openDiagram(v: ViolationRecord): void {
 </template>
 
 <style scoped>
-.conformance { padding: 1.5rem; max-width: 60rem; margin: 0 auto; }
+.conformance { padding: 1.5rem; max-width: 60rem; margin: 0 auto; flex: 1; min-height: 0; overflow-y: auto; }
 .conformance__lead { color: var(--triton-muted, #666); max-width: 48rem; }
 .conformance__controls { display: flex; gap: 1rem; align-items: center; margin-top: 1rem; flex-wrap: wrap; }
 .conformance__soll { margin-top: 1.5rem; border-top: 1px solid #eee; padding-top: 1rem; }
