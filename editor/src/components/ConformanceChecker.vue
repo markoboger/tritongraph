@@ -288,13 +288,21 @@ function openDiagram(v: ViolationRecord): void {
 <template>
   <div class="conformance">
     <header class="conformance__head">
-      <h1>Conformance Checker</h1>
-      <p class="conformance__lead">
-        Checks a Python project against a target architecture and reports violations. The
-        rule-engine always runs; enable the LLM to also check semantic rules (key stays server-side).
-      </p>
+      <div class="conformance__head-row">
+        <div class="conformance__head-icon" aria-hidden="true">C</div>
+        <div>
+          <h1>Conformance Checker</h1>
+          <p class="conformance__lead">
+            Checks a Python project against a target architecture and reports violations. The
+            rule-engine always runs; enable the LLM to also check semantic rules (key stays server-side).
+          </p>
+        </div>
+      </div>
+    </header>
 
-      <div class="conformance__controls">
+    <section class="conformance__card">
+      <h2 class="conformance__card-title">Source</h2>
+      <div class="conformance__controls conformance__segmented">
         <label><input type="radio" value="example" v-model="projectSource" @change="onSourceChange" /> Example</label>
         <label><input type="radio" value="repository" v-model="projectSource" @change="onSourceChange" /> Repository</label>
       </div>
@@ -330,11 +338,11 @@ function openDiagram(v: ViolationRecord): void {
           {{ loading ? 'Loading…' : 'Load repository' }}
         </button>
       </div>
-    </header>
+    </section>
 
-    <section v-if="project" class="conformance__soll">
-      <h2>Target topology</h2>
-      <div class="conformance__controls">
+    <section v-if="project" class="conformance__soll conformance__card">
+      <h2 class="conformance__card-title">Target topology</h2>
+      <div class="conformance__controls conformance__segmented">
         <label><input type="radio" value="derive" v-model="topologyMode" /> Derive from project</label>
         <label><input type="radio" value="load" v-model="topologyMode" /> Load ilograph.yaml</label>
       </div>
@@ -344,17 +352,22 @@ function openDiagram(v: ViolationRecord): void {
           Component depth
           <input type="number" min="1" max="5" v-model.number="componentDepth" />
         </label>
-        <p class="conformance__muted">Components: {{ derivedTopology.components.join(', ') }}</p>
+        <div class="conformance__muted conformance__chips">
+          <span>Components:</span>
+          <span v-for="c in derivedTopology.components" :key="c" class="conformance__chip">{{ c }}</span>
+        </div>
         <p class="conformance__muted">Allowed component edges (un-check to forbid):</p>
         <ul class="conformance__edges">
           <li v-for="e in derivedTopology.allowedEdges" :key="`${e.from}->${e.to}`">
-            <label>
+            <label class="conformance__toggle">
               <input
                 type="checkbox"
+                class="conformance__toggle-input"
                 :checked="!disabledEdges.has(`${e.from}->${e.to}`)"
                 @change="toggleEdge(`${e.from}->${e.to}`, ($event.target as HTMLInputElement).checked)"
               />
-              {{ e.from }} → {{ e.to }}
+              <span class="conformance__toggle-track" aria-hidden="true"></span>
+              <span class="conformance__toggle-label">{{ e.from }} → {{ e.to }}</span>
             </label>
           </li>
           <li v-if="derivedTopology.allowedEdges.length === 0" class="conformance__muted">
@@ -374,11 +387,20 @@ function openDiagram(v: ViolationRecord): void {
       </div>
 
       <p class="conformance__muted">Rules: {{ rules.length }} ({{ rulesSource }})</p>
+    </section>
 
+    <section v-if="project" class="conformance__card">
+      <h2 class="conformance__card-title">Run options</h2>
       <div class="conformance__controls">
-        <label><input type="checkbox" v-model="useLlm" /> Use LLM (semantic rules)</label>
-        <label v-if="loadedWorkspace">
-          <input type="checkbox" v-model="historyMode" /> Compare vs previous commit (new vs legacy)
+        <label class="conformance__toggle">
+          <input type="checkbox" class="conformance__toggle-input" v-model="useLlm" />
+          <span class="conformance__toggle-track" aria-hidden="true"></span>
+          <span class="conformance__toggle-label">Use LLM (semantic rules)</span>
+        </label>
+        <label v-if="loadedWorkspace" class="conformance__toggle">
+          <input type="checkbox" class="conformance__toggle-input" v-model="historyMode" />
+          <span class="conformance__toggle-track" aria-hidden="true"></span>
+          <span class="conformance__toggle-label">Compare vs previous commit (new vs legacy)</span>
         </label>
         <button type="button" :disabled="running || !topology" @click="void run()">
           {{ running ? 'Checking…' : 'Run check' }}
@@ -392,9 +414,10 @@ function openDiagram(v: ViolationRecord): void {
 
     <p v-if="error" class="conformance__error" role="alert">{{ error }}</p>
 
-    <section v-if="results">
+    <section v-if="results" class="conformance__results">
+      <h2 class="conformance__results-title">Results</h2>
       <p v-if="violations.length === 0" class="conformance__ok">Conformance OK — no violations.</p>
-      <div v-for="[file, fileViolations] in byFile" :key="file" class="conformance__file">
+      <div v-for="[file, fileViolations] in byFile" :key="file" class="conformance__file conformance__card">
         <h2>{{ file }}</h2>
         <ul>
           <li v-for="(v, i) in fileViolations" :key="i" :class="`sev-${v.severity}`">
@@ -413,7 +436,7 @@ function openDiagram(v: ViolationRecord): void {
     </section>
 
     <section v-if="history">
-      <div v-for="b in buckets" :key="b.key" class="conformance__bucket" :class="`conformance__bucket--${b.key}`">
+      <div v-for="b in buckets" :key="b.key" class="conformance__bucket conformance__card" :class="`conformance__bucket--${b.key}`">
         <h2>{{ b.title }}</h2>
         <p v-if="b.groups.length === 0" class="conformance__muted">(none)</p>
         <div v-for="[file, fileViolations] in b.groups" :key="file" class="conformance__file">
@@ -437,34 +460,187 @@ function openDiagram(v: ViolationRecord): void {
 </template>
 
 <style scoped>
-.conformance { padding: 1.5rem; max-width: 60rem; margin: 0 auto; flex: 1; min-height: 0; overflow-y: auto; }
-.conformance__lead { color: var(--triton-muted, #666); max-width: 48rem; }
+.conformance {
+  padding: 1.5rem;
+  max-width: 1040px;
+  margin: 0 auto;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: #eef6f7;
+  display: grid;
+  gap: 22px;
+  align-content: start;
+}
+
+/* Header */
+.conformance__head-row { display: flex; align-items: center; gap: 14px; }
+.conformance__head-icon {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #0f172a;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 22px;
+  font-weight: 700;
+}
+.conformance__head h1 {
+  margin: 0;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 26px;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+}
+.conformance__lead { color: #55606b; max-width: 48rem; margin: 4px 0 0; font-size: 14px; line-height: 1.5; }
+
+/* Cards */
+.conformance__card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 20px 22px;
+  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.04);
+}
+.conformance__card > h2,
+.conformance__card-title {
+  margin: 0 0 4px;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 16px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.conformance__soll { margin-top: 0; }
+
 .conformance__controls { display: flex; gap: 1rem; align-items: center; margin-top: 1rem; flex-wrap: wrap; }
-.conformance__soll { margin-top: 1.5rem; border-top: 1px solid #eee; padding-top: 1rem; }
-.conformance__muted { color: var(--triton-muted, #777); font-size: 0.9rem; margin: 0.5rem 0 0; }
+.conformance__muted { color: #55606b; font-size: 0.9rem; margin: 0.5rem 0 0; }
 .conformance__depth input { width: 3.5rem; margin-left: 0.4rem; }
-.conformance__edges { list-style: none; padding: 0; margin: 0.25rem 0; }
+.conformance__edges { list-style: none; padding: 0; margin: 0.5rem 0; display: grid; gap: 4px; }
 .conformance__edges li { padding: 0.1rem 0; }
-.conformance__yaml { width: 100%; font-family: monospace; font-size: 0.85rem; margin-top: 0.5rem; }
-.conformance__error { color: #b00020; }
-.conformance__ok { color: #1b7f3b; font-weight: 600; }
-.conformance__bucket { margin-top: 1.5rem; padding-left: 0.75rem; border-left: 4px solid #ccc; }
+.conformance__yaml {
+  width: 100%;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-sizing: border-box;
+}
+.conformance__error { color: #b42318; }
+.conformance__ok { color: #15803d; font-weight: 600; }
+
+/* Segmented control (radio pairs) */
+.conformance__segmented { display: inline-flex; gap: 0; background: #eef1f4; border-radius: 9px; padding: 3px; margin-top: 1rem; }
+.conformance__segmented label {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #55606b;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.conformance__segmented input[type='radio'] { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+.conformance__segmented label:has(input:checked) { background: #0f172a; color: #fff; }
+
+/* Toggle switch (checkboxes) */
+.conformance__toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; font-size: 14px; }
+.conformance__toggle-input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+.conformance__toggle-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: #d7dee2;
+  transition: background 0.15s ease;
+}
+.conformance__toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
+  transition: transform 0.15s ease;
+}
+.conformance__toggle-input:checked + .conformance__toggle-track { background: #0d9488; }
+.conformance__toggle-input:checked + .conformance__toggle-track::after { transform: translateX(16px); }
+.conformance__toggle-input:focus-visible + .conformance__toggle-track { outline: 2px solid #0ea5e9; outline-offset: 2px; }
+
+/* Chips */
+.conformance__chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.conformance__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #eef1f4;
+  color: #33404a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Results */
+.conformance__results-title { margin: 0; font-family: Georgia, 'Times New Roman', serif; font-size: 20px; font-weight: 700; color: #0f172a; }
+.conformance__bucket { margin-top: 0; padding-left: 1rem; border-left: 4px solid #ccc; }
 .conformance__bucket--new { border-left-color: #dc2626; }
 .conformance__bucket--legacy { border-left-color: #94a3b8; }
 .conformance__bucket--fixed { border-left-color: #16a34a; }
 .conformance__bucket h3 { font-size: 0.95rem; margin: 0.75rem 0 0; }
 .conformance__file { margin-top: 1.25rem; }
+.conformance__file:first-child { margin-top: 0; }
 .conformance__file ul { list-style: none; padding: 0; }
 .conformance__file li { border-left: 3px solid #ccc; padding: 0.5rem 0.75rem; margin: 0.5rem 0; }
-.conformance__file li.sev-error { border-left-color: #b00020; }
-.conformance__file li.sev-warning { border-left-color: #d98e00; }
+.conformance__file li.sev-error { border-left-color: #b42318; }
+.conformance__file li.sev-warning { border-left-color: #92620a; }
 .conformance__row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-.badge { font-size: 0.7rem; text-transform: uppercase; padding: 0.1rem 0.4rem; border-radius: 0.25rem; background: #eee; }
-.badge--error { background: #fbe0e3; color: #b00020; }
-.badge--warning { background: #fbf0d6; color: #8a5b00; }
-.badge--src { background: #e6eefb; color: #2a4d8f; }
-.conformance__rule { color: #777; font-size: 0.85rem; }
+
+.badge { font-size: 0.7rem; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; background: #eef1f4; color: #55606b; font-weight: 700; letter-spacing: 0.03em; }
+.badge--error { background: #fde2e1; color: #b42318; }
+.badge--warning { background: #fdf0d5; color: #92620a; }
+.badge--src { background: #eef1f4; color: #55606b; }
+.conformance__rule { color: #55606b; font-size: 0.85rem; }
 .conformance__reason { margin: 0.35rem 0 0; }
-.conformance__fix { margin: 0.15rem 0 0; color: #1b7f3b; font-size: 0.9rem; }
-.conformance__link { margin-left: auto; background: none; border: none; color: #2a4d8f; cursor: pointer; }
+.conformance__fix { margin: 0.15rem 0 0; color: #15803d; font-size: 0.9rem; }
+
+/* Generic element styling (buttons, selects, inputs) */
+.conformance button {
+  border: 1px solid #0d9488;
+  background: #0d9488;
+  color: #fff;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.conformance button:hover:not(:disabled) { background: #0f766e; border-color: #0f766e; }
+.conformance button:disabled { opacity: 0.5; cursor: not-allowed; }
+.conformance button.conformance__link {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #0d9488;
+  padding: 0;
+  font-weight: 600;
+}
+.conformance button.conformance__link:hover:not(:disabled) { background: none; color: #0f766e; }
+.conformance select,
+.conformance__repo-path {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+}
 </style>
