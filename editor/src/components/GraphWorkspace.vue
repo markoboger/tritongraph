@@ -1636,6 +1636,38 @@ async function applyLayerDrill(nodeId: string): Promise<boolean> {
   return layerDrillActive()
 }
 
+/**
+ * Highlight and zoom to a specific set of nodes (and optionally the edge between two of them),
+ * e.g. when arriving from a conformance finding's "View diagram" link. Sets `.selected` (the same
+ * focus-ring flag Vue Flow renders, reused from {@link onPaneClickClearHover}) and scopes the camera
+ * to just those nodes via Vue Flow's native `fitView({ nodes })`.
+ *
+ * ponytail: matches only currently-visible nodes; both callers load a fresh, undrilled package
+ * graph, so there is nothing hidden to expand. Add ancestor-expansion here if a pre-drilled entry
+ * point ever needs it.
+ */
+async function focusOn(target: { nodeIds: string[]; edge?: { from: string; to: string } }): Promise<void> {
+  const wanted = new Set(target.nodeIds.filter(Boolean))
+  if (!wanted.size) return
+  const edge = target.edge
+
+  nodes.value = nodes.value.map((n) =>
+    ({ ...n, selected: wanted.has(String(n.id)) }) as typeof n,
+  )
+  edges.value = edges.value.map((e) => {
+    const match =
+      !!edge &&
+      String((e as { source?: unknown }).source) === edge.from &&
+      String((e as { target?: unknown }).target) === edge.to
+    return { ...e, selected: match } as typeof e
+  })
+
+  await nextTick()
+  const present = nodes.value.filter((n) => wanted.has(String(n.id)))
+  if (!present.length) return
+  await fitView({ nodes: present.map((n) => String(n.id)), padding: 0.3, duration: 400, maxZoom: 1.6 })
+}
+
 /** Clear drill/focus snapshot after structural doc replace; parent should call `fitToViewport` next. */
 function resetNavigationAfterDocReplace() {
   resetVerticalScrollChrome()
@@ -1851,6 +1883,7 @@ defineExpose({
   resetNavigationAfterDocReplace,
   fitToViewport,
   applyLayerDrill,
+  focusOn,
   relayoutViewport,
   syncLayerBands,
   refreshEdgeEmphasis: syncEdgeVisualState,

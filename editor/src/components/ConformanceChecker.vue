@@ -37,7 +37,13 @@ import { splitViolationsByHistory, type ViolationHistory } from '../conformance/
 import { createServerLlmClient } from '../conformance/serverLlmClient'
 
 const props = defineProps<{ runtimeBaseUrl: string }>()
-const emit = defineEmits<{ openDiagram: [target: { dir: string; module: string }] }>()
+
+/** Where a finding's "View diagram" link should navigate, plus the node(s)/edge to focus. */
+type DiagramFocus = { component: string; toComponent?: string }
+type OpenDiagramTarget =
+  | { kind: 'example'; dir: string; focus: DiagramFocus }
+  | { kind: 'repository'; workspacePath: string; workspaceName: string; focus: DiagramFocus }
+const emit = defineEmits<{ openDiagram: [target: OpenDiagramTarget] }>()
 
 const examples = listPythonExamples().filter((e) => e.root === 'python-examples')
 
@@ -280,9 +286,29 @@ const buckets = computed(() => {
   ]
 })
 
-function openDiagram(v: ViolationRecord): void {
-  if (entry.value) emit('openDiagram', { dir: entry.value.dir, module: v.location.module })
+/** Root-cause focus from a violation: the offending edge's two components, or a single node. */
+function focusForViolation(v: ViolationRecord): DiagramFocus {
+  const component = v.subject.from ?? v.location.component ?? v.location.module
+  return v.subject.to ? { component, toComponent: v.subject.to } : { component }
 }
+
+/** Emit "open the project's diagram" for the loaded source (bundled example or runtime repository). */
+function openDiagram(v: ViolationRecord): void {
+  const focus = focusForViolation(v)
+  if (entry.value) {
+    emit('openDiagram', { kind: 'example', dir: entry.value.dir, focus })
+  } else if (loadedWorkspace.value) {
+    emit('openDiagram', {
+      kind: 'repository',
+      workspacePath: loadedWorkspace.value.workspacePath,
+      workspaceName: loadedWorkspace.value.workspaceName,
+      focus,
+    })
+  }
+}
+
+/** True when a diagram target is available for the current source (drives the link's visibility). */
+const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
 </script>
 
 <template>
@@ -426,7 +452,7 @@ function openDiagram(v: ViolationRecord): void {
               <span class="badge badge--src">{{ v.source }}</span>
               <strong>{{ v.category }}</strong>
               <span class="conformance__rule">({{ v.rule_id }}<template v-if="v.location.symbol"> · {{ v.location.symbol }}</template>)</span>
-              <button v-if="entry" type="button" class="conformance__link" @click="openDiagram(v)">View diagram →</button>
+              <button v-if="canOpenDiagram" type="button" class="conformance__link" @click="openDiagram(v)">View diagram →</button>
             </div>
             <p class="conformance__reason">{{ v.reason }}</p>
             <p class="conformance__fix">fix: {{ v.suggestion }}</p>
@@ -448,6 +474,7 @@ function openDiagram(v: ViolationRecord): void {
                 <span class="badge badge--src">{{ v.source }}</span>
                 <strong>{{ v.category }}</strong>
                 <span class="conformance__rule">({{ v.rule_id }}<template v-if="v.location.symbol"> · {{ v.location.symbol }}</template>)</span>
+                <button v-if="canOpenDiagram" type="button" class="conformance__link" @click="openDiagram(v)">View diagram →</button>
               </div>
               <p class="conformance__reason">{{ v.reason }}</p>
               <p class="conformance__fix">fix: {{ v.suggestion }}</p>

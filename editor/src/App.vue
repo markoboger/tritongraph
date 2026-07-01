@@ -590,6 +590,7 @@ async function openPythonPackageDrillTab(
   packageId: string,
   parentKey: string,
   parentEntry: { model: CodeModel },
+  focus?: DiagramFocus,
 ): Promise<void> {
   const innerTabKey = `package-inner:${parentKey}#${encodeURIComponent(packageId)}`
   const name = packageId.split('.').pop() || packageId
@@ -602,7 +603,10 @@ async function openPythonPackageDrillTab(
       scopeContainerId: packageId,
       title: name,
     })
-    await applyDoc(stringifyIlographYaml(doc), `${name}.ilograph.yaml`, false, { moduleNodeType: 'package' })
+    await applyDoc(stringifyIlographYaml(doc), `${name}.ilograph.yaml`, false, {
+      moduleNodeType: 'package',
+      initialFocus: focus,
+    })
   })
   const innerTab = tabs.value.find((t) => t.key === innerTabKey)
   if (innerTab) {
@@ -1109,6 +1113,9 @@ const activeTab = computed<DiagramTab | undefined>(() =>
   tabs.value.find((t) => t.id === activeTabId.value),
 )
 
+/** True while a Conformance tab exists — keeps its component mounted (see the `v-show` block). */
+const hasCheckerTab = computed(() => tabs.value.some((t) => t.kind === 'checker'))
+
 /**
  * Current Python projection mode for the active tab, or null when it isn't a CodeModel-backed tab.
  * Reads the reactive `pythonViewMode` tab field (set only for Python tabs) — not the non-reactive
@@ -1608,11 +1615,39 @@ function scheduleRelayoutFromResize() {
   }, 160)
 }
 
+/** Focus signal carried from a conformance finding to the diagram it opens. */
+type DiagramFocus = { component: string; toComponent?: string }
+
+/**
+ * Map a conformance `component`/`module` string to a real diagram node id. Diagram node ids come
+ * from `resourceKey` (`resource.id ?? resource.name`) and may be a deeper or shallower dotted prefix
+ * than the conformance component, so we try exact match, then walk up (dropping trailing segments),
+ * then fall back to any descendant. Returns null when nothing matches (focus is best-effort).
+ */
+function resolveDiagramNodeId(component: string): string | null {
+  const ids = new Set<string>()
+  for (const n of nodes.value) ids.add(String(n.id))
+  let candidate = component.trim()
+  if (!candidate) return null
+  if (ids.has(candidate)) return candidate
+  while (candidate.includes('.')) {
+    candidate = candidate.slice(0, candidate.lastIndexOf('.'))
+    if (ids.has(candidate)) return candidate
+  }
+  const prefix = `${component.trim()}.`
+  for (const id of ids) if (id.startsWith(prefix)) return id
+  return null
+}
+
 async function applyDoc(
   text: string,
   name: string,
   preferSaved: boolean,
-  options: { moduleNodeType?: 'module' | 'package'; initialLayerDrillId?: string } = {},
+  options: {
+    moduleNodeType?: 'module' | 'package'
+    initialLayerDrillId?: string
+    initialFocus?: DiagramFocus
+  } = {},
 ) {
   await whenOverlayStoreReady()
   const doc = parseIlographYaml(text)
@@ -1665,6 +1700,19 @@ async function applyDoc(
     await graphRef.value?.fitToViewport?.({
       duration: 0,
     })
+  }
+  const focus = options.initialFocus
+  if (focus) {
+    await nextTick()
+    const fromId = resolveDiagramNodeId(focus.component)
+    const toId = focus.toComponent ? resolveDiagramNodeId(focus.toComponent) : null
+    const nodeIds = [fromId, toId].filter((id): id is string => !!id)
+    if (nodeIds.length) {
+      await graphRef.value?.focusOn?.({
+        nodeIds,
+        edge: fromId && toId ? { from: fromId, to: toId } : undefined,
+      })
+    }
   }
   await nextTick()
   // A fresh diagram is laid out via fitToViewport (not relayout), so seed the layer bands here.
@@ -3756,6 +3804,60 @@ function importPythonModules() {
   ])
 }
 
+/**
+ * Route a conformance finding's "View diagram" click to the diagram for its project, focused on the
+ * offending node(s)/edge. The checker tells us which source it is (bundled example vs runtime repo)
+ * so we pick the matching opener.
+ */
+type ConformanceDiagramTarget =
+  | { kind: 'example'; dir: string; focus: DiagramFocus }
+  | { kind: 'repository'; workspacePath: string; workspaceName: string; focus: DiagramFocus }
+
+/** Longest shared dotted package prefix (segment-wise), e.g. `a.b.c.x` & `a.b.c.y` → `a.b.c`. */
+function commonPackagePrefix(a: string, b: string): string {
+  const as = a.split('.')
+  const bs = b.split('.')
+  const out: string[] = []
+  for (let i = 0; i < Math.min(as.length, bs.length); i++) {
+    if (as[i] !== bs[i]) break
+    out.push(as[i]!)
+  }
+  return out.join('.')
+}
+
+async function openConformanceDiagram(target: ConformanceDiagramTarget): Promise<void> {
+  const focus = target.focus
+  let parentKey: string
+  if (target.kind === 'example') {
+    await openPythonExampleTab('python-examples', target.dir)
+    parentKey = pythonExampleSelectionId('python-examples', target.dir)
+  } else {
+    await openRuntimePythonTab(target.workspacePath, target.workspaceName)
+    parentKey = `runtime-python:${target.workspacePath}::${target.workspaceName}`
+  }
+  const parentEntry = pythonTabModel.get(parentKey)
+  if (!parentEntry) return
+
+  // Are the offending boxes already visible as distinct nodes at the top level? If so, focus here.
+  const topFrom = resolveDiagramNodeId(focus.component)
+  const topTo = focus.toComponent ? resolveDiagramNodeId(focus.toComponent) : null
+  const distinctAtTop = !focus.toComponent || (!!topTo && topTo !== topFrom)
+  if (topFrom && distinctAtTop) {
+    await graphRef.value?.focusOn?.({
+      nodeIds: [topFrom, topTo].filter((id): id is string => !!id),
+      edge: topFrom && topTo ? { from: topFrom, to: topTo } : undefined,
+    })
+    return
+  }
+
+  // Otherwise drill to the package that directly contains both boxes and highlight there.
+  const scope = focus.toComponent
+    ? commonPackagePrefix(focus.component, focus.toComponent)
+    : focus.component.split('.').slice(0, -1).join('.')
+  if (!scope) return
+  await openPythonPackageDrillTab(scope, parentKey, parentEntry, focus)
+}
+
 async function openPythonExampleTab(root: string, dir: string): Promise<void> {
   const hit = pythonExamplesAll.find((e) => e.root === root && e.dir === dir)
   if (!hit) {
@@ -5388,13 +5490,7 @@ onUnmounted(() => {
             @open-conformance-checker="() => void openConformanceCheckerTab()"
           />
         </div>
-        <div v-else-if="activeTab?.kind === 'checker'" class="triton-tab-page">
-          <ConformanceChecker
-            :runtime-base-url="effectiveRuntimeUrl"
-            @open-diagram="(t) => void openPythonExampleTab('python-examples', t.dir)"
-          />
-        </div>
-        <div v-else class="diagram-with-yaml-toggle">
+        <div v-else-if="activeTab?.kind !== 'checker'" class="diagram-with-yaml-toggle">
           <GraphWorkspace
             ref="graphRef"
             v-model:nodes="nodes"
@@ -5448,6 +5544,14 @@ onUnmounted(() => {
               />
             </svg>
           </button>
+        </div>
+        <!-- Kept mounted (hidden via v-show) so the checker's project/results/buckets survive tab
+             switches — e.g. after clicking a finding's "View diagram" and navigating back. -->
+        <div v-if="hasCheckerTab" v-show="activeTab?.kind === 'checker'" class="triton-tab-page">
+          <ConformanceChecker
+            :runtime-base-url="effectiveRuntimeUrl"
+            @open-diagram="(t) => void openConformanceDiagram(t)"
+          />
         </div>
       </div>
       <aside
