@@ -14,6 +14,7 @@ import genericIconUrl from '../assets/language-icons/generic.svg'
 import stackedCubesIconUrl from '../assets/language-icons/stacked-cubes.svg'
 import LanguageIcon from './LanguageIcon.vue'
 import { isLanguageIconId } from '../graph/languages'
+import { diffStatusColor, useGitDiffStatus } from '../graph/gitDiffOverlay'
 import { useScalaCoverageKeyed } from '../store/useOverlay'
 import type { ModuleAnchorTops } from '../graph/layoutDependencyLayers'
 import DepthRelationHandles from './common/DepthRelationHandles.vue'
@@ -56,6 +57,15 @@ const props = defineProps<{
  * instead of rendering a broken icon.
  */
 const hasLanguageLogo = computed(() => !!(props.data.packageScope && props.data.language && isLanguageIconId(props.data.language)))
+
+/** Git-diff overlay: recolour the frame (grey unchanged, green/red/amber changed) when active. */
+const gitDiffStatus = useGitDiffStatus(() => props.id)
+const diffStyle = computed<Record<string, string>>(() => {
+  const status = gitDiffStatus.value
+  if (!status) return {} as Record<string, string>
+  const color = diffStatusColor[status]
+  return { background: `color-mix(in srgb, ${color} 10%, #ffffff)`, borderColor: color }
+})
 const projectKind = computed<'project' | 'module' | 'general' | null>(() => {
   if (props.data.packageScope) return null
   if (props.data.projectKind === 'project') return 'project'
@@ -129,6 +139,7 @@ const layerFlipCounterStyle = computed((): Record<string, string> => {
             'group-node__frame--has-language': hasLanguageLogo,
             'group-node__frame--has-metrics': true,
           }"
+          :style="diffStyle"
         >
           <div class="group-node__metrics">
             <BoxMetricStrip

@@ -21,6 +21,7 @@ import type {
   TritonInnerPackageSpec,
 } from '../../ilograph/types'
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
+import { diffStatusColor, useGitDiffStatus } from '../../graph/gitDiffOverlay'
 import folderIconUrl from '../../assets/language-icons/folder.svg'
 import { languageProfile } from '../../graph/languageProfiles'
 import ShikiInlineCode from '../ShikiInlineCode.vue'
@@ -215,7 +216,12 @@ const emit = defineEmits<{
   'link-action': [string]
 }>()
 
-const accent = computed(() => (props.boxColor as string) || boxColorForId(props.boxId))
+const gitDiffStatus = useGitDiffStatus(() => props.boxId)
+const accent = computed(() =>
+  gitDiffStatus.value
+    ? diffStatusColor[gitDiffStatus.value]
+    : (props.boxColor as string) || boxColorForId(props.boxId),
+)
 
 const focusedLegacyCompartments = computed<readonly BoxCompartment[]>(() =>
   buildFocusedBoxCompartments({

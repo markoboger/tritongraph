@@ -271,6 +271,42 @@ function validateWorkspacePath(workspacePath, config) {
   return { ok: true, workspacePath: realPath }
 }
 
+/** Parse `git diff --numstat` output into `{ path, added, removed }` rows. `-` counts mean binary. */
+function parseGitNumstat(text) {
+  const files = []
+  for (const line of String(text).split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    const parts = trimmed.split('\t')
+    if (parts.length < 3) continue
+    const added = parts[0] === '-' ? 0 : Number(parts[0])
+    const removed = parts[1] === '-' ? 0 : Number(parts[1])
+    // ponytail: rename rows render the path as `a => b`; taken verbatim, upgrade if renames must map.
+    files.push({
+      path: parts[2],
+      added: Number.isFinite(added) ? added : 0,
+      removed: Number.isFinite(removed) ? removed : 0,
+    })
+  }
+  return files
+}
+
+/** Per-file line churn between two revisions. `--relative` keeps paths workspace-relative. */
+function readWorkspaceGitDiff(repoRoot, base, head) {
+  if (base.startsWith('-') || head.startsWith('-')) {
+    return { ok: false, error: 'invalid_ref' }
+  }
+  let out
+  try {
+    out = cp.execFileSync('git', ['-C', repoRoot, 'diff', '--numstat', '--relative', `${base}..${head}`], {
+      encoding: 'utf8',
+    })
+  } catch (err) {
+    return { ok: false, error: 'git_diff_failed', detail: String((err && err.message) || err) }
+  }
+  return { ok: true, base, head, files: parseGitNumstat(out) }
+}
+
 function validateWorkspaceRelativeFile(workspacePath, relPath) {
   const root = String(workspacePath || '').trim()
   const rel = String(relPath || '').trim()
@@ -2450,6 +2486,24 @@ function createRuntimeServer(options = {}) {
       return
     }
 
+    if (method === 'GET' && pathname === '/api/workspace/git-diff') {
+      const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
+      const validation = validateWorkspacePath(workspacePath, config)
+      if (!validation.ok) {
+        sendJson(res, validation.statusCode, {
+          ok: false,
+          error: validation.error,
+          workspacePath: validation.workspacePath,
+          allowedRepoRoots: validation.allowedRepoRoots,
+        })
+        return
+      }
+      const base = String(url.searchParams.get('base') || 'HEAD~1').trim()
+      const head = String(url.searchParams.get('head') || 'HEAD').trim()
+      sendJson(res, 200, readWorkspaceGitDiff(validation.workspacePath, base, head))
+      return
+    }
+
     if (method === 'GET' && pathname === '/api/workspace/test-log') {
       const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
       const validation = validateWorkspacePath(workspacePath, config)
@@ -2628,7 +2682,9 @@ async function startRuntimeServer(options = {}) {
 module.exports = {
   createPersistence,
   createRuntimeServer,
+  parseGitNumstat,
   probeWorkspace,
   readWorkspaceBundle,
+  readWorkspaceGitDiff,
   startRuntimeServer,
 }

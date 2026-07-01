@@ -115,6 +115,12 @@ import {
   whenOverlayStoreReady,
 } from './store/overlayStore'
 import type { CodeModel } from '../../packages/triton-core/src/languageModel'
+import {
+  diffStatusByNode,
+  gitDiffKey,
+  type ChurnByFile,
+  type DiffStatus,
+} from './graph/gitDiffOverlay'
 
 /** Projection mode for CodeModel-backed (Python) diagrams; switchable via the toolbar toggle. */
 type PythonViewMode = 'package-graph' | 'flat-modules'
@@ -125,6 +131,12 @@ type PythonViewMode = 'package-graph' | 'flat-modules'
  * package id for inner tabs). The current mode lives on the reactive DiagramTab (`pythonViewMode`).
  */
 const pythonTabModel = new Map<string, { model: CodeModel; scopeId?: string }>()
+/** A Map is not reactive, so bump this on every set to let computeds (e.g. `activeTabHasCodeModel`) re-run. */
+const pythonTabModelVersion = ref(0)
+function setPythonTabModel(key: string, entry: { model: CodeModel; scopeId?: string }): void {
+  pythonTabModel.set(key, entry)
+  pythonTabModelVersion.value++
+}
 
 const nodes = ref<TritonFlowNode[]>([])
 const edges = ref<TritonFlowEdge[]>([])
@@ -186,6 +198,10 @@ const metricVisibility = ref<Record<'coverage' | 'debt' | 'issues', boolean>>({
 })
 /** Draw a faint coloured box behind each dependency-layer column (visual only). */
 const showLayerBands = ref(false)
+
+/** Git-diff overlay: grey every box, colour the ones changed since the diff base (HEAD~1..HEAD). */
+const gitDiffVisible = ref(false)
+const gitDiffStatusByNodeId = ref<Record<string, DiffStatus>>({})
 
 function requestedPerspectiveFromUrl(): string {
   if (typeof window === 'undefined') return ''
@@ -571,7 +587,7 @@ async function openPythonPackageDrillTab(
   const innerTabKey = `package-inner:${parentKey}#${encodeURIComponent(packageId)}`
   const name = packageId.split('.').pop() || packageId
   const { codeModelToIlographDocument } = await import('../../packages/triton-core/src/codeModelToIlograph')
-  pythonTabModel.set(innerTabKey, { model: parentEntry.model, scopeId: packageId })
+  setPythonTabModel(innerTabKey, { model: parentEntry.model, scopeId: packageId })
   await openOrActivateTab({ key: innerTabKey, title: name, iconUrl: folderIconUrl }, async () => {
     sourcePath.value = `${sourcePath.value || parentKey}#${packageId}`
     const doc = codeModelToIlographDocument(parentEntry.model, {
@@ -1112,7 +1128,10 @@ async function setPythonViewMode(mode: PythonViewMode): Promise<void> {
 }
 
 /** True when the active tab is CodeModel-backed (Python), i.e. a full-model export is available. */
-const activeTabHasCodeModel = computed(() => pythonTabModel.has(activeTab.value?.key ?? ''))
+const activeTabHasCodeModel = computed(() => {
+  void pythonTabModelVersion.value
+  return pythonTabModel.has(activeTab.value?.key ?? '')
+})
 
 /** Trigger a client-side download of `text` as `fileName`. */
 function downloadTextFile(fileName: string, text: string, mime = 'text/yaml'): void {
@@ -1182,12 +1201,19 @@ function stripExampleProjectSuffix(body: string): string {
   return hash >= 0 ? body.slice(0, hash) : body
 }
 
+/**
+ * Strip the `package-inner:` scoping wrapper(s) to the underlying diagram key. Drills nest the
+ * wrapper once per level (`package-inner:package-inner:runtime-python:…#app#app.iam`), so unwrap
+ * in a loop — otherwise a depth-2+ tab never resolves back to its runtime/example key.
+ */
 function baseTabKey(tabKey: string): string {
-  const k = String(tabKey ?? '')
-  if (!k.startsWith('package-inner:')) return k
-  const body = k.slice('package-inner:'.length)
-  const hash = body.indexOf('#')
-  return hash >= 0 ? body.slice(0, hash) : body
+  let k = String(tabKey ?? '')
+  while (k.startsWith('package-inner:')) {
+    const body = k.slice('package-inner:'.length)
+    const hash = body.indexOf('#')
+    k = hash >= 0 ? body.slice(0, hash) : body
+  }
+  return k
 }
 
 function parsePackageInnerTabKey(key: string | undefined): { parentKey: string; packageId: string } | null {
@@ -1283,6 +1309,65 @@ const runtimeWorkspaceSession = computed(() => {
   if (!runtimeUrl || !workspacePath) return null
   return { workspacePath, workspaceName, runtimeUrl }
 })
+/**
+ * The full workspace CodeModel for the active tab. Resolved via `baseTabKey`, so drilling into a
+ * package-inner tab (e.g. `app.iam`) still finds the parent workspace model — and its ids cover the
+ * inner nodes, so the overlay keeps working at any depth.
+ */
+const gitDiffModel = computed<CodeModel | null>(() => {
+  void pythonTabModelVersion.value
+  return pythonTabModel.get(baseTabKey(activeTab.value?.key ?? ''))?.model ?? null
+})
+
+/** The Diff toggle only makes sense on a runtime-workspace tab that carries a CodeModel. */
+const gitDiffAvailable = computed(() => !!activeRuntimeWorkspace.value && !!gitDiffModel.value)
+
+/** Apply the overlay only where it is meaningful; the user's Diff preference persists across tabs. */
+const gitDiffActive = computed(() => gitDiffVisible.value && gitDiffAvailable.value)
+
+/** Fetch per-file line churn (HEAD~1..HEAD) from the runtime and key it by workspace-relative path. */
+async function fetchWorkspaceGitDiff(runtimeUrl: string, workspacePath: string): Promise<ChurnByFile> {
+  const u = new URL(`${runtimeUrl}/api/workspace/git-diff`)
+  u.searchParams.set('workspacePath', workspacePath)
+  const res = await fetch(u.toString())
+  if (!res.ok) throw new Error(`git-diff request failed (${res.status})`)
+  const body = (await res.json()) as {
+    ok?: boolean
+    error?: string
+    files?: { path: string; added: number; removed: number }[]
+  }
+  if (!body.ok) throw new Error(body.error || 'git_diff_failed')
+  const churn: ChurnByFile = {}
+  for (const f of body.files ?? []) churn[f.path] = { added: f.added ?? 0, removed: f.removed ?? 0 }
+  return churn
+}
+
+function setGitDiffVisible(on: boolean) {
+  gitDiffVisible.value = on
+}
+
+/**
+ * Keep the churn map in sync with the active workspace whenever the overlay is on. The model
+ * reference is stable across a drill-down (same workspace), so this only refetches when the toggle
+ * flips on or the workspace actually changes — not on every drill.
+ */
+watch(
+  [gitDiffVisible, gitDiffModel],
+  async ([visible, model]) => {
+    if (!visible || !model) return
+    const session = runtimeWorkspaceSession.value
+    if (!session) return
+    try {
+      const churn = await fetchWorkspaceGitDiff(session.runtimeUrl, session.workspacePath)
+      gitDiffStatusByNodeId.value = diffStatusByNode(model, churn)
+    } catch (err) {
+      status.value = `Failed to load git diff: ${err instanceof Error ? err.message : String(err)}`
+      gitDiffVisible.value = false
+    }
+  },
+  { immediate: true },
+)
+
 const activeSourceTab = computed<DiagramTab | null>(() => (
   activeTab.value?.kind === 'source' ? activeTab.value : null
 ))
@@ -1360,6 +1445,7 @@ provide('tritonRelationTypeVisibility', relationTypeVisibility)
 provide('tritonMetricTooltipsEnabled', metricTooltipsEnabled)
 provide('tritonFocusRelationDepth', focusRelationDepth)
 provide('tritonMetricVisibility', metricVisibility)
+provide(gitDiffKey, { visible: gitDiffActive, statusById: gitDiffStatusByNodeId })
 
 const nodeTypes = {
   module: FlowProjectNode,
@@ -3612,7 +3698,7 @@ async function openPythonExampleTab(root: string, dir: string): Promise<void> {
           summaries.map((s, i) => ({ filePath: fileEntries[i]![0], summary: s })),
           { name: `Python: ${dir}` },
         )
-        pythonTabModel.set(pythonExampleSelectionId(root, dir), { model: codeModel })
+        setPythonTabModel(pythonExampleSelectionId(root, dir), { model: codeModel })
         const ilographDoc = codeModelToIlographDocument(codeModel, {
           resourceId: dir,
           title: `Python: ${dir}`,
@@ -4294,7 +4380,7 @@ async function loadPythonPackagesForRuntimeWorkspace(workspacePath: string, work
       summaries.map((s, i) => ({ filePath: files[i]!.relPath, summary: s })),
       { name: `Python packages: ${workspaceName}` },
     )
-    pythonTabModel.set(`runtime-python:${workspacePath}::${workspaceName}`, { model: codeModel })
+    setPythonTabModel(`runtime-python:${workspacePath}::${workspaceName}`, { model: codeModel })
     const ilographDoc = codeModelToIlographDocument(codeModel, {
       resourceId: workspaceName,
       title: `Python packages: ${workspaceName}`,
@@ -5163,6 +5249,8 @@ onUnmounted(() => {
           :focus-relation-depth="focusRelationDepth"
           :metric-visibility="metricVisibility"
           :layers-visible="showLayerBands"
+          :git-diff-available="gitDiffAvailable"
+          :git-diff-visible="gitDiffVisible"
           :view-mode="activePythonViewMode"
           @update:node-type-visible="setNodeTypeVisible"
           @update:relation-type-visible="setRelationTypeVisible"
@@ -5172,6 +5260,7 @@ onUnmounted(() => {
             (metricKey, visible) => (metricVisibility = { ...metricVisibility, [metricKey]: visible })
           "
           @update:layers-visible="(v) => (showLayerBands = v)"
+          @update:git-diff-visible="(v) => void setGitDiffVisible(v)"
           @update:view-mode="(m) => void setPythonViewMode(m)"
         />
         <div

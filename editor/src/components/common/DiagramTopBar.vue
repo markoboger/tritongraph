@@ -11,6 +11,10 @@ defineProps<{
   metricVisibility: Record<'coverage' | 'debt' | 'issues', boolean>
   /** Draw a faint coloured box behind each dependency-layer column (visual only). */
   layersVisible: boolean
+  /** Show the git-diff toggle: only on runtime-workspace tabs with a code model. */
+  gitDiffAvailable?: boolean
+  /** Grey every box, colouring the ones changed since the diff base. */
+  gitDiffVisible?: boolean
   /** Projection mode for CodeModel-backed (Python) tabs; null hides the toggle for other tabs. */
   viewMode?: 'package-graph' | 'flat-modules' | null
 }>()
@@ -22,6 +26,7 @@ const emit = defineEmits<{
   'update:focus-relation-depth': [depth: number]
   'update:metric-visible': [metricKey: 'coverage' | 'debt' | 'issues', visible: boolean]
   'update:layers-visible': [visible: boolean]
+  'update:git-diff-visible': [visible: boolean]
   'update:view-mode': [mode: 'package-graph' | 'flat-modules']
 }>()
 
@@ -197,6 +202,31 @@ function onFocusDepthInput(ev: Event) {
         />
         <span class="diagram-top-bar__check-text">Layers</span>
       </label>
+      <template v-if="gitDiffAvailable">
+        <span class="diagram-top-bar__group-label">Mode</span>
+        <div class="diagram-top-bar__viewmode" role="group" aria-label="Diagram colour mode">
+          <button
+            type="button"
+            class="diagram-top-bar__viewmode-btn"
+            :class="{ 'diagram-top-bar__viewmode-btn--active': !gitDiffVisible }"
+            :aria-pressed="!gitDiffVisible"
+            title="Normal box colours"
+            @click="emit('update:git-diff-visible', false)"
+          >
+            Normal
+          </button>
+          <button
+            type="button"
+            class="diagram-top-bar__viewmode-btn"
+            :class="{ 'diagram-top-bar__viewmode-btn--active': gitDiffVisible }"
+            :aria-pressed="!!gitDiffVisible"
+            title="Grey the boxes; colour those changed since the last commit"
+            @click="emit('update:git-diff-visible', true)"
+          >
+            Diff
+          </button>
+        </div>
+      </template>
       <span class="diagram-top-bar__sep" aria-hidden="true" />
       <label
         class="diagram-top-bar__check diagram-top-bar__check--tooltips"
