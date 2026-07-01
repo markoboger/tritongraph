@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { diffStatusByNode, type ChurnByFile } from './gitDiffOverlay'
-import type { CodeModel } from '../../../packages/triton-core/src/languageModel'
+import { diffStatusByNode, importDiffFromModels, type ChurnByFile } from './gitDiffOverlay'
+import type { CodeModel, CodeRelation } from '../../../packages/triton-core/src/languageModel'
 
 /** Minimal model: root `app` with two child modules, each backed by one file, plus one artefact. */
 function model(): CodeModel {
@@ -64,5 +64,24 @@ describe('diffStatusByNode', () => {
     const status = diffStatusByNode(model(), { 'app/b.py': { added: 0, removed: 4 } })
     expect(status['app.b']).toBe('removed')
     expect(status['app']).toBe('removed')
+  })
+})
+
+function importRel(from: string, to: string): CodeRelation {
+  return { id: `${from}->${to}`, from, to, kind: 'imports', scope: 'container' }
+}
+
+function modelWithImports(rels: CodeRelation[]): CodeModel {
+  return { id: 'app', name: 'app', language: 'python', relations: rels, root: model().root }
+}
+
+describe('importDiffFromModels', () => {
+  it('reports added and removed container imports, ignoring unchanged ones', () => {
+    const base = modelWithImports([importRel('app.a', 'app.b'), importRel('app.a', 'app.c')])
+    const current = modelWithImports([importRel('app.a', 'app.b'), importRel('app.a', 'app.d')])
+    const diff = importDiffFromModels(base, current)
+
+    expect([...diff.added]).toEqual(['app.a->app.d'])
+    expect(diff.removed).toEqual([{ from: 'app.a', to: 'app.c' }])
   })
 })

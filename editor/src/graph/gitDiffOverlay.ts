@@ -1,5 +1,7 @@
 import { computed, inject, type ComputedRef, type InjectionKey, type Ref } from 'vue'
+import { MarkerType } from '@vue-flow/core'
 import type { CodeContainer, CodeModel } from '../../../packages/triton-core/src/languageModel'
+import { AGG_SOURCE_HANDLE, AGG_TARGET_HANDLE } from './handles'
 
 /** How a box changed since the diff base. `unchanged` drives the grey wash the other states sit against. */
 export type DiffStatus = 'added' | 'removed' | 'modified' | 'unchanged'
@@ -66,10 +68,84 @@ function walk(container: CodeContainer, churn: ChurnByFile, out: Record<string, 
   return { added, removed }
 }
 
-/** Provided by App.vue, injected by the box components. Toggling `visible` greys/colours every box. */
+// --- Phase 2: import/edge diff ------------------------------------------------
+
+/** Added import edges tint green; removed ones become dashed-red ghost lines. */
+export const ADDED_EDGE_COLOR = '#16a34a'
+export const REMOVED_EDGE_COLOR = '#dc2626'
+export const GHOST_EDGE_ID_PREFIX = 'gitdiff-ghost:'
+
+/** Container-import changes between two revisions. Keys are `${fromModule}->${toModule}`. */
+export interface ImportDiff {
+  added: Set<string>
+  removed: { from: string; to: string }[]
+}
+
+export function emptyImportDiff(): ImportDiff {
+  return { added: new Set(), removed: [] }
+}
+
+export function importEdgeKey(from: string, to: string): string {
+  return `${from}->${to}`
+}
+
+/** Container-level import edges of a model, keyed. Mirrors `observedImportsFromCodeModel` (triton-conformance). */
+function containerImportKeys(model: CodeModel): Set<string> {
+  const out = new Set<string>()
+  for (const r of model.relations) {
+    if (r.kind === 'imports' && r.scope === 'container') out.add(importEdgeKey(r.from, r.to))
+  }
+  return out
+}
+
+/** Diff container imports: `added` = in current not base, `removed` = in base not current. */
+export function importDiffFromModels(base: CodeModel, current: CodeModel): ImportDiff {
+  const oldKeys = containerImportKeys(base)
+  const newKeys = containerImportKeys(current)
+  const added = new Set<string>()
+  for (const k of newKeys) if (!oldKeys.has(k)) added.add(k)
+  const removed: { from: string; to: string }[] = []
+  for (const k of oldKeys) {
+    if (newKeys.has(k)) continue
+    const [from, to] = k.split('->')
+    removed.push({ from, to })
+  }
+  return { added, removed }
+}
+
+export function isGhostEdge(edgeId: string | undefined): boolean {
+  return !!edgeId?.startsWith(GHOST_EDGE_ID_PREFIX)
+}
+
+/**
+ * A dashed-red "ghost" edge for a removed import — the dependency no longer exists in the current
+ * graph, so it is synthesised on top.
+ *
+ * ponytail: ghost edges are plain straight lines with no lane routing (a removed import has no
+ * layout track to route along). Upgrade to routed ghosts only if they read poorly on dense graphs.
+ */
+export function makeGhostImportEdge(from: string, to: string) {
+  // No TritonFlowEdge annotation on purpose: vue-flow's Edge generic is deep enough to blow the
+  // instantiation limit when this flows through `.map`/spread. The caller casts the final array.
+  return {
+    id: `${GHOST_EDGE_ID_PREFIX}${importEdgeKey(from, to)}`,
+    source: from,
+    target: to,
+    sourceHandle: AGG_SOURCE_HANDLE,
+    targetHandle: AGG_TARGET_HANDLE,
+    label: 'removed import',
+    labelStyle: { fill: REMOVED_EDGE_COLOR, fontSize: '11px', fontWeight: 600 },
+    style: { stroke: REMOVED_EDGE_COLOR, strokeWidth: 2, strokeDasharray: '6 4' },
+    markerEnd: { type: MarkerType.ArrowClosed, color: REMOVED_EDGE_COLOR, width: 14, height: 14 },
+    data: { gitDiffGhost: true },
+  }
+}
+
+/** Provided by App.vue, injected by the box + edge components. Toggling `visible` drives the overlay. */
 export interface GitDiffContext {
   visible: Ref<boolean>
   statusById: Ref<Record<string, DiffStatus>>
+  importDiff: Ref<ImportDiff>
 }
 
 export const gitDiffKey = Symbol('tritonGitDiff') as InjectionKey<GitDiffContext>

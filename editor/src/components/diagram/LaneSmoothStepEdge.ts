@@ -1,5 +1,6 @@
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, inject } from 'vue'
 import { BaseEdge, Position, getSmoothStepPath } from '@vue-flow/core'
+import { ADDED_EDGE_COLOR, gitDiffKey, importEdgeKey } from '../../graph/gitDiffOverlay'
 
 /**
  * Drop-in replacement for Vue Flow's built-in `SmoothStepEdge` that honors the
@@ -151,6 +152,16 @@ export default defineComponent({
   ],
   compatConfig: { MODE: 3 },
   setup(props: Record<string, unknown>, { attrs }: { attrs: Record<string, unknown> }) {
+    const gitDiff = inject(gitDiffKey, null)
+    /** Tint an edge green when the git-diff overlay is on and its import was added this revision. */
+    function addedImportOverride(): Record<string, unknown> {
+      if (!gitDiff?.visible.value) return {}
+      const key = importEdgeKey(String(attrs.source ?? ''), String(attrs.target ?? ''))
+      if (!gitDiff.importDiff.value.added.has(key)) return {}
+      const style = { ...(attrs.style as object), stroke: ADDED_EDGE_COLOR, strokeWidth: 2 }
+      const marker = attrs.markerEnd ? { ...(attrs.markerEnd as object), color: ADDED_EDGE_COLOR } : undefined
+      return marker ? { style, markerEnd: marker } : { style }
+    }
     return () => {
       const sourcePosition = (props.sourcePosition as Position | undefined) ?? Position.Bottom
       const targetPosition = (props.targetPosition as Position | undefined) ?? Position.Top
@@ -192,7 +203,7 @@ export default defineComponent({
           centerY,
         } as Parameters<typeof getSmoothStepPath>[0])
       }
-      return h(BaseEdge as never, { path, labelX, labelY, ...attrs, ...props })
+      return h(BaseEdge as never, { path, labelX, labelY, ...attrs, ...props, ...addedImportOverride() })
     }
   },
 })

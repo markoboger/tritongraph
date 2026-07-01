@@ -307,6 +307,39 @@ function readWorkspaceGitDiff(repoRoot, base, head) {
   return { ok: true, base, head, files: parseGitNumstat(out) }
 }
 
+/**
+ * Every `.py` file as it existed at `base`, for building the previous-revision CodeModel (import diff).
+ * ponytail: one `git show` per file — fine for typical repos; switch to `git archive` if it drags.
+ */
+function readWorkspaceBasePython(repoRoot, base) {
+  if (base.startsWith('-')) return { ok: false, error: 'invalid_ref' }
+  let listing
+  try {
+    listing = cp.execFileSync('git', ['-C', repoRoot, 'ls-tree', '-r', '--name-only', base], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    })
+  } catch (err) {
+    return { ok: false, error: 'git_ls_tree_failed', detail: String((err && err.message) || err) }
+  }
+  const pyFiles = []
+  for (const raw of listing.split('\n')) {
+    const rel = raw.trim()
+    if (!rel.endsWith('.py')) continue
+    if (rel.split('/').some((seg) => IGNORED_DIRS.has(seg) || PYTHON_SKIP_DIRS.has(seg))) continue
+    try {
+      const source = cp.execFileSync('git', ['-C', repoRoot, 'show', `${base}:${rel}`], {
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+      })
+      pyFiles.push({ relPath: rel, source })
+    } catch {
+      // File unreadable at base (e.g. submodule gitlink) — skip it.
+    }
+  }
+  return { ok: true, base, pyFiles }
+}
+
 function validateWorkspaceRelativeFile(workspacePath, relPath) {
   const root = String(workspacePath || '').trim()
   const rel = String(relPath || '').trim()
@@ -2504,6 +2537,23 @@ function createRuntimeServer(options = {}) {
       return
     }
 
+    if (method === 'GET' && pathname === '/api/workspace/git-base-python') {
+      const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
+      const validation = validateWorkspacePath(workspacePath, config)
+      if (!validation.ok) {
+        sendJson(res, validation.statusCode, {
+          ok: false,
+          error: validation.error,
+          workspacePath: validation.workspacePath,
+          allowedRepoRoots: validation.allowedRepoRoots,
+        })
+        return
+      }
+      const base = String(url.searchParams.get('base') || 'HEAD~1').trim()
+      sendJson(res, 200, readWorkspaceBasePython(validation.workspacePath, base))
+      return
+    }
+
     if (method === 'GET' && pathname === '/api/workspace/test-log') {
       const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
       const validation = validateWorkspacePath(workspacePath, config)
@@ -2684,6 +2734,7 @@ module.exports = {
   createRuntimeServer,
   parseGitNumstat,
   probeWorkspace,
+  readWorkspaceBasePython,
   readWorkspaceBundle,
   readWorkspaceGitDiff,
   startRuntimeServer,

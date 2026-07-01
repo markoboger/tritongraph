@@ -117,9 +117,14 @@ import {
 import type { CodeModel } from '../../packages/triton-core/src/languageModel'
 import {
   diffStatusByNode,
+  emptyImportDiff,
   gitDiffKey,
+  importDiffFromModels,
+  isGhostEdge,
+  makeGhostImportEdge,
   type ChurnByFile,
   type DiffStatus,
+  type ImportDiff,
 } from './graph/gitDiffOverlay'
 
 /** Projection mode for CodeModel-backed (Python) diagrams; switchable via the toolbar toggle. */
@@ -130,10 +135,11 @@ type PythonViewMode = 'package-graph' | 'flat-modules'
  * rebuild. `scopeId` is the tab's base package scope (undefined for the workspace root, the drilled
  * package id for inner tabs). The current mode lives on the reactive DiagramTab (`pythonViewMode`).
  */
-const pythonTabModel = new Map<string, { model: CodeModel; scopeId?: string }>()
+type PythonTabEntry = { model: CodeModel; scopeId?: string; pythonSourceRoots?: readonly string[] }
+const pythonTabModel = new Map<string, PythonTabEntry>()
 /** A Map is not reactive, so bump this on every set to let computeds (e.g. `activeTabHasCodeModel`) re-run. */
 const pythonTabModelVersion = ref(0)
-function setPythonTabModel(key: string, entry: { model: CodeModel; scopeId?: string }): void {
+function setPythonTabModel(key: string, entry: PythonTabEntry): void {
   pythonTabModel.set(key, entry)
   pythonTabModelVersion.value++
 }
@@ -202,6 +208,7 @@ const showLayerBands = ref(false)
 /** Git-diff overlay: grey every box, colour the ones changed since the diff base (HEAD~1..HEAD). */
 const gitDiffVisible = ref(false)
 const gitDiffStatusByNodeId = ref<Record<string, DiffStatus>>({})
+const gitDiffImportDiff = ref<ImportDiff>(emptyImportDiff())
 
 function requestedPerspectiveFromUrl(): string {
   if (typeof window === 'undefined') return ''
@@ -1346,20 +1353,85 @@ function setGitDiffVisible(on: boolean) {
   gitDiffVisible.value = on
 }
 
+/** Fetch the `.py` sources as they were at `base` (HEAD~1) to rebuild the previous CodeModel. */
+async function fetchWorkspaceBasePython(
+  runtimeUrl: string,
+  workspacePath: string,
+): Promise<{ relPath: string; source: string }[]> {
+  const u = new URL(`${runtimeUrl}/api/workspace/git-base-python`)
+  u.searchParams.set('workspacePath', workspacePath)
+  const res = await fetch(u.toString())
+  if (!res.ok) throw new Error(`git-base-python request failed (${res.status})`)
+  const body = (await res.json()) as {
+    ok?: boolean
+    error?: string
+    pyFiles?: { relPath: string; source: string }[]
+  }
+  if (!body.ok) throw new Error(body.error || 'git_base_python_failed')
+  return body.pyFiles ?? []
+}
+
+/** Diff container imports between the base revision and the current model (added / removed edges). */
+async function computeImportDiff(
+  runtimeUrl: string,
+  workspacePath: string,
+  currentModel: CodeModel,
+): Promise<ImportDiff> {
+  const baseFiles = await fetchWorkspaceBasePython(runtimeUrl, workspacePath)
+  if (!baseFiles.length) return emptyImportDiff()
+  const roots = pythonTabModel.get(baseTabKey(activeTab.value?.key ?? ''))?.pythonSourceRoots ?? []
+  const [{ summarizePython }, { buildPythonCodeModelFromSummaries }] = await importPythonModules()
+  const summaries = await Promise.all(
+    baseFiles.map((f) => summarizePython(f.source, f.relPath, workspacePath, roots as string[])),
+  )
+  const baseModel = buildPythonCodeModelFromSummaries(
+    summaries.map((s, i) => ({ filePath: baseFiles[i]!.relPath, summary: s })),
+    { name: 'base' },
+  )
+  return importDiffFromModels(baseModel, currentModel)
+}
+
 /**
- * Keep the churn map in sync with the active workspace whenever the overlay is on. The model
- * reference is stable across a drill-down (same workspace), so this only refetches when the toggle
- * flips on or the workspace actually changes — not on every drill.
+ * Synthesise dashed-red ghost edges for removed imports and drop them when the overlay is off.
+ * Called explicitly (never in a watcher on `edges`) to avoid a write→re-run loop; the added-green
+ * recolour is handled statelessly inside the edge component via inject.
+ */
+function applyGhostEdges() {
+  // Cast to a light shape: `.filter` on vue-flow's deeply-generic Edge type blows the instantiation depth.
+  const all = edges.value as unknown as { id: string }[]
+  const base = all.filter((e) => !isGhostEdge(e.id))
+  if (!gitDiffActive.value) {
+    if (base.length !== all.length) edges.value = base as unknown as TritonFlowEdge[]
+    return
+  }
+  const visibleIds = new Set((nodes.value as unknown as { id: string }[]).map((n) => n.id))
+  const ghosts = gitDiffImportDiff.value.removed
+    .filter(({ from, to }) => visibleIds.has(from) && visibleIds.has(to))
+    .map(({ from, to }) => makeGhostImportEdge(from, to))
+  edges.value = [...base, ...ghosts] as unknown as TritonFlowEdge[]
+}
+
+/**
+ * Keep the churn map + import diff in sync with the active workspace whenever the overlay is on. The
+ * model reference is stable across a drill-down (same workspace), so this only refetches when the
+ * toggle flips on or the workspace actually changes — not on every drill.
  */
 watch(
   [gitDiffVisible, gitDiffModel],
   async ([visible, model]) => {
-    if (!visible || !model) return
+    if (!visible || !model) {
+      gitDiffStatusByNodeId.value = {}
+      gitDiffImportDiff.value = emptyImportDiff()
+      applyGhostEdges()
+      return
+    }
     const session = runtimeWorkspaceSession.value
     if (!session) return
     try {
       const churn = await fetchWorkspaceGitDiff(session.runtimeUrl, session.workspacePath)
       gitDiffStatusByNodeId.value = diffStatusByNode(model, churn)
+      gitDiffImportDiff.value = await computeImportDiff(session.runtimeUrl, session.workspacePath, model)
+      applyGhostEdges()
     } catch (err) {
       status.value = `Failed to load git diff: ${err instanceof Error ? err.message : String(err)}`
       gitDiffVisible.value = false
@@ -1445,7 +1517,11 @@ provide('tritonRelationTypeVisibility', relationTypeVisibility)
 provide('tritonMetricTooltipsEnabled', metricTooltipsEnabled)
 provide('tritonFocusRelationDepth', focusRelationDepth)
 provide('tritonMetricVisibility', metricVisibility)
-provide(gitDiffKey, { visible: gitDiffActive, statusById: gitDiffStatusByNodeId })
+provide(gitDiffKey, {
+  visible: gitDiffActive,
+  statusById: gitDiffStatusByNodeId,
+  importDiff: gitDiffImportDiff,
+})
 
 const nodeTypes = {
   module: FlowProjectNode,
@@ -1569,6 +1645,9 @@ async function applyDoc(
     routeSmoothstepEdgesInViewport(nodes.value, flowEdges, vp),
   )
   nodes.value = applyHandleAnchorAlignment(nodes.value, edges.value)
+  // Re-add removed-import ghost edges after every (re)build so they survive drill/relayout
+  // (after handle alignment, so alignment uses only the real edges).
+  applyGhostEdges()
   perspectiveName.value = p ?? 'dependencies'
   fileName.value = name
   status.value = `Loaded ${n.length} modules, ${e.length} relations — depth columns, vertical fill (auto-fit).`
@@ -4380,7 +4459,10 @@ async function loadPythonPackagesForRuntimeWorkspace(workspacePath: string, work
       summaries.map((s, i) => ({ filePath: files[i]!.relPath, summary: s })),
       { name: `Python packages: ${workspaceName}` },
     )
-    setPythonTabModel(`runtime-python:${workspacePath}::${workspaceName}`, { model: codeModel })
+    setPythonTabModel(`runtime-python:${workspacePath}::${workspaceName}`, {
+      model: codeModel,
+      pythonSourceRoots: bundle.pythonSourceRoots,
+    })
     const ilographDoc = codeModelToIlographDocument(codeModel, {
       resourceId: workspaceName,
       title: `Python packages: ${workspaceName}`,
