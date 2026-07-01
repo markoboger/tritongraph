@@ -10,7 +10,7 @@
 import { ref, computed, onMounted, shallowRef } from 'vue'
 import yaml from 'js-yaml'
 import { check } from '../../../packages/triton-conformance/src/check'
-import { observedImportsFromCodeModel } from '../../../packages/triton-conformance/src/ruleEngine'
+import { observedImportsFromCodeModel, runRuleEngine } from '../../../packages/triton-conformance/src/ruleEngine'
 import { deriveTopologyFromCodeModel } from '../../../packages/triton-conformance/src/deriveTopology'
 import { resolveTopology } from '../../../packages/triton-conformance/src/topology'
 import { summaryToChangedFact } from '../../../packages/triton-conformance/src/astExtractor'
@@ -25,12 +25,15 @@ import type {
 import type { IlographDocument } from '../../../packages/triton-core/src/ilographTypes'
 import { listPythonExamples, type PythonExampleEntry } from '../python/pythonExampleDiagrams'
 import {
+  fetchChangedPythonFiles,
   fetchRuntimeRepos,
   loadExampleProject,
+  loadRuntimeWorkspaceBaseProject,
   loadRuntimeWorkspaceProject,
   type LoadedProject,
   type RuntimeRepoOption,
 } from '../conformance/loadProject'
+import { splitViolationsByHistory, type ViolationHistory } from '../conformance/violationHistory'
 import { createServerLlmClient } from '../conformance/serverLlmClient'
 
 const props = defineProps<{ runtimeBaseUrl: string }>()
@@ -67,9 +70,15 @@ const error = ref<string | null>(null)
 const results = ref<CheckResult[] | null>(null)
 const useLlm = ref(false)
 
+/** Phase 3: for repositories, split violations into new/legacy/fixed against the previous commit (HEAD~1). */
+const historyMode = ref(false)
+const history = ref<ViolationHistory | null>(null)
+
 async function selectProject(): Promise<void> {
   results.value = null
   error.value = null
+  history.value = null
+  historyMode.value = false
   loadedWorkspace.value = null
   const hit = examples.find((e) => e.dir === selectedDir.value)
   entry.value = hit ?? null
@@ -89,6 +98,7 @@ async function selectProject(): Promise<void> {
 async function loadRepository(): Promise<void> {
   results.value = null
   error.value = null
+  history.value = null
   entry.value = null
   project.value = null
   loadedWorkspace.value = null
@@ -112,6 +122,8 @@ async function loadRepository(): Promise<void> {
 function onSourceChange(): void {
   results.value = null
   error.value = null
+  history.value = null
+  historyMode.value = false
   project.value = null
   entry.value = null
   loadedWorkspace.value = null
@@ -179,20 +191,26 @@ async function run(): Promise<void> {
   }
   running.value = true
   error.value = null
+  results.value = null
+  history.value = null
   try {
     const soll: SollModel = { topology: t, rules: rules.value }
-    const changedFacts = project.value.summaries.map(({ summary }) =>
-      summaryToChangedFact(summary, t, 'modified'),
-    )
-    const llm = useLlm.value
-      ? { client: createServerLlmClient(props.runtimeBaseUrl), options: { modelRequested: 'server-configured' } }
-      : undefined
-    results.value = await check({
-      soll,
-      changedFacts,
-      observedImports: observedImportsFromCodeModel(project.value.codeModel),
-      llm,
-    })
+    if (historyMode.value && loadedWorkspace.value) {
+      history.value = await runWithHistory(soll, t)
+    } else {
+      const changedFacts = project.value.summaries.map(({ summary }) =>
+        summaryToChangedFact(summary, t, 'modified'),
+      )
+      const llm = useLlm.value
+        ? { client: createServerLlmClient(props.runtimeBaseUrl), options: { modelRequested: 'server-configured' } }
+        : undefined
+      results.value = await check({
+        soll,
+        changedFacts,
+        observedImports: observedImportsFromCodeModel(project.value.codeModel),
+        llm,
+      })
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -200,16 +218,66 @@ async function run(): Promise<void> {
   }
 }
 
+/**
+ * Phase 3: check the current revision and its previous commit against the same target architecture and
+ * split structural violations by `match_key` (new = regressions, legacy = pre-existing, fixed = removed).
+ * The rule-engine runs directly on both CodeModels — deterministic and cheap. The LLM (if enabled) runs
+ * only on changed files and all its findings count as new; legacy semantics are skipped (see plan).
+ */
+async function runWithHistory(soll: SollModel, t: ResolvedTopology): Promise<ViolationHistory> {
+  const ws = loadedWorkspace.value!
+  const head = project.value!
+  const roots = head.pythonSourceRoots ?? []
+  const base = await loadRuntimeWorkspaceBaseProject(props.runtimeBaseUrl, ws.workspacePath, ws.workspaceName, roots)
+
+  const headImports = observedImportsFromCodeModel(head.codeModel)
+  const split = splitViolationsByHistory(
+    runRuleEngine(headImports, t),
+    runRuleEngine(observedImportsFromCodeModel(base.codeModel), t),
+  )
+
+  if (useLlm.value) {
+    const changed = await fetchChangedPythonFiles(props.runtimeBaseUrl, ws.workspacePath)
+    const changedFacts = head.summaries
+      .filter(({ filePath }) => changed.has(filePath))
+      .map(({ summary }) => summaryToChangedFact(summary, t, 'modified'))
+    if (changedFacts.length) {
+      const llmResults = await check({
+        soll,
+        changedFacts,
+        observedImports: headImports,
+        llm: { client: createServerLlmClient(props.runtimeBaseUrl), options: { modelRequested: 'server-configured' } },
+      })
+      const llmViolations = llmResults.flatMap((r) => r.violations).filter((v) => v.source === 'llm')
+      split.added = [...split.added, ...llmViolations]
+    }
+  }
+  return split
+}
+
 const violations = computed<ViolationRecord[]>(() => (results.value ?? []).flatMap((r) => r.violations))
 
-const byFile = computed(() => {
+function groupByFile(list: readonly ViolationRecord[]): [string, ViolationRecord[]][] {
   const map = new Map<string, ViolationRecord[]>()
-  for (const v of violations.value) {
-    const list = map.get(v.location.file) ?? []
-    list.push(v)
-    map.set(v.location.file, list)
+  for (const v of list) {
+    const list2 = map.get(v.location.file) ?? []
+    list2.push(v)
+    map.set(v.location.file, list2)
   }
   return [...map.entries()].sort(([a], [b]) => a.localeCompare(b))
+}
+
+const byFile = computed(() => groupByFile(violations.value))
+
+/** The three new/legacy/fixed buckets, each grouped by file, for the history report. */
+const buckets = computed(() => {
+  const h = history.value
+  if (!h) return []
+  return [
+    { key: 'new', title: `New — introduced since HEAD~1 (${h.added.length})`, groups: groupByFile(h.added) },
+    { key: 'legacy', title: `Legacy — pre-existing (${h.legacy.length})`, groups: groupByFile(h.legacy) },
+    { key: 'fixed', title: `Fixed — removed since HEAD~1 (${h.fixed.length})`, groups: groupByFile(h.fixed) },
+  ]
 })
 
 function openDiagram(v: ViolationRecord): void {
@@ -309,10 +377,17 @@ function openDiagram(v: ViolationRecord): void {
 
       <div class="conformance__controls">
         <label><input type="checkbox" v-model="useLlm" /> Use LLM (semantic rules)</label>
+        <label v-if="loadedWorkspace">
+          <input type="checkbox" v-model="historyMode" /> Compare vs previous commit (new vs legacy)
+        </label>
         <button type="button" :disabled="running || !topology" @click="void run()">
           {{ running ? 'Checking…' : 'Run check' }}
         </button>
       </div>
+      <p v-if="historyMode" class="conformance__muted">
+        Structural violations are split against HEAD~1. LLM findings (if enabled) run on changed files
+        only and all count as new — legacy semantics are not re-checked.
+      </p>
     </section>
 
     <p v-if="error" class="conformance__error" role="alert">{{ error }}</p>
@@ -328,12 +403,34 @@ function openDiagram(v: ViolationRecord): void {
               <span class="badge badge--src">{{ v.source }}</span>
               <strong>{{ v.category }}</strong>
               <span class="conformance__rule">({{ v.rule_id }}<template v-if="v.location.symbol"> · {{ v.location.symbol }}</template>)</span>
-              <button type="button" class="conformance__link" @click="openDiagram(v)">View diagram →</button>
+              <button v-if="entry" type="button" class="conformance__link" @click="openDiagram(v)">View diagram →</button>
             </div>
             <p class="conformance__reason">{{ v.reason }}</p>
             <p class="conformance__fix">fix: {{ v.suggestion }}</p>
           </li>
         </ul>
+      </div>
+    </section>
+
+    <section v-if="history">
+      <div v-for="b in buckets" :key="b.key" class="conformance__bucket" :class="`conformance__bucket--${b.key}`">
+        <h2>{{ b.title }}</h2>
+        <p v-if="b.groups.length === 0" class="conformance__muted">(none)</p>
+        <div v-for="[file, fileViolations] in b.groups" :key="file" class="conformance__file">
+          <h3>{{ file }}</h3>
+          <ul>
+            <li v-for="(v, i) in fileViolations" :key="i" :class="`sev-${v.severity}`">
+              <div class="conformance__row">
+                <span class="badge" :class="`badge--${v.severity}`">{{ v.severity }}</span>
+                <span class="badge badge--src">{{ v.source }}</span>
+                <strong>{{ v.category }}</strong>
+                <span class="conformance__rule">({{ v.rule_id }}<template v-if="v.location.symbol"> · {{ v.location.symbol }}</template>)</span>
+              </div>
+              <p class="conformance__reason">{{ v.reason }}</p>
+              <p class="conformance__fix">fix: {{ v.suggestion }}</p>
+            </li>
+          </ul>
+        </div>
       </div>
     </section>
   </div>
@@ -351,6 +448,11 @@ function openDiagram(v: ViolationRecord): void {
 .conformance__yaml { width: 100%; font-family: monospace; font-size: 0.85rem; margin-top: 0.5rem; }
 .conformance__error { color: #b00020; }
 .conformance__ok { color: #1b7f3b; font-weight: 600; }
+.conformance__bucket { margin-top: 1.5rem; padding-left: 0.75rem; border-left: 4px solid #ccc; }
+.conformance__bucket--new { border-left-color: #dc2626; }
+.conformance__bucket--legacy { border-left-color: #94a3b8; }
+.conformance__bucket--fixed { border-left-color: #16a34a; }
+.conformance__bucket h3 { font-size: 0.95rem; margin: 0.75rem 0 0; }
 .conformance__file { margin-top: 1.25rem; }
 .conformance__file ul { list-style: none; padding: 0; }
 .conformance__file li { border-left: 3px solid #ccc; padding: 0.5rem 0.75rem; margin: 0.5rem 0; }

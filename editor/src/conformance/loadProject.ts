@@ -5,6 +5,8 @@ import type { PythonFileSummary } from '../../../packages/triton-core/src/python
 export interface LoadedProject {
   codeModel: CodeModel
   summaries: { filePath: string; summary: PythonFileSummary }[]
+  /** Python source roots the workspace was parsed with — reused to parse the base revision the same way. */
+  pythonSourceRoots?: readonly string[]
 }
 
 /**
@@ -60,7 +62,66 @@ export async function loadRuntimeWorkspaceProject(
   )
   const summaries = parsed.map((summary, i) => ({ filePath: pyFiles[i]!.relPath, summary }))
   const codeModel = buildPythonCodeModelFromSummaries(summaries, { name: `Python: ${workspaceName}` })
-  return { codeModel, summaries }
+  return { codeModel, summaries, pythonSourceRoots: roots }
+}
+
+/**
+ * Parse a runtime workspace as it existed at a git base (default HEAD~1) into a CodeModel + summaries.
+ * Fetches `/api/workspace/git-base-python` (one `git show` per file) and runs the same parsers as the
+ * head loader, with the head's `pythonSourceRoots` so module ids line up. Powers the conformance
+ * new-vs-legacy split (Phase 3): the base CodeModel is checked against the same target architecture.
+ * Throws when the workspace has no git / no such base — the caller surfaces that as "no base to compare".
+ */
+export async function loadRuntimeWorkspaceBaseProject(
+  runtimeBaseUrl: string,
+  workspacePath: string,
+  workspaceName: string,
+  roots: readonly string[],
+  base = 'HEAD~1',
+): Promise<LoadedProject> {
+  const url = new URL(`${runtimeBaseUrl.replace(/\/$/, '')}/api/workspace/git-base-python`)
+  url.searchParams.set('workspacePath', workspacePath)
+  url.searchParams.set('base', base)
+  const res = await fetch(url.toString())
+  if (!res.ok) throw new Error(`base request failed (${res.status})`)
+  const body = (await res.json()) as {
+    ok?: boolean
+    error?: string
+    pyFiles?: { relPath: string; source: string }[]
+  }
+  if (!body.ok) throw new Error(body.error || 'git_base_failed')
+  const pyFiles = body.pyFiles ?? []
+  if (!pyFiles.length) throw new Error(`No Python files found at ${base}.`)
+  const [{ summarizePython }, { buildPythonCodeModelFromSummaries }] = await Promise.all([
+    import('../python/parsePythonWithTreeSitter'),
+    import('../../../packages/triton-core/src/pythonCodeModel'),
+  ])
+  const parsed = await Promise.all(
+    pyFiles.map((f) => summarizePython(f.source, f.relPath, workspacePath, roots)),
+  )
+  const summaries = parsed.map((summary, i) => ({ filePath: pyFiles[i]!.relPath, summary }))
+  const codeModel = buildPythonCodeModelFromSummaries(summaries, { name: `Python@${base}: ${workspaceName}` })
+  return { codeModel, summaries, pythonSourceRoots: roots }
+}
+
+/** Workspace-relative `.py` paths changed since `base`, from `/api/workspace/git-diff` — scopes the LLM. */
+export async function fetchChangedPythonFiles(
+  runtimeBaseUrl: string,
+  workspacePath: string,
+  base = 'HEAD~1',
+): Promise<Set<string>> {
+  const url = new URL(`${runtimeBaseUrl.replace(/\/$/, '')}/api/workspace/git-diff`)
+  url.searchParams.set('workspacePath', workspacePath)
+  url.searchParams.set('base', base)
+  const res = await fetch(url.toString())
+  if (!res.ok) return new Set()
+  const body = (await res.json()) as { ok?: boolean; files?: { path?: string }[] }
+  const out = new Set<string>()
+  for (const f of body.files ?? []) {
+    const p = String(f.path || '').trim()
+    if (p.endsWith('.py')) out.add(p)
+  }
+  return out
 }
 
 /** A repository the runtime knows about, for the conformance project picker. */
