@@ -7,7 +7,7 @@
  *
  * ponytail: scope is `python-examples/` only; runtime workspaces are a documented follow-up.
  */
-import { ref, computed, shallowRef } from 'vue'
+import { ref, computed, onMounted, shallowRef } from 'vue'
 import yaml from 'js-yaml'
 import { check } from '../../../packages/triton-conformance/src/check'
 import { observedImportsFromCodeModel } from '../../../packages/triton-conformance/src/ruleEngine'
@@ -24,7 +24,13 @@ import type {
 } from '../../../packages/triton-conformance/src/types'
 import type { IlographDocument } from '../../../packages/triton-core/src/ilographTypes'
 import { listPythonExamples, type PythonExampleEntry } from '../python/pythonExampleDiagrams'
-import { loadExampleProject, type LoadedProject } from '../conformance/loadProject'
+import {
+  fetchRuntimeRepos,
+  loadExampleProject,
+  loadRuntimeWorkspaceProject,
+  type LoadedProject,
+  type RuntimeRepoOption,
+} from '../conformance/loadProject'
 import { createServerLlmClient } from '../conformance/serverLlmClient'
 
 const props = defineProps<{ runtimeBaseUrl: string }>()
@@ -32,10 +38,23 @@ const emit = defineEmits<{ openDiagram: [target: { dir: string; module: string }
 
 const examples = listPythonExamples().filter((e) => e.root === 'python-examples')
 
+/** `example` = a bundled python-example; `repository` = a local repo added via the runtime. */
+const projectSource = ref<'example' | 'repository'>('example')
 const selectedDir = ref<string>('')
 const project = shallowRef<LoadedProject | null>(null)
 const entry = ref<PythonExampleEntry | null>(null)
 const loading = ref(false)
+
+// Repository source: the local repos the runtime knows about, plus a free-form path.
+const repos = ref<RuntimeRepoOption[]>([])
+const selectedRepoPath = ref('')
+const manualRepoPath = ref('')
+/** The runtime workspace backing `project` when the source is a repository (for the git base later). */
+const loadedWorkspace = ref<RuntimeRepoOption | null>(null)
+
+onMounted(async () => {
+  repos.value = await fetchRuntimeRepos(props.runtimeBaseUrl).catch(() => [])
+})
 
 const topologyMode = ref<'derive' | 'load'>('derive')
 const componentDepth = ref(2)
@@ -51,6 +70,7 @@ const useLlm = ref(false)
 async function selectProject(): Promise<void> {
   results.value = null
   error.value = null
+  loadedWorkspace.value = null
   const hit = examples.find((e) => e.dir === selectedDir.value)
   entry.value = hit ?? null
   project.value = null
@@ -64,6 +84,37 @@ async function selectProject(): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+async function loadRepository(): Promise<void> {
+  results.value = null
+  error.value = null
+  entry.value = null
+  project.value = null
+  loadedWorkspace.value = null
+  const workspacePath = (selectedRepoPath.value || manualRepoPath.value).trim()
+  if (!workspacePath) return
+  const known = repos.value.find((r) => r.workspacePath === workspacePath)
+  const workspaceName = known?.workspaceName || workspacePath.split(/[\\/]/).filter(Boolean).pop() || 'workspace'
+  loading.value = true
+  try {
+    project.value = await loadRuntimeWorkspaceProject(props.runtimeBaseUrl, workspacePath, workspaceName)
+    loadedWorkspace.value = { workspacePath, workspaceName }
+    disabledEdges.value = new Set()
+  } catch (err) {
+    error.value = `Failed to load repository: ${err instanceof Error ? err.message : String(err)}`
+  } finally {
+    loading.value = false
+  }
+}
+
+/** Reset the loaded project when the user switches between example and repository sources. */
+function onSourceChange(): void {
+  results.value = null
+  error.value = null
+  project.value = null
+  entry.value = null
+  loadedWorkspace.value = null
 }
 
 const derivedTopology = computed<ResolvedTopology | null>(() =>
@@ -171,11 +222,16 @@ function openDiagram(v: ViolationRecord): void {
     <header class="conformance__head">
       <h1>Conformance Checker</h1>
       <p class="conformance__lead">
-        Checks a Python example against a target architecture and reports violations. The
+        Checks a Python project against a target architecture and reports violations. The
         rule-engine always runs; enable the LLM to also check semantic rules (key stays server-side).
       </p>
 
       <div class="conformance__controls">
+        <label><input type="radio" value="example" v-model="projectSource" @change="onSourceChange" /> Example</label>
+        <label><input type="radio" value="repository" v-model="projectSource" @change="onSourceChange" /> Repository</label>
+      </div>
+
+      <div v-if="projectSource === 'example'" class="conformance__controls">
         <label>
           Project
           <select v-model="selectedDir" @change="void selectProject()">
@@ -184,6 +240,27 @@ function openDiagram(v: ViolationRecord): void {
           </select>
         </label>
         <span v-if="loading" class="conformance__muted">parsing…</span>
+      </div>
+
+      <div v-else class="conformance__controls">
+        <label>
+          Repository
+          <select v-model="selectedRepoPath">
+            <option value="">Select an added repository…</option>
+            <option v-for="r in repos" :key="r.workspacePath" :value="r.workspacePath">
+              {{ r.workspaceName }} — {{ r.workspacePath }}
+            </option>
+          </select>
+        </label>
+        <input
+          v-model="manualRepoPath"
+          class="conformance__repo-path"
+          aria-label="Workspace path"
+          placeholder="…or paste an absolute workspace path"
+        />
+        <button type="button" :disabled="loading || !(selectedRepoPath || manualRepoPath).trim()" @click="void loadRepository()">
+          {{ loading ? 'Loading…' : 'Load repository' }}
+        </button>
       </div>
     </header>
 
