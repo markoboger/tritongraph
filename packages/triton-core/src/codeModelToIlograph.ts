@@ -9,7 +9,7 @@ export interface CodeModelToIlographOptions {
   resourceId?: string
   title?: string
   description?: string
-  projectionMode?: 'single-resource' | 'nested-resources' | 'flat-modules' | 'package-graph'
+  projectionMode?: 'single-resource' | 'nested-resources' | 'package-graph'
   rootResourceKind?: 'package' | 'project'
   scopeContainerId?: string
 }
@@ -683,65 +683,6 @@ function codeModelToNestedIlographDocument(
  * run between module resources. Mirrors how scalaPackageGraphToIlographDocument renders Scala —
  * avoids the all-at-once nested-group layout that nested-resources produces for deep hierarchies.
  */
-function codeModelToFlatModulesDocument(
-  model: CodeModel,
-  options: CodeModelToIlographOptions,
-): IlographDocument {
-  // Honor an optional scope so the toolbar's "Flat modules" toggle works at any drill level
-  // (flat list of every module under the current package, not the whole repo).
-  const scopeId = options.scopeContainerId?.trim()
-  const scopeRoot = scopeId ? (findContainer(model.root, scopeId) ?? model.root) : model.root
-  const innerPackages = scopeRoot.children.map(containerToInnerPackage)
-
-  // Fallback-only project overview node. Each module is emitted as its own top-level resource below
-  // (with its own language tag + artefacts), and import edges run module→module, so the overview
-  // node has no edges and just floats beside the modules. We therefore omit it when there are
-  // modules to show, and keep it solely as a non-empty placeholder when the model has none.
-  const rootResource: TritonCodeResource = {
-    id: options.resourceId ?? model.id,
-    name: model.name,
-    subtitle: `${model.language} project`,
-    description: options.description ?? `Code model projection for ${model.name}.`,
-    'x-triton-node-type': 'package',
-    'x-triton-package-language': model.language,
-    ...(innerPackages.length ? { 'x-triton-inner-packages': innerPackages } : {}),
-  }
-
-  const moduleResources: TritonCodeResource[] = []
-  function collectModules(container: CodeContainer): void {
-    for (const child of container.children) {
-      if (child.kind === 'module') {
-        const innerArtefacts = child.artefacts.map(artefactToInnerArtefact)
-        moduleResources.push({
-          id: child.id,
-          name: child.name,
-          subtitle: withLoc(containerSubtitle(child), subtreeLoc(child, model.fileLineCounts)),
-          'x-triton-node-type': 'package',
-          'x-triton-package-language': model.language,
-          ...(innerArtefacts.length ? { 'x-triton-inner-artefacts': innerArtefacts } : {}),
-        })
-      } else {
-        collectModules(child)
-      }
-    }
-  }
-  collectModules(scopeRoot)
-
-  const importRelations = containerImportRelations(model.relations)
-
-  return {
-    description: options.description ?? `Code model projection for ${model.name}.`,
-    resources: moduleResources.length ? moduleResources : [rootResource],
-    perspectives: [
-      {
-        name: 'dependencies',
-        orientation: 'leftToRight',
-        relations: importRelations,
-      },
-    ],
-  }
-}
-
 /** Descend through wrapper packages with a single child container and no artefacts of their own. */
 function collapseSingleChild(container: CodeContainer): CodeContainer {
   let cur = container
@@ -954,9 +895,6 @@ export function codeModelToIlographDocument(
 ): IlographDocument {
   if (options.projectionMode === 'nested-resources') {
     return codeModelToNestedIlographDocument(model, options)
-  }
-  if (options.projectionMode === 'flat-modules') {
-    return codeModelToFlatModulesDocument(model, options)
   }
   if (options.projectionMode === 'package-graph') {
     return codeModelToPackageGraphDocument(model, options)

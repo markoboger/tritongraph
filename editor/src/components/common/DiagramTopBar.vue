@@ -15,8 +15,6 @@ defineProps<{
   gitDiffAvailable?: boolean
   /** Grey every box, colouring the ones changed since the diff base. */
   gitDiffVisible?: boolean
-  /** Projection mode for CodeModel-backed (Python) tabs; null hides the toggle for other tabs. */
-  viewMode?: 'package-graph' | 'flat-modules' | null
 }>()
 
 const emit = defineEmits<{
@@ -27,7 +25,6 @@ const emit = defineEmits<{
   'update:metric-visible': [metricKey: 'coverage' | 'debt' | 'issues', visible: boolean]
   'update:layers-visible': [visible: boolean]
   'update:git-diff-visible': [visible: boolean]
-  'update:view-mode': [mode: 'package-graph' | 'flat-modules']
 }>()
 
 function displayNodeLabel(nodeKey: string): string {
@@ -93,32 +90,6 @@ function onFocusDepthInput(ev: Event) {
       class="diagram-top-bar__relations"
       aria-label="Diagram controls"
     >
-      <template v-if="viewMode">
-        <span class="diagram-top-bar__group-label">View</span>
-        <div class="diagram-top-bar__viewmode" role="group" aria-label="Diagram view mode">
-          <button
-            type="button"
-            class="diagram-top-bar__viewmode-btn"
-            :class="{ 'diagram-top-bar__viewmode-btn--active': viewMode === 'package-graph' }"
-            :aria-pressed="viewMode === 'package-graph'"
-            title="Top-level packages with rolled-up dependencies; click a package to drill in"
-            @click="emit('update:view-mode', 'package-graph')"
-          >
-            Package graph
-          </button>
-          <button
-            type="button"
-            class="diagram-top-bar__viewmode-btn"
-            :class="{ 'diagram-top-bar__viewmode-btn--active': viewMode === 'flat-modules' }"
-            :aria-pressed="viewMode === 'flat-modules'"
-            title="Every module in the current scope, flat (no rollup)"
-            @click="emit('update:view-mode', 'flat-modules')"
-          >
-            Flat modules
-          </button>
-        </div>
-        <span class="diagram-top-bar__sep" aria-hidden="true" />
-      </template>
       <template v-if="nodeTypes.length">
         <span class="diagram-top-bar__group-label">Nodes</span>
         <label

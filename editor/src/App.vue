@@ -127,13 +127,11 @@ import {
   type ImportDiff,
 } from './graph/gitDiffOverlay'
 
-/** Projection mode for CodeModel-backed (Python) diagrams; switchable via the toolbar toggle. */
-type PythonViewMode = 'package-graph' | 'flat-modules'
 /**
  * Per-tab CodeModel for Python diagrams. Kept in a plain Map (not a ref): models are large and never
- * rendered directly. Lets drill/toggle re-project from the model instead of the lossy flow-node
- * rebuild. `scopeId` is the tab's base package scope (undefined for the workspace root, the drilled
- * package id for inner tabs). The current mode lives on the reactive DiagramTab (`pythonViewMode`).
+ * rendered directly. Lets drill re-project from the model instead of the lossy flow-node rebuild.
+ * `scopeId` is the tab's base package scope (undefined for the workspace root, the drilled package id
+ * for inner tabs).
  */
 type PythonTabEntry = { model: CodeModel; scopeId?: string; pythonSourceRoots?: readonly string[] }
 const pythonTabModel = new Map<string, PythonTabEntry>()
@@ -419,7 +417,7 @@ function findInnerPackageSpec(
  * drill-down diagrams so they don't lose the language tag and fall back to synthetic sbt drill notes.
  */
 function activeDiagramLanguage(): string | undefined {
-  // The tab records the analysed project's language directly (flat-modules diagrams don't carry it on
+  // The tab records the analysed project's language directly (package-graph diagrams don't carry it on
   // any flow node). Fall back to a `x-triton-package-scope` group node for the Scala nested projection.
   if (typeof activeTab.value?.projectLanguage === 'string') return activeTab.value.projectLanguage
   for (const node of nodes.value) {
@@ -431,8 +429,8 @@ function activeDiagramLanguage(): string | undefined {
 
 /**
  * Gather every inner-artefact owned by `packageId` (and the relations among them) from across all
- * flow nodes — not just the node being drilled. The flat-modules projection (Python/TypeScript) keeps
- * each module's artefacts on its own flat leaf node rather than nested under the parent package, so
+ * flow nodes — not just the node being drilled. The package-graph projection (Python/TypeScript) keeps
+ * each leaf module's artefacts on its own node rather than nested under the parent package, so
  * reading only the owner node's `innerArtefacts` produces an empty drill-down diagram for packages.
  */
 function collectArtefactsUnderPackage(packageId: string): {
@@ -499,7 +497,7 @@ function packageDiagramDataForNode(packageId: string): {
   // The whole diagram is one language; re-stamp it on the derived drill-down so leaves don't lose it
   // and fall back to synthetic sbt drill notes (see ilographToFlow drill-note gate).
   const language = activeDiagramLanguage()
-  // Artefacts live on the flat module leaf nodes (flat-modules projection), not nested under the
+  // Artefacts live on the leaf module nodes (package-graph projection), not nested under the
   // package being drilled — gather across all nodes so drilled packages aren't empty.
   const { innerArtefacts, innerArtefactRelations, crossArtefactRelations } =
     collectArtefactsUnderPackage(packageId)
@@ -611,7 +609,6 @@ async function openPythonPackageDrillTab(
   const innerTab = tabs.value.find((t) => t.key === innerTabKey)
   if (innerTab) {
     innerTab.projectLanguage = parentEntry.model.language
-    innerTab.pythonViewMode = 'package-graph'
   }
 }
 
@@ -1038,8 +1035,6 @@ interface DiagramTab {
    * of falling back to synthetic sbt drill notes.
    */
   projectLanguage?: string
-  /** Current projection mode for CodeModel-backed (Python) tabs; drives the toolbar toggle. */
-  pythonViewMode?: PythonViewMode
   /**
    * Node id the diagram was layer-drilled into when the user last left this tab, or `null` for the
    * full overview. Saved nodes are always the clean (un-drilled) layout; this lets us re-apply the
@@ -1115,31 +1110,6 @@ const activeTab = computed<DiagramTab | undefined>(() =>
 
 /** True while a Conformance tab exists — keeps its component mounted (see the `v-show` block). */
 const hasCheckerTab = computed(() => tabs.value.some((t) => t.kind === 'checker'))
-
-/**
- * Current Python projection mode for the active tab, or null when it isn't a CodeModel-backed tab.
- * Reads the reactive `pythonViewMode` tab field (set only for Python tabs) — not the non-reactive
- * `pythonTabModel` Map, so the toolbar toggle stays in sync.
- */
-const activePythonViewMode = computed<PythonViewMode | null>(() => activeTab.value?.pythonViewMode ?? null)
-
-/** Toolbar toggle handler: re-project the active tab's stored CodeModel in the chosen mode. */
-async function setPythonViewMode(mode: PythonViewMode): Promise<void> {
-  const tab = activeTab.value
-  if (!tab) return
-  const entry = pythonTabModel.get(tab.key)
-  if (!entry || tab.pythonViewMode === mode) return
-  tab.pythonViewMode = mode
-  const { codeModelToIlographDocument } = await import('../../packages/triton-core/src/codeModelToIlograph')
-  const doc = codeModelToIlographDocument(entry.model, {
-    projectionMode: mode,
-    scopeContainerId: entry.scopeId,
-    title: tab.title,
-  })
-  await applyDoc(stringifyIlographYaml(doc), tab.fileName || `${tab.title}.ilograph.yaml`, false, {
-    moduleNodeType: 'package',
-  })
-}
 
 /** True when the active tab is CodeModel-backed (Python), i.e. a full-model export is available. */
 const activeTabHasCodeModel = computed(() => {
@@ -3897,7 +3867,6 @@ async function openPythonExampleTab(root: string, dir: string): Promise<void> {
   const tab = tabs.value.find((t) => t.key === pythonExampleSelectionId(root, dir))
   if (tab) {
     tab.projectLanguage = 'python'
-    tab.pythonViewMode = 'package-graph'
   }
 }
 
@@ -4104,7 +4073,6 @@ async function openRuntimePythonTab(workspacePath: string, workspaceName: string
   const tab = tabs.value.find((t) => t.key === `runtime-python:${workspacePath}::${workspaceName}`)
   if (tab) {
     tab.projectLanguage = 'python'
-    tab.pythonViewMode = 'package-graph'
   }
 }
 
@@ -5435,7 +5403,6 @@ onUnmounted(() => {
           :layers-visible="showLayerBands"
           :git-diff-available="gitDiffAvailable"
           :git-diff-visible="gitDiffVisible"
-          :view-mode="activePythonViewMode"
           @update:node-type-visible="setNodeTypeVisible"
           @update:relation-type-visible="setRelationTypeVisible"
           @update:metric-tooltips-enabled="(v) => (metricTooltipsEnabled = v)"
@@ -5445,7 +5412,6 @@ onUnmounted(() => {
           "
           @update:layers-visible="(v) => (showLayerBands = v)"
           @update:git-diff-visible="(v) => void setGitDiffVisible(v)"
-          @update:view-mode="(m) => void setPythonViewMode(m)"
         />
         <div
           v-if="!activeSourceTab && activeTab?.kind !== 'runtime' && ideSession"
