@@ -27,6 +27,7 @@ import { listPythonExamples, type PythonExampleEntry } from '../python/pythonExa
 import {
   fetchChangedPythonFiles,
   fetchRuntimeRepos,
+  fetchTargetTopologyYaml,
   loadExampleProject,
   loadRuntimeWorkspaceBaseProject,
   loadRuntimeWorkspaceProject,
@@ -43,7 +44,16 @@ type DiagramFocus = { component: string; toComponent?: string }
 type OpenDiagramTarget =
   | { kind: 'example'; dir: string; focus: DiagramFocus }
   | { kind: 'repository'; workspacePath: string; workspaceName: string; focus: DiagramFocus }
-const emit = defineEmits<{ openDiagram: [target: OpenDiagramTarget] }>()
+
+/** Payload for opening the target-architecture editor on the currently-loaded repository. */
+interface EditTargetPayload {
+  workspacePath: string
+  workspaceName: string
+  codeModel: LoadedProject['codeModel']
+  pythonSourceRoots?: readonly string[]
+  seed: { mode: 'derive' | 'load'; componentDepth: number; disabledEdges: string[]; sollYamlText: string }
+}
+const emit = defineEmits<{ openDiagram: [target: OpenDiagramTarget]; editTarget: [payload: EditTargetPayload] }>()
 
 const examples = listPythonExamples().filter((e) => e.root === 'python-examples')
 
@@ -117,11 +127,33 @@ async function loadRepository(): Promise<void> {
     project.value = await loadRuntimeWorkspaceProject(props.runtimeBaseUrl, workspacePath, workspaceName)
     loadedWorkspace.value = { workspacePath, workspaceName }
     disabledEdges.value = new Set()
+    const savedTarget = await fetchTargetTopologyYaml(props.runtimeBaseUrl, workspacePath).catch(() => null)
+    if (savedTarget) {
+      sollYamlText.value = savedTarget
+      topologyMode.value = 'load'
+    }
   } catch (err) {
     error.value = `Failed to load repository: ${err instanceof Error ? err.message : String(err)}`
   } finally {
     loading.value = false
   }
+}
+
+/** Open the target-architecture editor for the currently-loaded repository (repository sources only). */
+function editTarget(): void {
+  if (!project.value || !loadedWorkspace.value) return
+  emit('editTarget', {
+    workspacePath: loadedWorkspace.value.workspacePath,
+    workspaceName: loadedWorkspace.value.workspaceName,
+    codeModel: project.value.codeModel,
+    pythonSourceRoots: project.value.pythonSourceRoots,
+    seed: {
+      mode: topologyMode.value,
+      componentDepth: componentDepth.value,
+      disabledEdges: [...disabledEdges.value],
+      sollYamlText: sollYamlText.value,
+    },
+  })
 }
 
 /** Reset the loaded project when the user switches between example and repository sources. */
@@ -367,7 +399,15 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
     </section>
 
     <section v-if="project" class="conformance__soll conformance__card">
-      <h2 class="conformance__card-title">Target topology</h2>
+      <div class="conformance__card-title-row">
+        <h2 class="conformance__card-title">Target topology</h2>
+        <button
+          v-if="loadedWorkspace"
+          type="button"
+          class="conformance__link"
+          @click="editTarget()"
+        >Edit target architecture →</button>
+      </div>
       <div class="conformance__controls conformance__segmented">
         <label><input type="radio" value="derive" v-model="topologyMode" /> Derive from project</label>
         <label><input type="radio" value="load" v-model="topologyMode" /> Load ilograph.yaml</label>
@@ -542,6 +582,8 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
   color: #0f172a;
 }
 .conformance__soll { margin-top: 0; }
+.conformance__card-title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+.conformance__card-title-row .conformance__card-title { margin: 0 0 4px; }
 
 .conformance__controls { display: flex; gap: 1rem; align-items: center; margin-top: 1rem; flex-wrap: wrap; }
 .conformance__muted { color: #55606b; font-size: 0.9rem; margin: 0.5rem 0 0; }

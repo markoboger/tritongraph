@@ -126,6 +126,23 @@ import {
   type DiffStatus,
   type ImportDiff,
 } from './graph/gitDiffOverlay'
+import { saveTargetTopologyYaml } from './conformance/loadProject'
+import {
+  applyTargetOps,
+  getOrCreateSession,
+  groupIntoAbstraction,
+  opsFromDerivedSeed,
+  opsFromForeignYamlEdgeDiff,
+  opsFromTargetYaml,
+  peekSession,
+  reconcileScope,
+  resolveScopeContainerId,
+  seedSessionOps,
+  serializeTargetDocument,
+  sollDiffForScope,
+  type TargetEditOps,
+  type TargetEditSession,
+} from './targetTopology/targetEditSession'
 
 /**
  * Per-tab CodeModel for Python diagrams. Kept in a plain Map (not a ref): models are large and never
@@ -592,9 +609,11 @@ async function openPythonPackageDrillTab(
 ): Promise<void> {
   const innerTabKey = `package-inner:${parentKey}#${encodeURIComponent(packageId)}`
   const name = packageId.split('.').pop() || packageId
+  /** Drilled target-editor tabs keep the "Editor:" prefix so every tab of the edit session is recognizable. */
+  const tabTitle = isTargetEditorKey(parentKey) ? `Editor: ${name}` : name
   const { codeModelToIlographDocument } = await import('../../packages/triton-core/src/codeModelToIlograph')
   setPythonTabModel(innerTabKey, { model: parentEntry.model, scopeId: packageId })
-  await openOrActivateTab({ key: innerTabKey, title: name, iconUrl: folderIconUrl }, async () => {
+  await openOrActivateTab({ key: innerTabKey, title: tabTitle, iconUrl: folderIconUrl }, async () => {
     sourcePath.value = `${sourcePath.value || parentKey}#${packageId}`
     const doc = codeModelToIlographDocument(parentEntry.model, {
       projectionMode: 'package-graph',
@@ -614,6 +633,12 @@ async function openPythonPackageDrillTab(
 
 async function openPackageInnerDiagramTab(packageId: string): Promise<void> {
   const parentKey = activeTab.value?.key ?? 'diagram'
+  /** Target-editor tabs: fold pending canvas edits into the session BEFORE reading the model
+   *  entry — the reconcile replaces the pythonTabModel entry with a fresh Soll projection, so
+   *  the drilled tab must not capture the pre-edit reference. */
+  if (isTargetEditorKey(parentKey) && activeTab.value) {
+    reconcileActiveTargetEditorTab(activeTab.value)
+  }
   const parentEntry = pythonTabModel.get(parentKey)
   if (parentEntry) {
     await openPythonPackageDrillTab(packageId, parentKey, parentEntry)
@@ -676,6 +701,228 @@ async function openPackageInnerDiagramTab(packageId: string): Promise<void> {
   }
   if (parentKey === `dojo:${CLASS_INHERITANCE_CHAIN_DOJO_ID}` && packageId === CLASS_INHERITANCE_INNER_PACKAGE_ID) {
     sidePanelTab.value = 'dojo'
+  }
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * Target (Soll) architecture editor
+ *
+ * A target-editor tab is a normal Python package-graph diagram tab (kind stays 'diagram') whose key
+ * is prefixed `target-editor:<workspacePath>::<workspaceName>` — drilling into it reuses the existing
+ * `openPackageInnerDiagramTab` / `openPythonPackageDrillTab` chain unchanged, since it dispatches on
+ * `pythonTabModel`, not on any target-editor-specific state. Every tab for the same workspace (root +
+ * every drilled scope) shares one `TargetEditSession` (see `./target/targetEditSession.ts`); edits are
+ * folded into it by `reconcileScope` whenever the user navigates away from a tab (see the hook in
+ * `snapshotActiveTab`).
+ * ---------------------------------------------------------------------------------------------- */
+
+function isTargetEditorKey(key: string | undefined): boolean {
+  return baseTabKey(key ?? '').startsWith('target-editor:')
+}
+
+/** The drilled scope's absolute container id for a target-editor tab, or undefined for the root tab. */
+function targetEditorScopeIdForTabKey(key: string): string | undefined {
+  return parsePackageInnerTabKey(key)?.packageId
+}
+
+function targetEditorSessionForTabKey(key: string): TargetEditSession | null {
+  const root = baseTabKey(key)
+  if (!root.startsWith('target-editor:')) return null
+  const body = root.slice('target-editor:'.length)
+  const sep = body.indexOf('::')
+  if (sep < 0) return null
+  return peekSession(body.slice(0, sep))
+}
+
+/** Re-derive the Soll for `scopeId` and render it into the tab at `tabKey`. Mirrors `openPythonPackageDrillTab`'s loader body. */
+async function renderTargetEditorScope(
+  session: TargetEditSession,
+  scopeId: string | undefined,
+  tabKey: string,
+): Promise<void> {
+  const soll = applyTargetOps(session.baseModel, session.ops)
+  setPythonTabModel(tabKey, { model: soll, scopeId })
+  const { codeModelToIlographDocument } = await import('../../packages/triton-core/src/codeModelToIlograph')
+  const title = scopeId ? scopeId.split(/[./]/).pop() || scopeId : session.workspaceName
+  const doc = codeModelToIlographDocument(soll, {
+    projectionMode: 'package-graph',
+    scopeContainerId: scopeId,
+    title,
+  })
+  sourcePath.value = scopeId ? `${session.workspacePath}#${scopeId}` : `${session.workspacePath}/`
+  await applyDoc(stringifyIlographYaml(doc), `${title}.target.ilograph.yaml`, false, { moduleNodeType: 'package' })
+  // applyDoc leaves a generic "Loaded N modules…" note; keep the editor toolbar's status line clean.
+  status.value = ''
+}
+
+/** Fold the outgoing target-editor tab's on-canvas edits into its session. Called from `snapshotActiveTab`. */
+function reconcileActiveTargetEditorTab(tab: DiagramTab): void {
+  if (!isTargetEditorKey(tab.key)) return
+  const session = targetEditorSessionForTabKey(tab.key)
+  if (!session) return
+  const scopeId = targetEditorScopeIdForTabKey(tab.key)
+  const reconcileNodes = (nodes.value as unknown as { id: string; data?: { label?: string } }[]).map((n) => ({
+    id: String(n.id),
+    label: n.data?.label,
+  }))
+  const reconcileEdges = (edges.value as unknown as { id?: string; source: string; target: string }[])
+    .filter((e) => !isGhostEdge(e.id))
+    .map((e) => ({ source: String(e.source), target: String(e.target) }))
+  reconcileScope(session, scopeId, reconcileNodes, reconcileEdges)
+  // Keep the cached CodeModel for this tab fresh (cheap tree rebuild, no layout) so a fresh drill
+  // from here immediately reflects the reconciled ops. Preserve the tab's scopeId — drilled tabs
+  // lose their scope (and deeper drills degrade) if the entry is replaced without it.
+  setPythonTabModel(tab.key, { model: applyTargetOps(session.baseModel, session.ops), scopeId })
+}
+
+/** Seed a fresh session's ops from whatever the checker currently shows (saved target, derive mode, or a pasted YAML). */
+function seedTargetSessionFromChecker(
+  session: TargetEditSession,
+  seed: { mode: 'derive' | 'load'; componentDepth: number; disabledEdges: string[]; sollYamlText: string },
+): void {
+  let ops: TargetEditOps | null = null
+  if (seed.mode === 'load' && seed.sollYamlText.trim()) {
+    try {
+      const doc = parseIlographYaml(seed.sollYamlText)
+      ops = opsFromTargetYaml(doc) ?? opsFromForeignYamlEdgeDiff(doc, session.baseModel)
+    } catch {
+      ops = null
+    }
+  }
+  seedSessionOps(session, ops ?? opsFromDerivedSeed(seed, session.baseModel))
+}
+
+async function openTargetEditorTab(payload: {
+  workspacePath: string
+  workspaceName: string
+  codeModel: CodeModel
+  seed: { mode: 'derive' | 'load'; componentDepth: number; disabledEdges: string[]; sollYamlText: string }
+}): Promise<void> {
+  const session = getOrCreateSession(payload.workspacePath, payload.workspaceName, payload.codeModel)
+  const isFreshSession = !session.dirty && session.ops.editedScopes.length === 0
+  if (isFreshSession) seedTargetSessionFromChecker(session, payload.seed)
+  const key = `target-editor:${payload.workspacePath}::${payload.workspaceName}`
+  await openOrActivateTab({ key, title: `Editor: ${payload.workspaceName}`, iconUrl: pythonIconUrl }, () =>
+    renderTargetEditorScope(session, undefined, key),
+  )
+  const tab = tabs.value.find((t) => t.key === key)
+  if (tab) tab.projectLanguage = 'python'
+}
+
+const sollDiffVisible = ref(false)
+/** Sessions live in a plain module Map (not reactive) — bump after every reconcile so `activeSollDiff` recomputes. */
+const sollDiffRefresh = ref(0)
+
+/** Ist/Soll diff for the active target-editor tab's scope, or null when not applicable/toggled off. */
+const activeSollDiff = computed(() => {
+  void sollDiffRefresh.value
+  const tab = activeTab.value
+  if (!tab || !isTargetEditorKey(tab.key) || !sollDiffVisible.value) return null
+  const session = targetEditorSessionForTabKey(tab.key)
+  if (!session) return null
+  return sollDiffForScope(session, targetEditorScopeIdForTabKey(tab.key))
+})
+
+/** Reconcile the active editor tab's canvas into its session and refresh the diff overlay. */
+function syncSollDiffFromCanvas(): void {
+  const tab = activeTab.value
+  if (!tab || !isTargetEditorKey(tab.key)) return
+  // Mid-tab-switch the refs are flushed to [] — reconciling then would record every box as deleted.
+  if (!(nodes.value as unknown as unknown[]).length) return
+  reconcileActiveTargetEditorTab(tab)
+  sollDiffRefresh.value++
+}
+
+/* Guided grouping flow: button → pick boxes by plain click (drill suppressed) → name → create.
+ * The pick state is provided downward: GraphWorkspace toggles picks on node clicks, GraphDrillIn
+ * suppresses its click-to-drill while the mode is active. */
+/** Help popover of the target-editor toolbar (explains the edit gestures). */
+const editorHelpOpen = ref(false)
+
+const GROUP_PICK_CLASS = 'tg-group-pick'
+const groupPickMode = ref(false)
+const groupPickedIds = ref<Set<string>>(new Set())
+const groupNameInputVisible = ref(false)
+const groupNameDraft = ref('')
+provide('tritonGroupPick', { mode: groupPickMode, toggle: toggleGroupPick })
+
+function nodeClassWith(cls: unknown, token: string, on: boolean): string | undefined {
+  const parts = String(typeof cls === 'string' ? cls : '')
+    .split(/\s+/)
+    .filter((c) => c && c !== token)
+  if (on) parts.push(token)
+  return parts.length ? parts.join(' ') : undefined
+}
+
+/** Toggle the pick class on one node. Cast to a light shape — spreading vue-flow's deeply-generic
+ *  Node type blows the type-instantiation depth (same workaround as `applyGhostEdges`). */
+function setNodePickClass(nodeId: string, on: boolean): void {
+  const all = nodes.value as unknown as { id: string; class?: unknown }[]
+  nodes.value = all.map((n) =>
+    String(n.id) === nodeId ? { ...n, class: nodeClassWith(n.class, GROUP_PICK_CLASS, on) } : n,
+  ) as unknown as TritonFlowNode[]
+}
+
+function toggleGroupPick(nodeId: string): void {
+  if (!groupPickMode.value || groupNameInputVisible.value) return
+  const next = new Set(groupPickedIds.value)
+  const on = !next.has(nodeId)
+  if (on) next.add(nodeId)
+  else next.delete(nodeId)
+  groupPickedIds.value = next
+  setNodePickClass(nodeId, on)
+}
+
+function startGroupSelection(): void {
+  groupPickMode.value = true
+  groupPickedIds.value = new Set()
+  groupNameInputVisible.value = false
+  groupNameDraft.value = ''
+  status.value = ''
+}
+
+function cancelGroupSelection(): void {
+  for (const id of groupPickedIds.value) setNodePickClass(id, false)
+  groupPickMode.value = false
+  groupNameInputVisible.value = false
+  groupNameDraft.value = ''
+  groupPickedIds.value = new Set()
+}
+
+async function confirmGroupSelection(): Promise<void> {
+  const tab = activeTab.value
+  const session = tab && isTargetEditorKey(tab.key) ? targetEditorSessionForTabKey(tab.key) : null
+  const name = groupNameDraft.value.trim()
+  const memberIds = [...groupPickedIds.value]
+  if (!tab || !session || memberIds.length < 2 || !name) return
+  const scopeId = targetEditorScopeIdForTabKey(tab.key)
+  cancelGroupSelection()
+  reconcileActiveTargetEditorTab(tab)
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || uid()
+  groupIntoAbstraction(session, resolveScopeContainerId(session, scopeId), `group:${slug}`, name, memberIds)
+  await renderTargetEditorScope(session, scopeId, tab.key)
+  status.value = `Grouped ${memberIds.length} boxes into "${name}".`
+}
+
+
+async function saveActiveTargetEditorTab(): Promise<void> {
+  const tab = activeTab.value
+  if (!tab || !isTargetEditorKey(tab.key)) return
+  const session = targetEditorSessionForTabKey(tab.key)
+  if (!session) return
+  reconcileActiveTargetEditorTab(tab)
+  const runtimeUrl = effectiveRuntimeUrl.value
+  if (!runtimeUrl) {
+    status.value = 'Configure the Triton runtime URL (?runtimeUrl=) to save the target architecture.'
+    return
+  }
+  try {
+    const yaml = stringifyIlographYaml(serializeTargetDocument(session))
+    await saveTargetTopologyYaml(runtimeUrl, session.workspacePath, yaml)
+    session.dirty = false
+    status.value = `Saved ${session.workspacePath}/.triton/target.ilograph.yaml — reload the repository in the Conformance tab to check against it.`
+  } catch (err) {
+    status.value = `Failed to save target architecture: ${err instanceof Error ? err.message : String(err)}`
   }
 }
 
@@ -1309,6 +1556,19 @@ const gitDiffAvailable = computed(() => !!activeRuntimeWorkspace.value && !!gitD
 /** Apply the overlay only where it is meaningful; the user's Diff preference persists across tabs. */
 const gitDiffActive = computed(() => gitDiffVisible.value && gitDiffAvailable.value)
 
+/**
+ * The diff overlay has two independent sources feeding the same `gitDiffKey` context: git churn
+ * (HEAD~1..HEAD) on a runtime tab, or Ist/Soll on a target-editor tab. At most one applies to any
+ * given tab (target-editor tabs never have a `runtimeWorkspaceSession`), so a simple fallback is enough.
+ */
+const effectiveDiffVisible = computed(() => !!activeSollDiff.value || gitDiffActive.value)
+const effectiveDiffStatusById = computed<Record<string, DiffStatus>>(
+  () => activeSollDiff.value?.statusById ?? gitDiffStatusByNodeId.value,
+)
+const effectiveDiffImportDiff = computed<ImportDiff>(
+  () => activeSollDiff.value?.importDiff ?? gitDiffImportDiff.value,
+)
+
 /** Fetch per-file line churn (HEAD~1..HEAD) from the runtime and key it by workspace-relative path. */
 async function fetchWorkspaceGitDiff(runtimeUrl: string, workspacePath: string): Promise<ChurnByFile> {
   const u = new URL(`${runtimeUrl}/api/workspace/git-diff`)
@@ -1377,12 +1637,12 @@ function applyGhostEdges() {
   // Cast to a light shape: `.filter` on vue-flow's deeply-generic Edge type blows the instantiation depth.
   const all = edges.value as unknown as { id: string }[]
   const base = all.filter((e) => !isGhostEdge(e.id))
-  if (!gitDiffActive.value) {
+  if (!effectiveDiffVisible.value) {
     if (base.length !== all.length) edges.value = base as unknown as TritonFlowEdge[]
     return
   }
   const visibleIds = new Set((nodes.value as unknown as { id: string }[]).map((n) => n.id))
-  const ghosts = gitDiffImportDiff.value.removed
+  const ghosts = effectiveDiffImportDiff.value.removed
     .filter(({ from, to }) => visibleIds.has(from) && visibleIds.has(to))
     .map(({ from, to }) => makeGhostImportEdge(from, to))
   edges.value = [...base, ...ghosts] as unknown as TritonFlowEdge[]
@@ -1416,6 +1676,51 @@ watch(
   },
   { immediate: true },
 )
+
+/** Leaving the tab mid-selection abandons the pick (the editor tab re-projects on return, wiping pick classes). */
+watch(activeTabId, () => {
+  editorHelpOpen.value = false
+  if (!groupPickMode.value) return
+  groupPickMode.value = false
+  groupNameInputVisible.value = false
+  groupNameDraft.value = ''
+  groupPickedIds.value = new Set()
+})
+
+/** Toggling the Ist/Soll diff button, or switching to/from a target-editor tab, redraws ghost edges. */
+watch([sollDiffVisible, activeTabId], ([visible], [wasVisible]) => {
+  // Canvas edits (deleted/drawn edges) live only on the canvas until a sync point — fold them into
+  // the session first, otherwise the diff shows the pre-edit state until the next tab switch/save.
+  if (visible) syncSollDiffFromCanvas()
+  applyGhostEdges()
+  if (visible === wasVisible || !isTargetEditorKey(activeTab.value?.key)) return
+  if (!visible) {
+    status.value = 'Ist/Soll diff off.'
+    return
+  }
+  const diff = activeSollDiff.value
+  const added = diff?.importDiff.added.size ?? 0
+  const removed = diff?.importDiff.removed.length ?? 0
+  status.value = `Ist/Soll diff on — ${added} added, ${removed} removed edge${removed === 1 ? '' : 's'} vs. current code.`
+})
+
+/** Real (non-ghost) edge pairs on the canvas — the signal that an edge was drawn or deleted. */
+const realEdgeSignature = computed(() =>
+  (edges.value as unknown as { id?: string; source: string; target: string }[])
+    .filter((e) => !isGhostEdge(e.id))
+    .map((e) => `${e.source}->${e.target}`)
+    .sort()
+    .join('|'),
+)
+
+/** Live-refresh the Ist/Soll overlay while it is on: deleting an edge immediately shows its red
+ *  ghost, drawing one immediately tints it green. Watching only the non-ghost signature avoids the
+ *  write→re-run loop `applyGhostEdges` would cause (it only adds/removes ghost edges). */
+watch(realEdgeSignature, () => {
+  if (!sollDiffVisible.value || !isTargetEditorKey(activeTab.value?.key)) return
+  syncSollDiffFromCanvas()
+  applyGhostEdges()
+})
 
 const activeSourceTab = computed<DiagramTab | null>(() => (
   activeTab.value?.kind === 'source' ? activeTab.value : null
@@ -1495,9 +1800,9 @@ provide('tritonMetricTooltipsEnabled', metricTooltipsEnabled)
 provide('tritonFocusRelationDepth', focusRelationDepth)
 provide('tritonMetricVisibility', metricVisibility)
 provide(gitDiffKey, {
-  visible: gitDiffActive,
-  statusById: gitDiffStatusByNodeId,
-  importDiff: gitDiffImportDiff,
+  visible: effectiveDiffVisible,
+  statusById: effectiveDiffStatusById,
+  importDiff: effectiveDiffImportDiff,
 })
 
 const nodeTypes = {
@@ -1921,6 +2226,7 @@ async function selectExample(id: string) {
 function snapshotActiveTab(): void {
   const t = activeTab.value
   if (!t) return
+  reconcileActiveTargetEditorTab(t)
   t.nodes = nodes.value
   t.edges = edges.value
   t.perspectiveName = perspectiveName.value
@@ -1980,6 +2286,13 @@ async function activateTabById(id: string): Promise<void> {
   nodes.value = []
   edges.value = []
   await nextTick()
+  /** Target-editor tabs share one edit session per workspace: re-project from the session instead
+   *  of restoring the snapshot, so edits made on any other editor tab (root or drilled) show up. */
+  const targetSession = isTargetEditorKey(target.key) ? targetEditorSessionForTabKey(target.key) : null
+  if (targetSession) {
+    await renderTargetEditorScope(targetSession, targetEditorScopeIdForTabKey(target.key), target.key)
+    return
+  }
   /** Assign whole arrays so Vue Flow re-syncs from the saved snapshot (object identities differ
    *  per tab, which is fine — it gives a clean rebuild rather than mixing previous-tab state). */
   nodes.value = target.nodes
@@ -5457,6 +5770,78 @@ onUnmounted(() => {
           />
         </div>
         <div v-else-if="activeTab?.kind !== 'checker'" class="diagram-with-yaml-toggle">
+          <div v-if="isTargetEditorKey(activeTab?.key)" class="target-editor-toolbar">
+            <div class="target-editor-toolbar__row">
+              <span class="target-editor-toolbar__badge">Editor</span>
+              <template v-if="!groupPickMode">
+                <button type="button" class="tet-btn" @click="startGroupSelection()">Group into abstraction</button>
+                <label class="target-editor-toolbar__toggle">
+                  <input type="checkbox" v-model="sollDiffVisible" /> Ist/Soll diff
+                </label>
+                <button type="button" class="tet-btn tet-btn--primary" @click="void saveActiveTargetEditorTab()">Save target</button>
+              </template>
+              <template v-else-if="!groupNameInputVisible">
+                <span class="target-editor-toolbar__prompt">
+                  Click the boxes you want to group — {{ groupPickedIds.size }} selected
+                </span>
+                <button
+                  type="button"
+                  class="tet-btn tet-btn--primary"
+                  :disabled="groupPickedIds.size < 2"
+                  @click="groupNameInputVisible = true"
+                >Next: name it</button>
+                <button type="button" class="tet-btn" @click="cancelGroupSelection()">Cancel</button>
+              </template>
+              <template v-else>
+                <input
+                  :ref="(el) => (el as HTMLInputElement | null)?.focus()"
+                  v-model="groupNameDraft"
+                  class="target-editor-toolbar__name-input"
+                  type="text"
+                  placeholder="Name of the abstraction…"
+                  aria-label="Name of the abstraction"
+                  @keydown.enter="void confirmGroupSelection()"
+                  @keydown.esc="cancelGroupSelection()"
+                />
+                <button
+                  type="button"
+                  class="tet-btn tet-btn--primary"
+                  :disabled="!groupNameDraft.trim()"
+                  @click="void confirmGroupSelection()"
+                >Create group ({{ groupPickedIds.size }})</button>
+                <button type="button" class="tet-btn" @click="cancelGroupSelection()">Cancel</button>
+              </template>
+              <span v-if="status && !groupPickMode" class="target-editor-toolbar__status" role="status">{{ status }}</span>
+              <button
+                type="button"
+                class="tet-btn target-editor-toolbar__help-btn"
+                :class="{ 'target-editor-toolbar__help-btn--open': editorHelpOpen }"
+                :aria-expanded="editorHelpOpen"
+                aria-controls="target-editor-help-panel"
+                title="How to edit the target architecture"
+                @click="editorHelpOpen = !editorHelpOpen"
+              >? Help</button>
+            </div>
+            <div v-if="editorHelpOpen" id="target-editor-help-panel" class="target-editor-help">
+              <div class="target-editor-help__title">Editing the target architecture</div>
+              <dl class="target-editor-help__list">
+                <dt>Allow an import</dt>
+                <dd>Drag from a handle (the small dot on a box edge) to a handle on another box. The new edge becomes an allowed dependency.</dd>
+                <dt>Forbid an import</dt>
+                <dd>Click an edge to select it, then press <kbd>Delete</kbd>. Code that still uses it will be reported as a violation by the conformance check.</dd>
+                <dt>Group into abstraction</dt>
+                <dd>Press the button, click the boxes that belong together, then give the group a name. Their imports are rolled up to the group.</dd>
+                <dt>Rename a box</dt>
+                <dd>Double-click its title.</dd>
+                <dt>Navigate</dt>
+                <dd>Click a box to focus it (<kbd>Esc</kbd> goes back). The underlined subtitle link opens that package as its own editor tab — edits there belong to the same session.</dd>
+                <dt>Ist/Soll diff</dt>
+                <dd>Overlays your edits against the current code: green = newly allowed edge, red dashed = forbidden import that still exists in code.</dd>
+                <dt>Save target</dt>
+                <dd>Writes <code>.triton/target.ilograph.yaml</code> into the repository. The Conformance tab loads it automatically on the next repository load.</dd>
+              </dl>
+            </div>
+          </div>
           <GraphWorkspace
             ref="graphRef"
             v-model:nodes="nodes"
@@ -5517,6 +5902,7 @@ onUnmounted(() => {
           <ConformanceChecker
             :runtime-base-url="effectiveRuntimeUrl"
             @open-diagram="(t) => void openConformanceDiagram(t)"
+            @edit-target="(p) => void openTargetEditorTab(p)"
           />
         </div>
       </div>
@@ -6108,7 +6494,158 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
 }
-.diagram-with-yaml-toggle > :first-child {
+/* Floats above the canvas like `.yaml-side-toggle` — DiagramTopBar is itself `position: absolute; top:
+   0`, so a normal-flow toolbar here would sit directly underneath it and steal its clicks. Styling
+   follows the conformance-checker card language (white card, slate borders, teal primary). */
+.target-editor-toolbar {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.12);
+  max-width: min(720px, calc(100% - 24px));
+}
+.target-editor-toolbar__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+}
+.target-editor-toolbar__badge {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #0f172a;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.tet-btn {
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tet-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+}
+.tet-btn--primary {
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #fff;
+}
+.tet-btn--primary:hover:not(:disabled) {
+  background: #115e59;
+}
+.tet-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.target-editor-toolbar__toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  color: #0f172a;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.target-editor-toolbar__prompt {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f766e;
+  white-space: nowrap;
+}
+.target-editor-toolbar__name-input {
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid #cbd5e1;
+  font-size: 13px;
+  min-width: 220px;
+}
+.target-editor-toolbar__name-input:focus {
+  outline: 2px solid #0f766e;
+  outline-offset: -1px;
+  border-color: transparent;
+}
+/* Feedback for the editor buttons — `status` is not rendered anywhere else on diagram tabs. */
+.target-editor-toolbar__status {
+  font-size: 12px;
+  color: #475569;
+  max-width: 380px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.target-editor-toolbar__help-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: #475569;
+}
+.target-editor-toolbar__help-btn--open {
+  background: #f1f5f9;
+}
+.target-editor-help {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.target-editor-help__title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 6px;
+}
+.target-editor-help__list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 5px 12px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.target-editor-help__list dt {
+  font-weight: 600;
+  color: #0f766e;
+  white-space: nowrap;
+}
+.target-editor-help__list dd {
+  margin: 0;
+  color: #475569;
+}
+.target-editor-help__list kbd {
+  padding: 0 4px;
+  border: 1px solid #cbd5e1;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: #f8fafc;
+  font-size: 10px;
+  color: #475569;
+}
+.target-editor-help__list code {
+  font-size: 11px;
+  background: #f1f5f9;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+/* `:first-child` is DOM-order based (unaffected by the toolbar's `position: absolute`), so it still
+   needs excluding here — otherwise GraphWorkspace never gets its flex sizing when the toolbar is present. */
+.diagram-with-yaml-toggle > *:not(.target-editor-toolbar) {
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;

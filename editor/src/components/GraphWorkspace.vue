@@ -13,7 +13,7 @@ import {
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import '@vue-flow/node-resizer/dist/style.css'
-import { computed, markRaw, nextTick, onMounted, onUnmounted, provide, reactive, ref, unref, watch } from 'vue'
+import { computed, inject, markRaw, nextTick, onMounted, onUnmounted, provide, reactive, ref, unref, watch, type Ref } from 'vue'
 import LaneSmoothStepEdge from './diagram/LaneSmoothStepEdge'
 import type { AbstractionDojoResizeConfig } from './diagram/useAbstractionNodeResize'
 import DiagramContainerView from './diagram/DiagramContainerView.vue'
@@ -113,7 +113,20 @@ const {
   setViewport,
   setTranslateExtent,
   viewport,
+  onNodeClick: onWorkspaceNodeClick,
 } = useVueFlow(TRITON_WORKSPACE_FLOW_ID)
+
+/** Target editor's guided grouping: while the mode is on, plain clicks pick boxes instead of
+ *  selecting/drilling (GraphDrillIn suppresses its click-to-drill via the same injection). */
+const groupPick = inject<{ mode: Ref<boolean>; toggle: (id: string) => void } | undefined>(
+  'tritonGroupPick',
+  undefined,
+)
+onWorkspaceNodeClick(({ node }) => {
+  if (!groupPick?.mode.value) return
+  if (!isLeafBoxNode(node) && node.type !== 'group') return
+  groupPick.toggle(String(node.id))
+})
 
 /** Default: pan is unconstrained (see Vue Flow store initial `translateExtent`). */
 const UNBOUNDED_TRANSLATE_EXTENT: CoordinateExtent = [
@@ -1926,6 +1939,7 @@ defineExpose({
         :connection-mode="ConnectionMode.Strict"
         :nodes-draggable="props.nodesDraggable"
         :nodes-connectable="true"
+        :elements-selectable="!groupPick?.mode.value"
         :edges-updatable="false"
         :edges-focusable="true"
         :snap-to-grid="true"
@@ -2286,6 +2300,13 @@ defineExpose({
 .vue-flow__node.tg-dimmed {
   opacity: 0.4;
   pointer-events: none;
+}
+
+/* Boxes picked in the target editor's "group into abstraction" selection mode. */
+.vue-flow__node.tg-group-pick {
+  outline: 3px solid #0f766e;
+  outline-offset: 3px;
+  border-radius: 12px;
 }
 
 /* Relation-colored circular anchors on the module/group outline (not edge geometry). */

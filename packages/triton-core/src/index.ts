@@ -51,7 +51,12 @@ export type {
 } from './pythonCodeModel'
 export { buildTypeScriptCodeModelFromFiles } from './typeScriptCodeModel'
 export type { TypeScriptCodeModelOptions, TypeScriptSourceFile } from './typeScriptCodeModel'
-export { codeModelToIlographDocument } from './codeModelToIlograph'
+export {
+  codeModelToIlographDocument,
+  collapseSingleChild,
+  findContainer,
+  rollupImportRelations,
+} from './codeModelToIlograph'
 export type { CodeModelToIlographOptions } from './codeModelToIlograph'
 export type {
   ParsedScalaDefinition,

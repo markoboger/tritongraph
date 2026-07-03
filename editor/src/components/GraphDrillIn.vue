@@ -46,6 +46,8 @@ const {
 } = useVueFlow()
 
 const graphFocusUi = inject<{ containerFocusId: string | null } | undefined>('tritonGraphFocusUi', undefined)
+/** Target editor's guided grouping (provided by App.vue): while picking boxes, clicks must not drill. */
+const groupPick = inject<{ mode: { value: boolean } } | undefined>('tritonGroupPick', undefined)
 const afterLayerDrillOut = inject<(() => void | Promise<void>) | undefined>('tritonAfterLayerDrillOut', undefined)
 /** Rebuild the decorative layer bands from the current (focused) node set after a drill settles. */
 const syncLayerBands = inject<(() => void) | undefined>('tritonSyncLayerBands', undefined)
@@ -1151,8 +1153,17 @@ function cancelClickTimer(): void {
  * The fallback `zoomIntoContainer` is only for groups that aren't part of a depth-layered
  * region (e.g. legacy ilograph documents without dependency edges).
  */
-onNodeClick(({ node }) => {
+onNodeClick(({ event, node }) => {
   cancelClickTimer()
+
+  /** Target editor's grouping mode: clicks pick boxes (handled in GraphWorkspace), never drill. */
+  if (groupPick?.mode.value) return
+
+  /** Modifier-clicks are (multi-)selection gestures (Vue Flow handles the selection itself) —
+   *  drilling on top of them would rearrange the layout mid-selection, e.g. while the user is
+   *  Ctrl-clicking boxes for the target editor's "group into abstraction". */
+  const me = event as MouseEvent
+  if (me.ctrlKey || me.metaKey || me.shiftKey) return
 
   if (isLeafBoxNode(node)) {
     if (layerDrillId.value === node.id) {

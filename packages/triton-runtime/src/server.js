@@ -47,6 +47,8 @@ const PYTHON_MARKER_FILES = ['pyproject.toml', 'setup.py', 'setup.cfg']
 
 const REPO_DISCOVERY_MAX_DEPTH = 3
 const RUNTIME_VERSION = '0.7.5'
+/** Where the target-architecture editor saves its Soll YAML, relative to a workspace root. */
+const TARGET_TOPOLOGY_REL_PATH = path.join('.triton', 'target.ilograph.yaml')
 
 function applyCorsHeaders(res) {
   res.setHeader('access-control-allow-origin', '*')
@@ -2622,6 +2624,67 @@ function createRuntimeServer(options = {}) {
         workspacePath: validation.workspacePath,
         relPath: fileValidation.relPath,
         source,
+      })
+      return
+    }
+
+    if (method === 'GET' && pathname === '/api/workspace/target-topology') {
+      const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
+      const validation = validateWorkspacePath(workspacePath, config)
+      if (!validation.ok) {
+        sendJson(res, validation.statusCode, {
+          ok: false,
+          error: validation.error,
+          workspacePath: validation.workspacePath,
+          allowedRepoRoots: validation.allowedRepoRoots,
+        })
+        return
+      }
+      const absPath = path.join(validation.workspacePath, TARGET_TOPOLOGY_REL_PATH)
+      const yamlText = readUtf8IfFile(absPath)
+      if (yamlText == null) {
+        sendJson(res, 404, { ok: false, error: 'target_not_found', workspacePath: validation.workspacePath })
+        return
+      }
+      sendJson(res, 200, {
+        ok: true,
+        workspacePath: validation.workspacePath,
+        relPath: TARGET_TOPOLOGY_REL_PATH.replace(/\\/g, '/'),
+        yaml: yamlText,
+      })
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/workspace/target-topology') {
+      const raw = await collectBody(req)
+      const body = safeJsonParse(raw)
+      if (!body) {
+        sendJson(res, 400, { ok: false, error: 'invalid_json' })
+        return
+      }
+      const workspacePath = String(body.workspacePath || '').trim()
+      const validation = validateWorkspacePath(workspacePath, config)
+      if (!validation.ok) {
+        sendJson(res, validation.statusCode, {
+          ok: false,
+          error: validation.error,
+          workspacePath: validation.workspacePath,
+          allowedRepoRoots: validation.allowedRepoRoots,
+        })
+        return
+      }
+      const yamlText = body.yaml
+      if (typeof yamlText !== 'string' || !yamlText.trim() || yamlText.length > 2_000_000) {
+        sendJson(res, 400, { ok: false, error: 'invalid_yaml' })
+        return
+      }
+      const absPath = path.join(validation.workspacePath, TARGET_TOPOLOGY_REL_PATH)
+      ensureDirSync(path.dirname(absPath))
+      fs.writeFileSync(absPath, yamlText, 'utf8')
+      sendJson(res, 200, {
+        ok: true,
+        workspacePath: validation.workspacePath,
+        relPath: TARGET_TOPOLOGY_REL_PATH.replace(/\\/g, '/'),
       })
       return
     }

@@ -500,7 +500,7 @@ function collectProjectGraphResources(
   return out
 }
 
-function findContainer(container: CodeContainer, id: string): CodeContainer | null {
+export function findContainer(container: CodeContainer, id: string): CodeContainer | null {
   if (container.id === id) return container
   for (const child of container.children) {
     const hit = findContainer(child, id)
@@ -684,7 +684,7 @@ function codeModelToNestedIlographDocument(
  * avoids the all-at-once nested-group layout that nested-resources produces for deep hierarchies.
  */
 /** Descend through wrapper packages with a single child container and no artefacts of their own. */
-function collapseSingleChild(container: CodeContainer): CodeContainer {
+export function collapseSingleChild(container: CodeContainer): CodeContainer {
   let cur = container
   while (cur.children.length === 1 && cur.artefacts.length === 0) {
     cur = cur.children[0]!
@@ -712,18 +712,34 @@ function packageGraphSubtitle(container: CodeContainer): string {
   return parts.length ? parts.join(' · ') : container.kind
 }
 
+/** Index every container id in each child's subtree to that child's id, for `rollupImportRelations`. */
+function buildOwnerIndex(children: readonly CodeContainer[]): Map<string, string> {
+  const index = new Map<string, string>()
+  const visit = (node: CodeContainer, ownerId: string): void => {
+    index.set(node.id, ownerId)
+    for (const child of node.children) visit(child, ownerId)
+  }
+  for (const child of children) visit(child, child.id)
+  return index
+}
+
 /**
  * Roll module/artefact import relations up to the level of `children`: map each endpoint to the
- * child container that owns it (longest-prefix match) and emit one deduped edge per ordered pair,
- * skipping self-edges and imports that stay within a single child. Mirrors `moduleImportRelations`
- * / `owningModuleId` but targets an explicit set of sibling containers.
+ * child container that owns it and emit one deduped edge per ordered pair, skipping self-edges and
+ * imports that stay within a single child. Ownership is resolved by tree membership (so a container
+ * reparented under an abstraction group still resolves to that group), falling back to longest-prefix
+ * id matching for endpoints not found in the tree. Mirrors `moduleImportRelations` / `owningModuleId`
+ * but targets an explicit set of sibling containers.
  */
-function rollupImportRelations(
+export function rollupImportRelations(
   relations: readonly CodeRelation[],
   children: readonly CodeContainer[],
 ): { from: string; to: string; label: string }[] {
+  const ownerIndex = buildOwnerIndex(children)
   const childIds = children.map((c) => c.id)
   const owner = (containerId: string): string | null => {
+    const indexed = ownerIndex.get(containerId)
+    if (indexed) return indexed
     let best: string | null = null
     for (const id of childIds) {
       if (containerId === id || containerId.startsWith(`${id}.`) || containerId.startsWith(`${id}/`)) {
