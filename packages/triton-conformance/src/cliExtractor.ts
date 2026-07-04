@@ -1,7 +1,12 @@
 import { execFileSync } from 'node:child_process'
-import type { ChangedFact, DiffKind, FactImport, FactSignature, ResolvedTopology } from './types'
+import type { ChangedFact, DiffKind, FactSignature, ResolvedTopology } from './types'
 import { componentOf } from './topology'
-import { relativeFilePathToModulePath } from '../../triton-core/src/pythonCodeModel'
+import { importsOf } from './astExtractor'
+import {
+  relativeFilePathToModulePath,
+  resolveRelativeImport,
+  type ParsedPythonImport,
+} from '../../triton-core/src/pythonCodeModel'
 
 /**
  * Node-only fact extractor for the CLI. Uses Python's own stdlib `ast` via a subprocess — the target
@@ -13,8 +18,6 @@ import { relativeFilePathToModulePath } from '../../triton-core/src/pythonCodeMo
  */
 const AST_SCRIPT = `
 import ast, json, sys
-src = open(sys.argv[1], encoding='utf-8').read()
-tree = ast.parse(src)
 def ann(a): return ast.unparse(a) if a is not None else None
 def params(args):
     seq = args.posonlyargs + args.args
@@ -22,19 +25,24 @@ def params(args):
     seq = seq + args.kwonlyargs
     if args.kwarg: seq = seq + [args.kwarg]
     return [{"name": a.arg, "annotation": ann(a.annotation)} for a in seq]
-imports, functions, classes = [], [], []
-for node in tree.body:
-    if isinstance(node, ast.Import):
-        for n in node.names: imports.append({"module": n.name})
-    elif isinstance(node, ast.ImportFrom):
-        if node.level == 0 and node.module: imports.append({"module": node.module})
-    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        functions.append({"name": node.name, "params": params(node.args), "returns": ann(node.returns)})
-    elif isinstance(node, ast.ClassDef):
-        methods = [{"name": m.name, "params": params(m.args), "returns": ann(m.returns)}
-                   for m in node.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
-        classes.append({"name": node.name, "methods": methods})
-print(json.dumps({"imports": imports, "functions": functions, "classes": classes}))
+out = []
+for path in sys.argv[1:]:
+    src = open(path, encoding='utf-8').read()
+    tree = ast.parse(src)
+    imports, functions, classes = [], [], []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for n in node.names: imports.append({"module": n.name, "level": 0})
+        elif isinstance(node, ast.ImportFrom):
+            imports.append({"module": node.module or "", "level": node.level})
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions.append({"name": node.name, "params": params(node.args), "returns": ann(node.returns)})
+        elif isinstance(node, ast.ClassDef):
+            methods = [{"name": m.name, "params": params(m.args), "returns": ann(m.returns)}
+                       for m in node.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            classes.append({"name": node.name, "methods": methods})
+    out.append({"imports": imports, "functions": functions, "classes": classes})
+print(json.dumps(out))
 `
 
 interface RawSig {
@@ -42,30 +50,37 @@ interface RawSig {
   params: { name: string; annotation: string | null }[]
   returns: string | null
 }
-interface RawAst {
-  imports: { module: string }[]
+export interface RawAst {
+  imports: { module: string; level: number }[]
   functions: RawSig[]
   classes: { name: string; methods: RawSig[] }[]
 }
 
-export function extractChangedFact(
-  repoRoot: string,
+/**
+ * Pure RawAst → ChangedFact mapping (exported for tests; no subprocess). Module-path derivation and
+ * relative-import resolution go through the same triton-core helpers as the editor parser, and the
+ * import dedup/filter through astExtractor.importsOf, so CLI and editor emit identical facts.
+ * Signatures stay structured from Python's ast (more accurate than the editor's string parsing);
+ * the `Class.method` symbol naming must match astExtractor.signaturesOf.
+ */
+export function rawAstToChangedFact(
   path: string,
+  raw: RawAst,
   diffKind: DiffKind,
   topology: ResolvedTopology,
   sourceRoots: readonly string[] = [],
 ): ChangedFact {
-  const json = execFileSync('python3', ['-c', AST_SCRIPT, path], { cwd: repoRoot, encoding: 'utf8' })
-  const raw = JSON.parse(json) as RawAst
   const module = relativeFilePathToModulePath(path, sourceRoots)
+  const isPackageInit = path.endsWith('/__init__.py') || path === '__init__.py'
 
-  const seen = new Set<string>()
-  const imports: FactImport[] = []
-  for (const imp of raw.imports) {
-    if (seen.has(imp.module)) continue
-    seen.add(imp.module)
-    imports.push({ target: imp.module, target_component: componentOf(topology, imp.module) })
-  }
+  const parsedImports: ParsedPythonImport[] = raw.imports.map((imp) => ({
+    raw: '',
+    modulePath:
+      imp.level > 0
+        ? (resolveRelativeImport(module, isPackageInit, imp.level, imp.module) ?? '')
+        : imp.module,
+    names: [],
+  }))
 
   const signatures: FactSignature[] = []
   for (const fn of raw.functions) {
@@ -77,5 +92,29 @@ export function extractChangedFact(
     }
   }
 
-  return { path, module, component: componentOf(topology, module), diff_kind: diffKind, imports, signatures }
+  return {
+    path,
+    module,
+    component: componentOf(topology, module),
+    diff_kind: diffKind,
+    imports: importsOf(parsedImports, topology),
+    signatures,
+  }
+}
+
+/** Extract facts for all changed files with a single python3 invocation (one interpreter start). */
+export function extractChangedFacts(
+  repoRoot: string,
+  files: readonly { path: string; diff_kind: DiffKind }[],
+  topology: ResolvedTopology,
+  sourceRoots: readonly string[] = [],
+): ChangedFact[] {
+  if (files.length === 0) return []
+  const json = execFileSync('python3', ['-c', AST_SCRIPT, ...files.map((f) => f.path)], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  const raws = JSON.parse(json) as RawAst[]
+  return files.map((f, i) => rawAstToChangedFact(f.path, raws[i], f.diff_kind, topology, sourceRoots))
 }

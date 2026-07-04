@@ -1,4 +1,8 @@
-import type { PythonFileSummary, ParsedPythonArtefact } from '../../triton-core/src/pythonCodeModel'
+import type {
+  PythonFileSummary,
+  ParsedPythonArtefact,
+  ParsedPythonImport,
+} from '../../triton-core/src/pythonCodeModel'
 import type { ChangedFact, DiffKind, FactImport, FactParam, FactSignature, ResolvedTopology } from './types'
 import { componentOf } from './topology'
 
@@ -20,15 +24,19 @@ export function summaryToChangedFact(
     module: summary.modulePath,
     component: componentOf(topology, summary.modulePath),
     diff_kind: diffKind,
-    imports: importsOf(summary, topology),
+    imports: importsOf(summary.imports, topology),
     signatures: signaturesOf(summary.topLevel),
   }
 }
 
-function importsOf(summary: PythonFileSummary, topology: ResolvedTopology): FactImport[] {
+/** Dedup + component-resolve imports. Shared with the CLI extractor so both emit identical facts. */
+export function importsOf(
+  imports: readonly ParsedPythonImport[],
+  topology: ResolvedTopology,
+): FactImport[] {
   const seen = new Set<string>()
   const out: FactImport[] = []
-  for (const imp of summary.imports) {
+  for (const imp of imports) {
     if (imp.modulePath === '' || seen.has(imp.modulePath)) continue
     seen.add(imp.modulePath)
     out.push({ target: imp.modulePath, target_component: componentOf(topology, imp.modulePath) })

@@ -6,7 +6,7 @@ import type { SollModel } from './types'
 import { resolveTopology } from './topology'
 import { parseArchitectureRules } from './rules'
 import { changedPythonFiles } from './gitDiff'
-import { extractChangedFact } from './cliExtractor'
+import { extractChangedFacts } from './cliExtractor'
 import { observedImportsFromFacts } from './ruleEngine'
 import { check } from './check'
 import { createOpenAiClient } from './llmClient'
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
   const soll = loadSoll(args.topology, args.rules)
 
   const changed = changedPythonFiles({ repoRoot, base: args.base })
-  const changedFacts = changed.map((c) => extractChangedFact(repoRoot, c.path, c.diff_kind, soll.topology, args.sourceRoots))
+  const changedFacts = extractChangedFacts(repoRoot, changed, soll.topology, args.sourceRoots)
 
   const results = await check({
     soll,
