@@ -77,12 +77,28 @@ export function parsePythonSignature(signature: string): { params: FactParam[]; 
   return { params: splitTopLevel(paramsStr).map(parseParam).filter((p): p is FactParam => p !== null), returns }
 }
 
-/** Index of the ')' matching the '(' at `open`, respecting nested brackets. */
+/**
+ * Index of the quote closing the string literal opened at `open` (honours backslash escapes);
+ * text.length when unterminated. Keeps commas/brackets inside string defaults (e.g. `sep=","`)
+ * from being counted as structure.
+ * ponytail: single/double quotes only — a triple-quoted default in a signature is not handled.
+ */
+function closingQuote(text: string, open: number): number {
+  const quote = text[open]
+  for (let i = open + 1; i < text.length; i++) {
+    if (text[i] === '\\') i++
+    else if (text[i] === quote) return i
+  }
+  return text.length
+}
+
+/** Index of the ')' matching the '(' at `open`, respecting nested brackets and string literals. */
 function matchingParen(text: string, open: number): number {
   let depth = 0
   for (let i = open; i < text.length; i++) {
     const c = text[i]
-    if (c === '(' || c === '[' || c === '{') depth++
+    if (c === '"' || c === "'") i = closingQuote(text, i)
+    else if (c === '(' || c === '[' || c === '{') depth++
     else if (c === ')' || c === ']' || c === '}') {
       depth--
       if (depth === 0) return i
@@ -91,14 +107,15 @@ function matchingParen(text: string, open: number): number {
   return text.length
 }
 
-/** Split on top-level commas, ignoring commas inside (), [], {} (e.g. Dict[str, int]). */
+/** Split on top-level commas, ignoring commas inside (), [], {} and string literals. */
 function splitTopLevel(text: string): string[] {
   const parts: string[] = []
   let depth = 0
   let start = 0
   for (let i = 0; i < text.length; i++) {
     const c = text[i]
-    if (c === '(' || c === '[' || c === '{') depth++
+    if (c === '"' || c === "'") i = closingQuote(text, i)
+    else if (c === '(' || c === '[' || c === '{') depth++
     else if (c === ')' || c === ']' || c === '}') depth--
     else if (c === ',' && depth === 0) {
       parts.push(text.slice(start, i))

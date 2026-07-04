@@ -108,4 +108,28 @@ describe('parsePythonSignature', () => {
       returns: null,
     })
   })
+
+  it('ignores commas inside string defaults instead of splitting a phantom param', () => {
+    expect(parsePythonSignature('def handler(sep: str = ",", limit: int = 10)')).toEqual({
+      params: [
+        { name: 'sep', annotation: 'str' },
+        { name: 'limit', annotation: 'int' },
+      ],
+      returns: null,
+    })
+  })
+
+  it('ignores brackets inside string defaults when matching the closing paren', () => {
+    expect(parsePythonSignature("def f(s: str = ')') -> int")).toEqual({
+      params: [{ name: 's', annotation: 'str' }],
+      returns: 'int',
+    })
+  })
+
+  it('honours backslash escapes inside string defaults', () => {
+    expect(parsePythonSignature(String.raw`def f(q: str = "\",") -> str`)).toEqual({
+      params: [{ name: 'q', annotation: 'str' }],
+      returns: 'str',
+    })
+  })
 })
