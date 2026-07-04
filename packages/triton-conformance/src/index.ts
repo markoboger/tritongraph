@@ -23,5 +23,5 @@ export type { LlmCheckOptions, LlmCheckOutput } from './llmChecker'
 export { check } from './check'
 export type { CheckInput } from './check'
 export { formatReport, exitCode, allViolations } from './reporter'
-export { filePathToModulePath } from './modulePath'
+export { relativeFilePathToModulePath } from '../../triton-core/src/pythonCodeModel'
 // NB: cli.ts and cliExtractor.ts are Node-only (child_process/fs) — not re-exported here.

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import type { ChangedFact, DiffKind, FactImport, FactSignature, ResolvedTopology } from './types'
 import { componentOf } from './topology'
-import { filePathToModulePath } from './modulePath'
+import { relativeFilePathToModulePath } from '../../triton-core/src/pythonCodeModel'
 
 /**
  * Node-only fact extractor for the CLI. Uses Python's own stdlib `ast` via a subprocess — the target
@@ -57,7 +57,7 @@ export function extractChangedFact(
 ): ChangedFact {
   const json = execFileSync('python3', ['-c', AST_SCRIPT, path], { cwd: repoRoot, encoding: 'utf8' })
   const raw = JSON.parse(json) as RawAst
-  const module = filePathToModulePath(path, sourceRoots)
+  const module = relativeFilePathToModulePath(path, sourceRoots)
 
   const seen = new Set<string>()
   const imports: FactImport[] = []

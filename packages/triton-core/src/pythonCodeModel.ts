@@ -47,6 +47,38 @@ export interface PythonFileSummary {
   lineCount: number
 }
 
+// ─── Module path mapping (shared by the editor parser and the conformance CLI) ───────────────────
+
+/**
+ * Strip the longest matching Python source root (on a path-segment boundary) so a `src/` layout
+ * doesn't leak into the module path: `nova-backend/src/app/iam/models.py` → `app/iam/models.py`.
+ * Source roots come from the runtime (`pythonSourceRoots`, e.g. `nova-backend/src`). When none match
+ * (or none are supplied, as for bundled examples), fall back to stripping a single leading `src/`.
+ */
+function stripSourceRoot(rel: string, sourceRoots: readonly string[]): string {
+  let best = ''
+  for (const raw of sourceRoots) {
+    const root = raw.replaceAll('\\', '/').replace(/^\.?\/+/, '').replace(/\/+$/, '')
+    if (!root || root === '.') continue
+    if ((rel === root || rel.startsWith(`${root}/`)) && root.length > best.length) best = root
+  }
+  if (best) return rel.slice(best.length).replace(/^\/+/, '')
+  if (rel.startsWith('src/')) return rel.slice('src/'.length)
+  return rel
+}
+
+/** Map a repo-relative Python file path to a dotted module path (drop `.py` / `__init__.py`). */
+export function relativeFilePathToModulePath(
+  relPath: string,
+  sourceRoots: readonly string[] = [],
+): string {
+  let rel = relPath.replaceAll('\\', '/').replace(/^\.?\/+/, '')
+  rel = stripSourceRoot(rel, sourceRoots)
+  if (rel.endsWith('/__init__.py')) rel = rel.slice(0, -'/__init__.py'.length)
+  else if (rel.endsWith('.py')) rel = rel.slice(0, -'.py'.length)
+  return rel.replaceAll('/', '.')
+}
+
 // ─── CodeModel builder ────────────────────────────────────────────────────────────────────────────
 
 export interface PythonCodeModelOptions {

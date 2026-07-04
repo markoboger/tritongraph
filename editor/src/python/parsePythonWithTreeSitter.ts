@@ -15,6 +15,7 @@ import type {
   ParsedPythonMember,
   PythonFileSummary,
 } from '../../../packages/triton-core/src/pythonCodeModel'
+import { relativeFilePathToModulePath } from '../../../packages/triton-core/src/pythonCodeModel'
 
 let initPromise: Promise<void> | null = null
 let pythonLanguagePromise: Promise<Language> | null = null
@@ -181,24 +182,6 @@ function extractDecorators(nodes: readonly TSNode[]): string[] {
   return nodes.filter((n) => n.type === 'decorator').map((d) => d.text.trim())
 }
 
-/**
- * Strip the longest matching Python source root (on a path-segment boundary) so a `src/` layout
- * doesn't leak into the module path: `nova-backend/src/app/iam/models.py` → `app/iam/models.py`.
- * Source roots come from the runtime (`pythonSourceRoots`, e.g. `nova-backend/src`). When none match
- * (or none are supplied, as for bundled examples), fall back to stripping a single leading `src/`.
- */
-function stripSourceRoot(rel: string, sourceRoots: readonly string[]): string {
-  let best = ''
-  for (const raw of sourceRoots) {
-    const root = raw.replaceAll('\\', '/').replace(/^\.?\/+/, '').replace(/\/+$/, '')
-    if (!root || root === '.') continue
-    if ((rel === root || rel.startsWith(`${root}/`)) && root.length > best.length) best = root
-  }
-  if (best) return rel.slice(best.length).replace(/^\/+/, '')
-  if (rel.startsWith('src/')) return rel.slice('src/'.length)
-  return rel
-}
-
 export function filePathToModulePath(
   filePath: string,
   projectRoot: string,
@@ -207,11 +190,7 @@ export function filePathToModulePath(
   let rel = filePath.replaceAll('\\', '/')
   const root = projectRoot.replaceAll('\\', '/').replace(/\/?$/, '/')
   if (rel.startsWith(root)) rel = rel.slice(root.length)
-  rel = rel.replace(/^\/+/, '')
-  rel = stripSourceRoot(rel, sourceRoots)
-  if (rel.endsWith('/__init__.py')) rel = rel.slice(0, -'/__init__.py'.length)
-  else if (rel.endsWith('.py')) rel = rel.slice(0, -'.py'.length)
-  return rel.replaceAll('/', '.')
+  return relativeFilePathToModulePath(rel, sourceRoots)
 }
 
 export async function summarizePython(
