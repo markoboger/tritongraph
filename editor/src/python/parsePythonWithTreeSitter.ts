@@ -15,7 +15,10 @@ import type {
   ParsedPythonMember,
   PythonFileSummary,
 } from '../../../packages/triton-core/src/pythonCodeModel'
-import { relativeFilePathToModulePath } from '../../../packages/triton-core/src/pythonCodeModel'
+import {
+  relativeFilePathToModulePath,
+  resolveRelativeImport,
+} from '../../../packages/triton-core/src/pythonCodeModel'
 
 let initPromise: Promise<void> | null = null
 let pythonLanguagePromise: Promise<Language> | null = null
@@ -73,18 +76,16 @@ function parseImportStatement(node: TSNode): ParsedPythonImport[] {
   return out
 }
 
-function resolveModuleName(moduleNode: TSNode, currentModulePath: string): string | null {
+function resolveModuleName(
+  moduleNode: TSNode,
+  currentModulePath: string,
+  isPackageInit: boolean,
+): string | null {
   if (moduleNode.type === 'relative_import') {
     const inner = moduleNode.namedChildren.find((c) => c.type === 'dotted_name')
     // Count leading dots: 1 dot = current package, 2 dots = parent package, etc.
     const dotCount = (/^\.+/.exec(moduleNode.text) ?? [''])[0].length
-    const parts = currentModulePath.split('.')
-    const parentParts = parts.slice(0, Math.max(0, parts.length - dotCount))
-    const parent = parentParts.join('.')
-    const resolved = inner ? (parent ? `${parent}.${inner.text.trim()}` : inner.text.trim()) : parent
-    // Empty means the relative import points above the known root (e.g. `from . import x` in a
-    // top-level module): return null so it's dropped instead of creating a phantom empty module.
-    return resolved || null
+    return resolveRelativeImport(currentModulePath, isPackageInit, dotCount, inner?.text.trim() ?? '')
   }
   return moduleNode.text.trim() || null
 }
@@ -103,9 +104,14 @@ function collectImportedNames(node: TSNode, moduleNode: TSNode | null): string[]
   return names
 }
 
-function parseImportFromStatement(node: TSNode, currentModulePath: string): ParsedPythonImport {
+function parseImportFromStatement(
+  node: TSNode,
+  currentModulePath: string,
+  isPackageInit: boolean,
+): ParsedPythonImport {
   const moduleNode = node.childForFieldName('module_name')
-  const modulePath = (moduleNode ? resolveModuleName(moduleNode, currentModulePath) : null) ?? ''
+  const modulePath =
+    (moduleNode ? resolveModuleName(moduleNode, currentModulePath, isPackageInit) : null) ?? ''
   const names = collectImportedNames(node, moduleNode)
   return { raw: node.text.trim(), modulePath, names }
 }
@@ -200,6 +206,9 @@ export async function summarizePython(
   sourceRoots: readonly string[] = [],
 ): Promise<PythonFileSummary> {
   const modulePath = filePathToModulePath(filePath, projectRoot, sourceRoots)
+  // Relative imports resolve against __package__, which differs for a package __init__.py
+  // (the package itself) vs a plain module (the parent) — see resolveRelativeImport.
+  const isPackageInit = filePath.endsWith('/__init__.py') || filePath === '__init__.py'
   const lineCount = source === '' ? 0 : source.split(/\r\n|\n|\r/).length
   const parser = await getParser()
   const tree = parser.parse(source)
@@ -213,7 +222,7 @@ export async function summarizePython(
     if (child.type === 'import_statement') {
       imports.push(...parseImportStatement(child))
     } else if (child.type === 'import_from_statement') {
-      imports.push(parseImportFromStatement(child, modulePath))
+      imports.push(parseImportFromStatement(child, modulePath, isPackageInit))
     } else if (child.type === 'class_definition') {
       topLevel.push(parseClassDef(child, []))
     } else if (child.type === 'function_definition') {

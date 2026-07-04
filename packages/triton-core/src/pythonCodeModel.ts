@@ -79,6 +79,27 @@ export function relativeFilePathToModulePath(
   return rel.replaceAll('/', '.')
 }
 
+/**
+ * Resolve a relative import (`from .x import y`; `level` = number of leading dots) against the
+ * importing module. Python resolves relative imports against `__package__`: for a plain module
+ * that is the parent (the module segment is dropped), but for a package `__init__.py` it is the
+ * package itself — so an init file drops one segment less. Returns null when the import points
+ * above the known root (e.g. `from . import x` in a top-level module) so callers drop it instead
+ * of creating a phantom empty module.
+ */
+export function resolveRelativeImport(
+  currentModulePath: string,
+  isPackageInit: boolean,
+  level: number,
+  innerModule: string,
+): string | null {
+  const parts = currentModulePath ? currentModulePath.split('.') : []
+  const drop = isPackageInit ? level - 1 : level
+  const base = parts.slice(0, Math.max(0, parts.length - drop)).join('.')
+  if (!innerModule) return base || null
+  return base ? `${base}.${innerModule}` : innerModule
+}
+
 // ─── CodeModel builder ────────────────────────────────────────────────────────────────────────────
 
 export interface PythonCodeModelOptions {
