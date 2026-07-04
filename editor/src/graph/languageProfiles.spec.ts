@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { GENERIC_PROFILE, languageProfile } from './languageProfiles'
+import { GENERIC_PROFILE, kindBadgeForArtefactSubtitle, languageProfile } from './languageProfiles'
 
 describe('languageProfile', () => {
   it('resolves Scala with Scala-specific wording and per-kind icons', () => {
@@ -47,5 +47,16 @@ describe('languageProfile', () => {
     // Unknown kind → first uppercased letter rather than a crash or empty badge.
     expect(p.kindBadge('widget')).toBe('W')
     expect(p.kindBadge('')).toBe('?')
+  })
+
+  it('badges leaf subtitles language-agnostically, falling back to kind icons otherwise', () => {
+    // Python artefacts get the same letter badges as TS/Scala ones.
+    expect(kindBadgeForArtefactSubtitle('python', 'class')).toBe('C')
+    expect(kindBadgeForArtefactSubtitle('python', 'function, 12 loc')).toBe('ƒ')
+    expect(kindBadgeForArtefactSubtitle('typescript', 'interface')).toBe('I')
+    // Kinds with their own glyph set (Scala trait/object) render the icon, not a badge.
+    expect(kindBadgeForArtefactSubtitle('scala', 'trait')).toBeNull()
+    expect(kindBadgeForArtefactSubtitle('scala', 'case object')).toBeNull()
+    expect(kindBadgeForArtefactSubtitle('python', undefined)).toBeNull()
   })
 })

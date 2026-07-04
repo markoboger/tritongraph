@@ -23,7 +23,7 @@ import type {
 import { boxColorForId, type NamedBoxColor } from '../../graph/boxColors'
 import { diffStatusColor, useGitDiffStatus } from '../../graph/gitDiffOverlay'
 import folderIconUrl from '../../assets/language-icons/folder.svg'
-import { languageProfile } from '../../graph/languageProfiles'
+import { languageProfile, kindBadgeForArtefactSubtitle } from '../../graph/languageProfiles'
 import ShikiInlineCode from '../ShikiInlineCode.vue'
 import BoxEditDialog from '../common/BoxEditDialog.vue'
 import GeneralFocusedBox from '../common/GeneralFocusedBox.vue'
@@ -71,14 +71,7 @@ function leafIconForKind(language: string | undefined, subtitle: string | undefi
 }
 
 function kindBadgeForLeafArtefact(subtitle: string | undefined): string | null {
-  const k = artefactSubtitleSansMetrics(subtitle).toLowerCase()
-  // For TS examples we use these as the "kind" values; show the same badge when unfocused.
-  if (k === 'interface') return 'I'
-  if (k === 'class') return 'C'
-  if (k === 'type') return 'τ'
-  if (k === 'function') return 'ƒ'
-  if (k === 'enum') return 'E'
-  return null
+  return kindBadgeForArtefactSubtitle(props.language, subtitle)
 }
 
 export type InnerPackageSummary = TritonInnerPackageSpec

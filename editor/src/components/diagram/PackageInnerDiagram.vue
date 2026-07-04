@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { TritonInnerArtefactSpec, TritonInnerPackageSpec } from '../../ilograph/types'
-import { languageProfile } from '../../graph/languageProfiles'
+import { languageProfile, kindBadgeForArtefactSubtitle } from '../../graph/languageProfiles'
 import type { BoxMetricDemo } from '../common/boxMetricDemo'
 import DiagramLeafBox from './DiagramLeafBox.vue'
 import ArtefactBox from './ArtefactBox.vue'
@@ -111,16 +111,7 @@ function leafIconForKind(language: string | undefined, subtitle: string | undefi
 
 function kindBadgeForInnerArtefact(cell: TritonInnerArtefactSpec | undefined): string | null {
   if (!cell) return null
-  const src = (cell.sourceFile ?? '').toLowerCase()
-  const isTs = src.endsWith('.ts') || src.endsWith('.tsx')
-  const k = artefactSubtitleSansMetrics(cell.subtitle).toLowerCase()
-  if (!isTs) return null
-  if (k === 'interface') return 'I'
-  if (k === 'class') return 'C'
-  if (k === 'type') return 'τ'
-  if (k === 'function') return 'ƒ'
-  if (k === 'enum') return 'E'
-  return null
+  return kindBadgeForArtefactSubtitle(cell.language, cell.subtitle)
 }
 
 function verticalTitlePreferredHeight(label: string | undefined): number {

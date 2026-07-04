@@ -11,6 +11,7 @@
  * a sensible, neutral box rather than mislabelled Scala chrome.
  */
 import type { LanguageIconId } from './languages'
+import { artefactSubtitleSansMetrics } from './linesOfCodeDisplay'
 
 import scalaLogo from '../assets/language-icons/scala.svg'
 import scalaClassIcon from '../assets/language-icons/scala-class.svg'
@@ -198,4 +199,21 @@ function canonicalLanguageKey(language: string | undefined | null): string {
 /** Resolve the presentation profile for a language, falling back to the generic profile. */
 export function languageProfile(language: string | undefined | null): LanguageProfile {
   return PROFILES[canonicalLanguageKey(language)] ?? GENERIC_PROFILE
+}
+
+/**
+ * Kinds rendered as a single-letter badge in package chrome (unfocused leaf boxes and the
+ * drill-in grid). Other kinds return null so the caller falls back to the per-language kind
+ * icon (e.g. Scala's trait/object glyphs).
+ */
+const BADGE_KINDS = new Set(['interface', 'class', 'type', 'function', 'enum'])
+
+/** Letter badge for a leaf/inner artefact subtitle, or null when the kind icon should show instead. */
+export function kindBadgeForArtefactSubtitle(
+  language: string | undefined,
+  subtitle: string | undefined,
+): string | null {
+  const kind = artefactSubtitleSansMetrics(subtitle).trim().toLowerCase()
+  if (!BADGE_KINDS.has(kind)) return null
+  return languageProfile(language).kindBadge(kind)
 }
