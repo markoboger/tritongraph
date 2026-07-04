@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest'
 import {
   rawAstToChangedFact,
   type RawAst,
-} from '../../../packages/triton-conformance/src/cliExtractor'
+} from '../../../packages/triton-conformance/src/rawAstFacts'
 import { topology } from '../../../packages/triton-conformance/fixtures/miniRepo'
 
 const emptyAst: RawAst = { imports: [], functions: [], classes: [] }

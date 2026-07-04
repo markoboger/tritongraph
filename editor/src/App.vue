@@ -150,7 +150,7 @@ import {
  * `scopeId` is the tab's base package scope (undefined for the workspace root, the drilled package id
  * for inner tabs).
  */
-type PythonTabEntry = { model: CodeModel; scopeId?: string; pythonSourceRoots?: readonly string[] }
+type PythonTabEntry = { model: CodeModel; scopeId?: string }
 const pythonTabModel = new Map<string, PythonTabEntry>()
 /** A Map is not reactive, so bump this on every set to let computeds (e.g. `activeTabHasCodeModel`) re-run. */
 const pythonTabModelVersion = ref(0)
@@ -1341,6 +1341,14 @@ const activeTabId = ref<string | null>(runtimeHomeTabSeed.id)
 /** Main Scala LOC per runtime workspace path (filled whenever {@link fetchRuntimeWorkspaceBundle} succeeds). */
 const runtimeWorkspaceMainScalaLocByPath = shallowRef<Record<string, number>>({})
 
+/**
+ * Python source roots per runtime workspace path (filled whenever {@link fetchRuntimeWorkspaceBundle}
+ * succeeds). Keyed by workspace path — NOT by tab — so the git-diff overlay parses the base revision
+ * with the same roots as the current model regardless of which tab kind is active (target-editor and
+ * drilled tabs carry no roots of their own).
+ */
+const pythonSourceRootsByWorkspacePath = new Map<string, readonly string[]>()
+
 function rememberRuntimeWorkspaceMainScalaLoc(
   workspacePath: string,
   scalaFiles: ReadonlyArray<{ relPath: string; source: string }>,
@@ -1616,10 +1624,10 @@ async function computeImportDiff(
 ): Promise<ImportDiff> {
   const baseFiles = await fetchWorkspaceBasePython(runtimeUrl, workspacePath)
   if (!baseFiles.length) return emptyImportDiff()
-  const roots = pythonTabModel.get(baseTabKey(activeTab.value?.key ?? ''))?.pythonSourceRoots ?? []
+  const roots = pythonSourceRootsByWorkspacePath.get(workspacePath) ?? []
   const [{ summarizePython }, { buildPythonCodeModelFromSummaries }] = await importPythonModules()
   const summaries = await Promise.all(
-    baseFiles.map((f) => summarizePython(f.source, f.relPath, workspacePath, roots as string[])),
+    baseFiles.map((f) => summarizePython(f.source, f.relPath, workspacePath, roots)),
   )
   const baseModel = buildPythonCodeModelFromSummaries(
     summaries.map((s, i) => ({ filePath: baseFiles[i]!.relPath, summary: s })),
@@ -2147,6 +2155,7 @@ async function fetchRuntimeWorkspaceBundle(
         : null,
   }
   rememberRuntimeWorkspaceMainScalaLoc(bundle.workspacePath, bundle.scalaFiles)
+  pythonSourceRootsByWorkspacePath.set(bundle.workspacePath, bundle.pythonSourceRoots)
   return bundle
 }
 
@@ -4842,10 +4851,7 @@ async function loadPythonPackagesForRuntimeWorkspace(workspacePath: string, work
       summaries.map((s, i) => ({ filePath: files[i]!.relPath, summary: s })),
       { name: `Python packages: ${workspaceName}` },
     )
-    setPythonTabModel(`runtime-python:${workspacePath}::${workspaceName}`, {
-      model: codeModel,
-      pythonSourceRoots: bundle.pythonSourceRoots,
-    })
+    setPythonTabModel(`runtime-python:${workspacePath}::${workspaceName}`, { model: codeModel })
     const ilographDoc = codeModelToIlographDocument(codeModel, {
       resourceId: workspaceName,
       title: `Python packages: ${workspaceName}`,

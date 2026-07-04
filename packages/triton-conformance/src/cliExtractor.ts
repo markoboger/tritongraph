@@ -1,17 +1,12 @@
 import { execFileSync } from 'node:child_process'
-import type { ChangedFact, DiffKind, FactSignature, ResolvedTopology } from './types'
-import { componentOf } from './topology'
-import { importsOf } from './astExtractor'
-import {
-  relativeFilePathToModulePath,
-  resolveRelativeImport,
-  type ParsedPythonImport,
-} from '../../triton-core/src/pythonCodeModel'
+import type { ChangedFact, DiffKind, ResolvedTopology } from './types'
+import { rawAstToChangedFact, type RawAst } from './rawAstFacts'
 
 /**
  * Node-only fact extractor for the CLI. Uses Python's own stdlib `ast` via a subprocess — the target
  * repos are Python, so python3 is present, and `ast` is more accurate than reconstructing signatures
- * from a TS parser. The editor uses summarizePython (Vite/WASM) instead; both produce ChangedFact.
+ * from a TS parser. The editor uses summarizePython (Vite/WASM) instead; both produce ChangedFact
+ * via the shared rawAstFacts/astExtractor transforms.
  *
  * ponytail: requires `python3` on PATH and Python 3.9+ (ast.unparse). If that ever bites, swap in a
  * web-tree-sitter Node parse — the ChangedFact contract stays the same.
@@ -44,63 +39,6 @@ for path in sys.argv[1:]:
     out.append({"imports": imports, "functions": functions, "classes": classes})
 print(json.dumps(out))
 `
-
-interface RawSig {
-  name: string
-  params: { name: string; annotation: string | null }[]
-  returns: string | null
-}
-export interface RawAst {
-  imports: { module: string; level: number }[]
-  functions: RawSig[]
-  classes: { name: string; methods: RawSig[] }[]
-}
-
-/**
- * Pure RawAst → ChangedFact mapping (exported for tests; no subprocess). Module-path derivation and
- * relative-import resolution go through the same triton-core helpers as the editor parser, and the
- * import dedup/filter through astExtractor.importsOf, so CLI and editor emit identical facts.
- * Signatures stay structured from Python's ast (more accurate than the editor's string parsing);
- * the `Class.method` symbol naming must match astExtractor.signaturesOf.
- */
-export function rawAstToChangedFact(
-  path: string,
-  raw: RawAst,
-  diffKind: DiffKind,
-  topology: ResolvedTopology,
-  sourceRoots: readonly string[] = [],
-): ChangedFact {
-  const module = relativeFilePathToModulePath(path, sourceRoots)
-  const isPackageInit = path.endsWith('/__init__.py') || path === '__init__.py'
-
-  const parsedImports: ParsedPythonImport[] = raw.imports.map((imp) => ({
-    raw: '',
-    modulePath:
-      imp.level > 0
-        ? (resolveRelativeImport(module, isPackageInit, imp.level, imp.module) ?? '')
-        : imp.module,
-    names: [],
-  }))
-
-  const signatures: FactSignature[] = []
-  for (const fn of raw.functions) {
-    signatures.push({ symbol: fn.name, kind: 'function', params: fn.params, returns: fn.returns })
-  }
-  for (const cls of raw.classes) {
-    for (const m of cls.methods) {
-      signatures.push({ symbol: `${cls.name}.${m.name}`, kind: 'method', params: m.params, returns: m.returns })
-    }
-  }
-
-  return {
-    path,
-    module,
-    component: componentOf(topology, module),
-    diff_kind: diffKind,
-    imports: importsOf(parsedImports, topology),
-    signatures,
-  }
-}
 
 /** Extract facts for all changed files with a single python3 invocation (one interpreter start). */
 export function extractChangedFacts(
