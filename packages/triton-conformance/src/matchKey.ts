@@ -18,8 +18,10 @@ export function buildMatchKey(
   location: Pick<ViolationLocation, 'component' | 'module'>,
   subject: ViolationSubject,
 ): string {
+  // `||` not `??`: an empty-string offending_type (which validation allows next to a valid
+  // from/to edge) must fall through to the edge key, not erase it.
   const subjectKey =
-    subject.offending_type ??
+    subject.offending_type ||
     (subject.from != null && subject.to != null ? `${subject.from}->${subject.to}` : '')
   return [category, location.component ?? '', location.module, subjectKey].join('|')
 }
