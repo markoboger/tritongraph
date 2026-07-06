@@ -324,11 +324,18 @@ function readWorkspaceBasePython(repoRoot, base) {
   } catch (err) {
     return { ok: false, error: 'git_ls_tree_failed', detail: String((err && err.message) || err) }
   }
+  // Restrict to the same source roots as collectPythonFiles: the base and current models must
+  // cover the same file set, or strays beside src/ (scripts/, package-root main.py) show up as
+  // phantom "removed" modules in the import diff. Roots come from the current worktree on both
+  // sides, so the filters stay consistent.
+  const sourceRoots = discoverPythonSourceRoots(repoRoot)
+  const restrict = sourceRoots.length > 0
   const pyFiles = []
   for (const raw of listing.split('\n')) {
     const rel = raw.trim()
     if (!rel.endsWith('.py')) continue
     if (rel.split('/').some((seg) => IGNORED_DIRS.has(seg) || PYTHON_SKIP_DIRS.has(seg))) continue
+    if (restrict && !isUnderSourceRoot(rel, sourceRoots)) continue
     try {
       const source = cp.execFileSync('git', ['-C', repoRoot, 'show', `${base}:${rel}`], {
         encoding: 'utf8',
