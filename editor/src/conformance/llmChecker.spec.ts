@@ -79,6 +79,8 @@ describe('checkFactWithLlm', () => {
     const out = await checkFactWithLlm(pricingFact, sollModel, client, { modelRequested: 'm', maxRetries: 2 })
     expect(calls()).toBe(3) // initial + 2 retries
     expect(out.run?.valid_final).toBe(false)
+    // Exhaustion must report the configured retry count, not attempts (maxRetries + 1).
+    expect(out.run?.retries).toBe(2)
     expect(out.violations).toEqual([])
   })
 

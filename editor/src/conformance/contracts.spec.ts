@@ -34,6 +34,14 @@ describe('match_key', () => {
       buildMatchKey('x', { component: null, module: 'm' }, { offending_type: 't' }),
     ).toBe('x||m|t')
   })
+
+  it('falls through to the edge key when offending_type is an empty string', () => {
+    // Validation allows offending_type: '' next to a valid from/to edge; the edge must still
+    // distinguish the key, otherwise different forbidden edges collapse to one match_key.
+    expect(
+      buildMatchKey('layer-violation', { component: 'domain', module: 'm' }, { offending_type: '', from: 'a', to: 'b' }),
+    ).toBe('layer-violation|domain|m|a->b')
+  })
 })
 
 describe('validateViolationRecord', () => {

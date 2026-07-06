@@ -110,7 +110,9 @@ export async function checkFactWithLlm(
     latency_ms: totalLatency,
     valid_raw: validRaw,
     valid_final: validFinal,
-    retries: attempt,
+    // On exhaustion the loop exits with attempt = maxRetries + 1; clamp so the log never
+    // reports more retries than were configured.
+    retries: Math.min(attempt, maxRetries),
     prompt_hash: promptHash(initialPrompt),
     raw_response: lastRaw,
   }
