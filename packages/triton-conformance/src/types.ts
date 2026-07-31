@@ -151,12 +151,30 @@ export interface CheckPerformed {
   source: ViolationSource
 }
 
+/** One model call inside a run: the retry loop keeps every attempt, not just the aggregate (C-6). */
+export interface RunAttempt {
+  /** 0-based position in the retry loop. */
+  attempt_index: number
+  tokens_in: number
+  tokens_out: number
+  latency_ms: number
+  /** Did this attempt parse and validate? */
+  valid: boolean
+}
+
 /** Full per-run log (C-6). Present for LLM checks; rule-engine-only results omit it. */
 export interface RunLog {
   /** Requested model name. */
   model_requested: string
   /** Delivered build, kept separate from the requested name (C-6). */
   model_version: string
+  /**
+   * The build string the provider actually reported, or null when it reported none. Unlike
+   * `model_version` this is never backfilled from the requested name.
+   */
+  model_version_reported: string | null
+  /** Every attempt of the retry loop, in order. */
+  attempts: readonly RunAttempt[]
   temperature: number
   seed: number
   run_index: number

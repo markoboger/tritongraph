@@ -2,6 +2,7 @@ import type {
   ArchitectureRule,
   ChangedFact,
   CheckPerformed,
+  RunAttempt,
   RunLog,
   SollModel,
   ViolationRecord,
@@ -71,8 +72,10 @@ export async function checkFactWithLlm(
   let totalLatency = 0
   let lastRaw = ''
   let modelVersion = options.modelRequested
+  let modelVersionReported: string | null = null
   let violations: ViolationRecord[] = []
   let validFinal = false
+  const attempts: RunAttempt[] = []
   const conversation: ChatMessage[] = [...messages]
 
   while (attempt <= maxRetries) {
@@ -82,13 +85,26 @@ export async function checkFactWithLlm(
       schema: VIOLATIONS_SCHEMA as unknown as object,
       schemaName: 'conformance_violations',
     })
-    totalLatency += Date.now() - start
+    const latency = Date.now() - start
+    totalLatency += latency
     totalPromptTokens += response.promptTokens
     totalCompletionTokens += response.completionTokens
     lastRaw = response.text
-    modelVersion = response.model
+    // An empty model string means the provider reported no build; keep the requested name only in
+    // the legacy aggregate, never in the reported field.
+    if (response.model !== '') {
+      modelVersion = response.model
+      modelVersionReported = response.model
+    }
 
     const parsed = parseAndFinalize(response.text, context.rules, fact)
+    attempts.push({
+      attempt_index: attempt,
+      tokens_in: response.promptTokens,
+      tokens_out: response.completionTokens,
+      latency_ms: latency,
+      valid: parsed.ok,
+    })
     if (parsed.ok) {
       violations = parsed.violations
       validFinal = true
@@ -103,6 +119,8 @@ export async function checkFactWithLlm(
   const run: RunLog = {
     model_requested: options.modelRequested,
     model_version: modelVersion,
+    model_version_reported: modelVersionReported,
+    attempts,
     temperature: options.temperature ?? 0,
     seed: options.seed ?? 42,
     run_index: options.runIndex ?? 1,

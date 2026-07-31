@@ -69,7 +69,9 @@ export function createOpenAiClient(options: OpenAiClientOptions): LlmClient {
       }
       return {
         text: data.choices?.[0]?.message?.content ?? '',
-        model: data.model ?? model,
+        // Empty when the provider reported no build — the run log must not pass off the requested
+        // name as the delivered one.
+        model: data.model ?? '',
         promptTokens: data.usage?.prompt_tokens ?? 0,
         completionTokens: data.usage?.completion_tokens ?? 0,
       }

@@ -26,6 +26,7 @@ usage: triton-conformance --topology <ilograph.yaml> --rules <rules.yaml> [--bas
 | `--base` | `HEAD` | Git ref to diff against; `HEAD` means the uncommitted working tree. |
 | `--src-root` | repo root | Source root for module-path derivation. Repeatable. |
 | `--rule-graph` | `diff` | Which import graph the rule-engine evaluates — see below. |
+| `--run-log` | — | JSONL file the raw measurement records are appended to — see below. |
 
 ### `--rule-graph diff|full`
 
@@ -47,6 +48,68 @@ skipped app/infra/broken.py: SyntaxError: invalid syntax (<unknown>, line 1)
 ```
 
 Hidden directories, `node_modules` and `__pycache__` are not scanned in `full` mode.
+
+### `--run-log <file.jsonl>`
+
+Without the flag nothing is written. With it, the run appends JSON Lines to the given file — one
+object per line, the file is never rewritten, so a whole measurement campaign can share one log.
+If the file cannot be written the run aborts before the first model call: a measurement run without
+its log is worthless.
+
+Missing values are written as `null`. They are never estimated, never derived from another field
+and never omitted — a `null` is data, a missing key is a hole in the measurement.
+
+Every line carries a `record_type`. There are two.
+
+#### `record_type: "run_header"` — exactly one per invocation, written before any model call
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `log_schema_version` | string | Schema version of this record set, currently `"1"`. |
+| `timestamp` | string | UTC ISO 8601 with milliseconds. |
+| `cli_args` | string[] | argv without the process name. |
+| `rule_graph_mode` | `"diff"` \| `"full"` | Value of `--rule-graph`. |
+| `topology_path` | string | `--topology` as given. |
+| `topology_sha256` | string \| null | sha256 of the topology file, null when unreadable. |
+| `rules_path` | string | `--rules` as given. |
+| `rules_sha256` | string \| null | sha256 of the rules file, null when unreadable. |
+| `target_repo_git_head` | string \| null | git HEAD of the repository under test. |
+| `checker_git_head` | string \| null | git HEAD of this checker, null outside a git checkout. |
+| `base_ref` | string | Value of `--base`. |
+| `src_roots` | string[] | Values of `--src-root`. |
+| `model_requested` | string \| null | Effective `CONFORMANCE_MODEL`; null when no LLM was configured. |
+| `endpoint` | string \| null | Effective base URL, scheme + host + path only — never keys, tokens, credentials or query parameters. Null when no LLM was configured. |
+| `seed` | number \| null | Seed actually sent to the provider; null when no LLM was configured. |
+| `temperature` | number \| null | Temperature actually sent; null when no LLM was configured. |
+| `changed_files_count` | number | Python files in the diff. |
+| `graph_files_count` | number | Files whose facts formed the rule-engine graph. |
+| `skipped` | `{path, reason}[]` | Files that could not be read or parsed. |
+
+#### `record_type: "llm_call"` — one per checked file
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `timestamp` | string | UTC ISO 8601 with milliseconds. |
+| `file`, `module` | string | The checked file and its Python module path. |
+| `model_requested` | string | Model name asked for. |
+| `model_version` | string \| null | Build the provider reported; null when it reported none — never backfilled from `model_requested`. |
+| `attempts` | object[] | One entry per model call: `attempt_index` (0-based), `tokens_in`, `tokens_out`, `latency_ms`, `valid`. |
+| `attempts_used` | number | Length of `attempts`. |
+| `valid_raw` | boolean | Did the first attempt validate? |
+| `valid_final` | boolean | Did the last attempt validate? |
+| `tokens_in_total`, `tokens_out_total`, `latency_ms_total` | number | Sums over all attempts. |
+| `temperature`, `seed`, `run_index` | number | Sampling parameters of this call. |
+| `tokens` | `{prompt, completion}` | Legacy aggregate, redundant with the `*_total` fields. |
+| `latency_ms`, `retries` | number | Legacy aggregates, kept for backwards compatibility. |
+| `prompt_hash` | string | FNV-1a hash of the initial prompt. |
+| `raw_response` | string | Last raw model response, verbatim. |
+
+Example:
+
+```
+{"record_type":"run_header","log_schema_version":"1","timestamp":"2026-07-31T11:08:10.252Z", ...}
+{"record_type":"llm_call","timestamp":"2026-07-31T11:08:10.289Z","file":"app/domain/pricing.py", ...}
+```
 
 ## Requirements
 

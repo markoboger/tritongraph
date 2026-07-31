@@ -30,6 +30,19 @@ export function changedPythonFiles({ repoRoot, base = 'HEAD' }: GitDiffOptions):
     .filter((entry): entry is ChangedPythonFile => entry !== null && entry.path.endsWith('.py'))
 }
 
+/** `git rev-parse HEAD` in `dir`, or null when that is not a git checkout / git is unavailable. */
+export function gitHead(dir: string): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: dir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    return null
+  }
+}
+
 function parseNameStatus(line: string): ChangedPythonFile | null {
   // Formats: "M\tpath", "A\tpath", "R100\told\tnew" (renames).
   const parts = line.split('\t')

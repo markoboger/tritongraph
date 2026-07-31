@@ -1,0 +1,154 @@
+import { readFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import yaml from 'js-yaml'
+import type { IlographDocument } from '../../triton-core/src/ilographTypes'
+import type { ChangedFact, CheckResult, SollModel } from './types'
+import { resolveTopology } from './topology'
+import { parseArchitectureRules } from './rules'
+import { changedPythonFiles, gitHead } from './gitDiff'
+import { extractFacts, pythonFilesUnder, type SkippedFile } from './cliExtractor'
+import { observedImportsFromFacts } from './ruleEngine'
+import { check } from './check'
+import type { LlmClient } from './llmClient'
+import type { LlmCheckOptions } from './llmChecker'
+import {
+  LOG_SCHEMA_VERSION,
+  buildLlmCallRecord,
+  createRunLogWriter,
+  fileSha256,
+  nowIso,
+  sanitizeEndpoint,
+  type RuleGraphMode,
+  type RunHeaderRecord,
+  type RunLogWriter,
+} from './runLog'
+
+/**
+ * One conformance run, independent of argv and process exit — the CLI parses arguments and this
+ * drives the measurement: git diff → facts → rule-engine + (optional) LLM → results, plus the
+ * run-log records if a log path was given. Kept out of cli.ts so tests can drive a full run with an
+ * injected LLM client.
+ */
+export interface LlmSetup {
+  client: LlmClient
+  options: LlmCheckOptions
+  /** Effective base URL of the provider; logged sanitized. */
+  baseUrl: string
+  /** Effective values as sent to the provider (C-5). */
+  seed: number
+  temperature: number
+}
+
+export interface ConformanceRunInput {
+  repoRoot: string
+  topologyPath: string
+  rulesPath: string
+  base: string
+  sourceRoots: readonly string[]
+  ruleGraph: RuleGraphMode
+  /** JSONL run log; nothing is written when absent. */
+  runLogPath?: string
+  /** argv without the process name, logged verbatim in the run header. */
+  cliArgs: readonly string[]
+  llm?: LlmSetup
+}
+
+/** What one run produced. `skipped` is reported on stderr by the CLI and logged in the header. */
+export interface ConformanceRunResult {
+  results: CheckResult[]
+  skipped: SkippedFile[]
+}
+
+export async function runConformance(input: ConformanceRunInput): Promise<ConformanceRunResult> {
+  // Fail before any model call if the log is not writable.
+  const log = input.runLogPath ? createRunLogWriter(input.runLogPath) : null
+  const soll = loadSoll(input.topologyPath, input.rulesPath)
+
+  // The LLM checker and the per-file results always follow the diff, in both rule-graph modes.
+  const changed = changedPythonFiles({ repoRoot: input.repoRoot, base: input.base })
+  const diff = extractFacts(input.repoRoot, changed, soll.topology, input.sourceRoots)
+
+  // In full mode the rule-engine sees every file under the source roots, so cycles and forbidden
+  // edges running through unchanged files are found too.
+  const graph =
+    input.ruleGraph === 'full'
+      ? extractFacts(
+          input.repoRoot,
+          pythonFilesUnder(input.repoRoot, input.sourceRoots),
+          soll.topology,
+          input.sourceRoots,
+        )
+      : diff
+
+  const skipped = dedupeByPath([...diff.skipped, ...graph.skipped])
+  log?.write(buildRunHeader(input, changed.length, graph.facts.length, skipped))
+
+  const results = await check({
+    soll,
+    changedFacts: diff.facts,
+    observedImports: observedImportsFromFacts(graph.facts),
+    llm: input.llm ? { client: input.llm.client, options: input.llm.options } : undefined,
+  })
+
+  if (log) writeLlmCalls(log, diff.facts, results)
+  return { results, skipped }
+}
+
+export function loadSoll(topologyPath: string, rulesPath: string): SollModel {
+  const topologyDoc = yaml.load(readFileSync(topologyPath, 'utf8')) as IlographDocument
+  const rulesRaw = yaml.load(readFileSync(rulesPath, 'utf8'))
+  return { topology: resolveTopology(topologyDoc), rules: parseArchitectureRules(rulesRaw) }
+}
+
+function buildRunHeader(
+  input: ConformanceRunInput,
+  changedFilesCount: number,
+  graphFilesCount: number,
+  skipped: readonly SkippedFile[],
+): RunHeaderRecord {
+  return {
+    record_type: 'run_header',
+    log_schema_version: LOG_SCHEMA_VERSION,
+    timestamp: nowIso(),
+    cli_args: input.cliArgs,
+    rule_graph_mode: input.ruleGraph,
+    topology_path: input.topologyPath,
+    topology_sha256: fileSha256(input.topologyPath),
+    rules_path: input.rulesPath,
+    rules_sha256: fileSha256(input.rulesPath),
+    target_repo_git_head: gitHead(input.repoRoot),
+    checker_git_head: gitHead(checkerDirectory()),
+    base_ref: input.base,
+    src_roots: input.sourceRoots,
+    model_requested: input.llm?.options.modelRequested ?? null,
+    endpoint: input.llm ? sanitizeEndpoint(input.llm.baseUrl) : null,
+    seed: input.llm?.seed ?? null,
+    temperature: input.llm?.temperature ?? null,
+    changed_files_count: changedFilesCount,
+    graph_files_count: graphFilesCount,
+    skipped,
+  }
+}
+
+/**
+ * check() emits one result per changed fact, in order, before any extra results for files outside
+ * the diff — so the first facts.length results line up with the facts by index.
+ */
+function writeLlmCalls(
+  log: RunLogWriter,
+  facts: readonly ChangedFact[],
+  results: readonly CheckResult[],
+): void {
+  results.slice(0, facts.length).forEach((result, i) => {
+    if (result.run) log.write(buildLlmCallRecord(facts[i], result.run))
+  })
+}
+
+function checkerDirectory(): string {
+  return dirname(fileURLToPath(import.meta.url))
+}
+
+function dedupeByPath(skipped: readonly SkippedFile[]): SkippedFile[] {
+  return [...new Map(skipped.map((s) => [s.path, s])).values()]
+}

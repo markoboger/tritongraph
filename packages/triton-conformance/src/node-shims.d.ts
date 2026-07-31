@@ -7,12 +7,30 @@ declare module 'node:child_process' {
   export function execFileSync(
     file: string,
     args: readonly string[],
-    options: { cwd?: string; encoding: 'utf8'; maxBuffer?: number },
+    options: {
+      cwd?: string
+      encoding: 'utf8'
+      maxBuffer?: number
+      stdio?: readonly ('pipe' | 'ignore' | 'inherit')[]
+    },
   ): string
+}
+
+declare module 'node:crypto' {
+  export interface Hash {
+    update(data: string): Hash
+    digest(encoding: 'hex'): string
+  }
+  export function createHash(algorithm: string): Hash
+}
+
+declare module 'node:url' {
+  export function fileURLToPath(url: string): string
 }
 
 declare module 'node:fs' {
   export function readFileSync(path: string, encoding: 'utf8'): string
+  export function appendFileSync(path: string, data: string): void
   export interface Dirent {
     name: string
     isDirectory(): boolean
@@ -23,6 +41,7 @@ declare module 'node:fs' {
 declare module 'node:path' {
   export function join(...parts: string[]): string
   export function relative(from: string, to: string): string
+  export function dirname(path: string): string
   export const sep: string
 }
 
