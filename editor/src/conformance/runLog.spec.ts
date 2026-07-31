@@ -127,6 +127,7 @@ async function run(
 const HEADER_FIELDS = [
   'record_type',
   'log_schema_version',
+  'run_id',
   'timestamp',
   'cli_args',
   'rule_graph_mode',
@@ -134,14 +135,15 @@ const HEADER_FIELDS = [
   'topology_sha256',
   'rules_path',
   'rules_sha256',
+  'prompt_template_sha256',
   'target_repo_git_head',
   'checker_git_head',
   'base_ref',
   'src_roots',
   'model_requested',
   'endpoint',
-  'seed',
-  'temperature',
+  'seed_requested',
+  'temperature_requested',
   'changed_files_count',
   'graph_files_count',
   'skipped',
@@ -149,6 +151,7 @@ const HEADER_FIELDS = [
 
 const CALL_FIELDS = [
   'record_type',
+  'run_id',
   'timestamp',
   'file',
   'module',
@@ -161,8 +164,8 @@ const CALL_FIELDS = [
   'tokens_in_total',
   'tokens_out_total',
   'latency_ms_total',
-  'temperature',
-  'seed',
+  'temperature_requested',
+  'seed_requested',
   'run_index',
   'tokens',
   'latency_ms',
@@ -183,11 +186,11 @@ describe('run log', () => {
     expect(Object.keys(call)).toEqual(expect.arrayContaining(CALL_FIELDS))
 
     expect(header.record_type).toBe('run_header')
-    expect(header.log_schema_version).toBe('1')
+    expect(header.log_schema_version).toBe('2')
     expect(header.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
     expect(header.endpoint).toBe('https://provider.example/api/v1')
-    expect(header.seed).toBe(42)
-    expect(header.temperature).toBe(0)
+    expect(header.seed_requested).toBe(42)
+    expect(header.temperature_requested).toBe(0)
     expect(header.model_requested).toBe('test/model')
     expect(header.target_repo_git_head).toMatch(/^[0-9a-f]{40}$/)
     expect(header.changed_files_count).toBe(1)
@@ -197,7 +200,14 @@ describe('run log', () => {
     expect(call.module).toBe('app.domain.pricing')
     expect(call.model_version).toBe('fake-model-build-7')
     expect(call.attempts).toEqual([
-      { attempt_index: 0, tokens_in: 11, tokens_out: 5, latency_ms: expect.any(Number), valid: true },
+      {
+        attempt_index: 0,
+        tokens_in: 11,
+        tokens_out: 5,
+        latency_ms: expect.any(Number),
+        valid: true,
+        raw_response: VALID_RESPONSE,
+      },
     ])
     expect(call.attempts_used).toBe(1)
     expect(call.tokens_in_total).toBe(11)
@@ -210,8 +220,22 @@ describe('run log', () => {
 
     const call = lines[1]
     expect(call.attempts).toEqual([
-      { attempt_index: 0, tokens_in: 11, tokens_out: 5, latency_ms: expect.any(Number), valid: false },
-      { attempt_index: 1, tokens_in: 11, tokens_out: 5, latency_ms: expect.any(Number), valid: true },
+      {
+        attempt_index: 0,
+        tokens_in: 11,
+        tokens_out: 5,
+        latency_ms: expect.any(Number),
+        valid: false,
+        raw_response: 'not json at all',
+      },
+      {
+        attempt_index: 1,
+        tokens_in: 11,
+        tokens_out: 5,
+        latency_ms: expect.any(Number),
+        valid: true,
+        raw_response: VALID_RESPONSE,
+      },
     ])
     expect(call.attempts_used).toBe(2)
     expect(call.valid_raw).toBe(false)

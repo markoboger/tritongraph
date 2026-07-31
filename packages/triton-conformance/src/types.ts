@@ -160,6 +160,8 @@ export interface RunAttempt {
   latency_ms: number
   /** Did this attempt parse and validate? */
   valid: boolean
+  /** Raw text of this attempt, kept even when it was discarded as invalid. */
+  raw_response: string
 }
 
 /** Full per-run log (C-6). Present for LLM checks; rule-engine-only results omit it. */
@@ -190,6 +192,10 @@ export interface RunLog {
 }
 
 export interface CheckResult {
+  /** File this result belongs to. Absent only for results not tied to a single file. */
+  file?: string
+  /** Python module path of `file`; absent for results built from structural findings alone. */
+  module?: string
   violations: readonly ViolationRecord[]
   /**
    * Which rule×scope was actually evaluated. NOT the recall denominator, but separates

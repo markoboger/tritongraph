@@ -104,6 +104,7 @@ export async function checkFactWithLlm(
       tokens_out: response.completionTokens,
       latency_ms: latency,
       valid: parsed.ok,
+      raw_response: response.text,
     })
     if (parsed.ok) {
       violations = parsed.violations

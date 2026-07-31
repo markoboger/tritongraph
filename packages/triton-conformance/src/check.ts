@@ -40,11 +40,12 @@ export async function check(input: CheckInput): Promise<CheckResult[]> {
       checks_performed = out.checks_performed
       run = out.run
     }
-    results.push({ violations, checks_performed, run })
+    // The file identity travels with the result; nothing downstream may re-derive it from an index.
+    results.push({ file: fact.path, module: fact.module, violations, checks_performed, run })
   }
 
   // Structural findings in files not part of the diff (only happens in full-graph mode).
-  for (const [, viols] of byFile) results.push({ violations: viols, checks_performed: [] })
+  for (const [file, viols] of byFile) results.push({ file, violations: viols, checks_performed: [] })
   return results
 }
 

@@ -22,6 +22,7 @@ declare module 'node:crypto' {
     digest(encoding: 'hex'): string
   }
   export function createHash(algorithm: string): Hash
+  export function randomBytes(size: number): { toString(encoding: 'hex'): string }
 }
 
 declare module 'node:url' {

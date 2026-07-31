@@ -39,7 +39,8 @@ export function buildMessages(context: PromptContext): ChatMessage[] {
   ]
 }
 
-const SYSTEM_PROMPT = `You are an architecture conformance checker. You are given a target
+/** The prompt template; hashed into the run log (prompt_template_sha256) as the freeze proof. */
+export const SYSTEM_PROMPT = `You are an architecture conformance checker. You are given a target
 architecture (components and the rules that govern them) and the imports + signatures of a single
 changed source file. Report every rule violation you find.
 

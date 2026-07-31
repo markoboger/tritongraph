@@ -57,15 +57,19 @@ If the file cannot be written the run aborts before the first model call: a meas
 its log is worthless.
 
 Missing values are written as `null`. They are never estimated, never derived from another field
-and never omitted — a `null` is data, a missing key is a hole in the measurement.
+and never omitted — a `null` is data, a missing key is a hole in the measurement. Fields named
+`*_requested` say what was asked of the provider, not what it honoured: a provider may ignore a
+seed, and the log must not claim otherwise.
 
-Every line carries a `record_type`. There are two.
+Every line carries a `record_type` and a `run_id`. There are two record types. The current schema is
+version **2** (`log_schema_version`).
 
 #### `record_type: "run_header"` — exactly one per invocation, written before any model call
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `log_schema_version` | string | Schema version of this record set, currently `"1"`. |
+| `log_schema_version` | string | Schema version of this record set, currently `"2"`. |
+| `run_id` | string | Identifies this invocation, e.g. `20260731T110810Z-a3f19c2b`; repeated on every `llm_call` line of the run. |
 | `timestamp` | string | UTC ISO 8601 with milliseconds. |
 | `cli_args` | string[] | argv without the process name. |
 | `rule_graph_mode` | `"diff"` \| `"full"` | Value of `--rule-graph`. |
@@ -73,14 +77,15 @@ Every line carries a `record_type`. There are two.
 | `topology_sha256` | string \| null | sha256 of the topology file, null when unreadable. |
 | `rules_path` | string | `--rules` as given. |
 | `rules_sha256` | string \| null | sha256 of the rules file, null when unreadable. |
+| `prompt_template_sha256` | string | Freeze proof for the prompt: sha256 of the system-prompt template constant. Never null. The user prompt is rendered by code, so its shape is pinned by `checker_git_head`. |
 | `target_repo_git_head` | string \| null | git HEAD of the repository under test. |
 | `checker_git_head` | string \| null | git HEAD of this checker, null outside a git checkout. |
 | `base_ref` | string | Value of `--base`. |
 | `src_roots` | string[] | Values of `--src-root`. |
 | `model_requested` | string \| null | Effective `CONFORMANCE_MODEL`; null when no LLM was configured. |
 | `endpoint` | string \| null | Effective base URL, scheme + host + path only — never keys, tokens, credentials or query parameters. Null when no LLM was configured. |
-| `seed` | number \| null | Seed actually sent to the provider; null when no LLM was configured. |
-| `temperature` | number \| null | Temperature actually sent; null when no LLM was configured. |
+| `seed_requested` | number \| null | Seed sent to the provider; null when no LLM was configured. Requested, not confirmed. |
+| `temperature_requested` | number \| null | Temperature sent to the provider; null when no LLM was configured. |
 | `changed_files_count` | number | Python files in the diff. |
 | `graph_files_count` | number | Files whose facts formed the rule-engine graph. |
 | `skipped` | `{path, reason}[]` | Files that could not be read or parsed. |
@@ -89,16 +94,18 @@ Every line carries a `record_type`. There are two.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
+| `run_id` | string | Same value as the `run_header` of this invocation. |
 | `timestamp` | string | UTC ISO 8601 with milliseconds. |
 | `file`, `module` | string | The checked file and its Python module path. |
 | `model_requested` | string | Model name asked for. |
 | `model_version` | string \| null | Build the provider reported; null when it reported none — never backfilled from `model_requested`. |
-| `attempts` | object[] | One entry per model call: `attempt_index` (0-based), `tokens_in`, `tokens_out`, `latency_ms`, `valid`. |
+| `attempts` | object[] | One entry per model call: `attempt_index` (0-based), `tokens_in`, `tokens_out`, `latency_ms`, `valid`, `raw_response` (the text of that attempt, kept even when discarded as invalid). |
 | `attempts_used` | number | Length of `attempts`. |
 | `valid_raw` | boolean | Did the first attempt validate? |
 | `valid_final` | boolean | Did the last attempt validate? |
 | `tokens_in_total`, `tokens_out_total`, `latency_ms_total` | number | Sums over all attempts. |
-| `temperature`, `seed`, `run_index` | number | Sampling parameters of this call. |
+| `temperature_requested`, `seed_requested` | number | Sampling parameters asked of the provider for this call. |
+| `run_index` | number | 0-based repetition index within this `run_id`. |
 | `tokens` | `{prompt, completion}` | Legacy aggregate, redundant with the `*_total` fields. |
 | `latency_ms`, `retries` | number | Legacy aggregates, kept for backwards compatibility. |
 | `prompt_hash` | string | FNV-1a hash of the initial prompt. |
@@ -107,8 +114,8 @@ Every line carries a `record_type`. There are two.
 Example:
 
 ```
-{"record_type":"run_header","log_schema_version":"1","timestamp":"2026-07-31T11:08:10.252Z", ...}
-{"record_type":"llm_call","timestamp":"2026-07-31T11:08:10.289Z","file":"app/domain/pricing.py", ...}
+{"record_type":"run_header","log_schema_version":"2","run_id":"20260731T110810Z-a3f19c2b", ...}
+{"record_type":"llm_call","run_id":"20260731T110810Z-a3f19c2b","file":"app/domain/pricing.py","run_index":0, ...}
 ```
 
 ## Requirements

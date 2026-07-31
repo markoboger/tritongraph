@@ -12,13 +12,16 @@ import { observedImportsFromFacts } from './ruleEngine'
 import { check } from './check'
 import type { LlmClient } from './llmClient'
 import type { LlmCheckOptions } from './llmChecker'
+import { SYSTEM_PROMPT } from './contextBuilder'
 import {
   LOG_SCHEMA_VERSION,
-  buildLlmCallRecord,
   createRunLogWriter,
   fileSha256,
+  llmCallRecords,
+  newRunId,
   nowIso,
   sanitizeEndpoint,
+  sha256Text,
   type RuleGraphMode,
   type RunHeaderRecord,
   type RunLogWriter,
@@ -63,6 +66,7 @@ export interface ConformanceRunResult {
 export async function runConformance(input: ConformanceRunInput): Promise<ConformanceRunResult> {
   // Fail before any model call if the log is not writable.
   const log = input.runLogPath ? createRunLogWriter(input.runLogPath) : null
+  const runId = newRunId()
   const soll = loadSoll(input.topologyPath, input.rulesPath)
 
   // The LLM checker and the per-file results always follow the diff, in both rule-graph modes.
@@ -82,7 +86,7 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
       : diff
 
   const skipped = dedupeByPath([...diff.skipped, ...graph.skipped])
-  log?.write(buildRunHeader(input, changed.length, graph.facts.length, skipped))
+  log?.write(buildRunHeader(input, runId, changed.length, graph.facts.length, skipped))
 
   const results = await check({
     soll,
@@ -91,7 +95,7 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
     llm: input.llm ? { client: input.llm.client, options: input.llm.options } : undefined,
   })
 
-  if (log) writeLlmCalls(log, diff.facts, results)
+  if (log) writeLlmCalls(log, runId, diff.facts, results)
   return { results, skipped }
 }
 
@@ -103,6 +107,7 @@ export function loadSoll(topologyPath: string, rulesPath: string): SollModel {
 
 function buildRunHeader(
   input: ConformanceRunInput,
+  runId: string,
   changedFilesCount: number,
   graphFilesCount: number,
   skipped: readonly SkippedFile[],
@@ -110,6 +115,7 @@ function buildRunHeader(
   return {
     record_type: 'run_header',
     log_schema_version: LOG_SCHEMA_VERSION,
+    run_id: runId,
     timestamp: nowIso(),
     cli_args: input.cliArgs,
     rule_graph_mode: input.ruleGraph,
@@ -117,32 +123,28 @@ function buildRunHeader(
     topology_sha256: fileSha256(input.topologyPath),
     rules_path: input.rulesPath,
     rules_sha256: fileSha256(input.rulesPath),
+    prompt_template_sha256: sha256Text(SYSTEM_PROMPT),
     target_repo_git_head: gitHead(input.repoRoot),
     checker_git_head: gitHead(checkerDirectory()),
     base_ref: input.base,
     src_roots: input.sourceRoots,
     model_requested: input.llm?.options.modelRequested ?? null,
     endpoint: input.llm ? sanitizeEndpoint(input.llm.baseUrl) : null,
-    seed: input.llm?.seed ?? null,
-    temperature: input.llm?.temperature ?? null,
+    seed_requested: input.llm?.seed ?? null,
+    temperature_requested: input.llm?.temperature ?? null,
     changed_files_count: changedFilesCount,
     graph_files_count: graphFilesCount,
     skipped,
   }
 }
 
-/**
- * check() emits one result per changed fact, in order, before any extra results for files outside
- * the diff — so the first facts.length results line up with the facts by index.
- */
 function writeLlmCalls(
   log: RunLogWriter,
+  runId: string,
   facts: readonly ChangedFact[],
   results: readonly CheckResult[],
 ): void {
-  results.slice(0, facts.length).forEach((result, i) => {
-    if (result.run) log.write(buildLlmCallRecord(facts[i], result.run))
-  })
+  for (const record of llmCallRecords(runId, facts, results)) log.write(record)
 }
 
 function checkerDirectory(): string {
