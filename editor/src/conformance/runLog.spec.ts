@@ -136,6 +136,7 @@ const HEADER_FIELDS = [
   'rules_path',
   'rules_sha256',
   'prompt_template_sha256',
+  'user_prompt_render_sha256',
   'target_repo_git_head',
   'checker_git_head',
   'base_ref',

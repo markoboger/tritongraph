@@ -12,7 +12,8 @@ import { observedImportsFromFacts } from './ruleEngine'
 import { check } from './check'
 import type { LlmClient } from './llmClient'
 import { checkFactWithLlm, type LlmCheckOptions } from './llmChecker'
-import { SYSTEM_PROMPT } from './contextBuilder'
+import { SYSTEM_PROMPT, buildUserPrompt } from './contextBuilder'
+import { CANARY_CONTEXT } from './promptCanary'
 import {
   LOG_SCHEMA_VERSION,
   createRunLogWriter,
@@ -159,6 +160,7 @@ function buildRunHeader(
     rules_path: input.rulesPath,
     rules_sha256: fileSha256(input.rulesPath),
     prompt_template_sha256: sha256Text(SYSTEM_PROMPT),
+    user_prompt_render_sha256: sha256Text(buildUserPrompt(CANARY_CONTEXT)),
     target_repo_git_head: gitHead(input.repoRoot),
     checker_git_head: gitHead(checkerDirectory()),
     base_ref: input.base,

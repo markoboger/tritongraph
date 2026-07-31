@@ -78,7 +78,8 @@ version **2** (`log_schema_version`).
 | `topology_sha256` | string \| null | sha256 of the topology file, null when unreadable. |
 | `rules_path` | string | `--rules` as given. |
 | `rules_sha256` | string \| null | sha256 of the rules file, null when unreadable. |
-| `prompt_template_sha256` | string | Freeze proof for the prompt: sha256 of the system-prompt template constant. Never null. The user prompt is rendered by code, so its shape is pinned by `checker_git_head`. |
+| `prompt_template_sha256` | string | Freeze proof, part 1: sha256 of the system-prompt template constant. Never null. |
+| `user_prompt_render_sha256` | string | Freeze proof, part 2: sha256 of `buildUserPrompt(CANARY_CONTEXT)`. Never null. |
 | `target_repo_git_head` | string \| null | git HEAD of the repository under test. |
 | `checker_git_head` | string \| null | git HEAD of this checker, null outside a git checkout. |
 | `base_ref` | string | Value of `--base`. |
@@ -119,6 +120,22 @@ Example:
 {"record_type":"run_header","log_schema_version":"2","run_id":"20260731T110810Z-a3f19c2b", ...}
 {"record_type":"llm_call","run_id":"20260731T110810Z-a3f19c2b","file":"app/domain/pricing.py","run_index":0, ...}
 ```
+
+#### Prompt freeze
+
+Two hashes in the header together pin the prompt that was sent:
+
+- `prompt_template_sha256` covers the **system prompt**, which is a single constant (`SYSTEM_PROMPT`
+  in `contextBuilder.ts`) — hashing the string is enough.
+- `user_prompt_render_sha256` covers the **user prompt**, which has no template: it is assembled
+  line by line in `buildUserPrompt()`. It is pinned by rendering a frozen canary input
+  (`CANARY_CONTEXT` in `promptCanary.ts`) and hashing the result, so any change to how the prompt is
+  built moves the hash. The canary render is a pure string operation — no model call, no file
+  access. Editing the canary invalidates comparability with earlier runs; it must not change after
+  the protocol freeze.
+
+Together the two cover the whole prompt. `checker_git_head` remains the coarse fallback for
+everything else about the checker build.
 
 ### `--runs <N>`
 

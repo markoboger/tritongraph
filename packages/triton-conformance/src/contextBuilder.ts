@@ -54,7 +54,11 @@ names, signatures, and type annotations.
 Return JSON only, matching the provided schema. Every violation MUST include a concrete reason and a
 concrete suggestion for how to fix it. Reference a rule by its exact id.`
 
-function buildUserPrompt(context: PromptContext): string {
+/**
+ * Pure render: the output depends on nothing but `context` — no env, no clock, no file system — so
+ * hashing it over a frozen canary input pins the prompt construction (user_prompt_render_sha256).
+ */
+export function buildUserPrompt(context: PromptContext): string {
   const { component, allowedEdges, rules, fact } = context
   const lines: string[] = []
   lines.push(`# Changed file`)

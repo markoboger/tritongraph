@@ -30,12 +30,14 @@ export interface RunHeaderRecord {
   topology_sha256: string | null
   rules_path: string
   rules_sha256: string | null
-  /**
-   * Freeze proof for the prompt: sha256 over the system-prompt template constant as it exists at
-   * runtime. The user prompt is rendered by code, not by a template, so its shape is pinned by
-   * `checker_git_head` rather than by this hash.
-   */
+  /** Freeze proof, part 1: sha256 over the system-prompt template constant as it exists at runtime. */
   prompt_template_sha256: string
+  /**
+   * Freeze proof, part 2: sha256 over buildUserPrompt(CANARY_CONTEXT). The user prompt has no
+   * template — it is assembled by code — so it is pinned by hashing its render of a frozen input.
+   * Together the two hashes cover the whole prompt.
+   */
+  user_prompt_render_sha256: string
   /** git HEAD of the repository under test. */
   target_repo_git_head: string | null
   /** git HEAD of this checker, null when it is not running from a git checkout. */
