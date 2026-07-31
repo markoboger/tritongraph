@@ -29,6 +29,7 @@ usage: triton-conformance --topology <ilograph.yaml> --rules <rules.yaml> [--bas
 | `--run-log` | — | JSONL file the raw measurement records are appended to — see below. |
 | `--runs` | `1` | How often the LLM path is repeated, integer >= 1 — see below. |
 | `--timeout-ms` | `120000` | Budget of a **single model call**, integer >= 1000 — see below. |
+| `--json-out` | — | JSON file the machine-readable findings are written to — see below. |
 
 ### `--rule-graph diff|full`
 
@@ -238,6 +239,64 @@ run unsound.
 If **5 calls in a row** end in a final transport failure, the run gives up on the provider rather
 than burning an unattended campaign against a dead endpoint. The log keeps all five `llm_call`
 records, the footer says `status: "aborted"`, and the exit code is 3.
+
+### `--json-out <file.json>`
+
+Without the flag nothing is written. With it, the run writes **one JSON object per invocation** —
+the source the eval harness computes precision and recall from. An unwritable path aborts the run
+before the first model call, same rule as `--run-log`. The document is written from the same
+`finally` block as the footer, so even an aborted run leaves the part of the measurement it managed.
+
+**Division of labour between the two outputs**, so nothing is stored twice and nothing has to be
+guessed:
+
+| | `--json-out` (JSON) | `--run-log` (JSONL) |
+| --- | --- | --- |
+| Answers | *What was found?* | *What did it cost?* |
+| Holds | findings, checks performed, provenance, validity | attempts, tokens, latency, raw responses, transport failures |
+| Granularity | one object per invocation, `runs[]` per repetition | one line per invocation, per call, plus a footer |
+
+They are joined on `(run_id, file, run_index)`. Cost and attempt details are deliberately **not** in
+the JSON.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `result_schema_version` | string | Schema version of this document, currently `"1"`. Never null. |
+| `run_id` | string | Identical to the `run_header` of the same invocation — the join key. Never null. |
+| `timestamp` | string | UTC ISO 8601 with milliseconds, taken when the document was written. Never null. |
+| `provenance` | object | Everything needed to interpret the result without the run log: `topology_sha256`, `rules_sha256` (null when the file was unreadable), `prompt_template_sha256`, `user_prompt_render_sha256` (never null), `checker_git_head`, `target_repo_git_head` (null outside a git checkout), `base_ref`, `rule_graph_mode` (never null), `model_requested`, `endpoint`, `seed_requested`, `temperature_requested` (all null when no LLM was configured), `runs_requested`, `timeout_ms` (never null). |
+| `runs` | object[] | One entry per repetition that ran: `run_index`, `findings`, `checks_performed`. Empty only when repetition 0 never finished. |
+| `validity` | object | `status`, `runs_completed`, `calls_total`, `calls_invalid`, `calls_transport_failed`, `skipped_count`, `invalid_reasons`, `exit_code` — the same values as the footer, no field ever null. |
+| `skipped` | `{path, reason}[]` | Files that could not be read or parsed. Empty list, never null. |
+
+Each entry of `findings`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `match_key` | string | Exactly the string `matchKey.ts` builds, `category\|component\|module\|subject`. The join against the ground truth runs on it — never reformatted, normalised or shortened. Never null. |
+| `source` | `"rule-engine"` \| `"llm"` | Which path found it. The comparison of the deterministic and the model path depends on this field. Never null. |
+| `rule_id`, `category` | string | Rule that was violated; `DERIVED:forbidden-edge` / `DERIVED:cycle` for rule-engine findings. Never null. |
+| `component` | string \| null | Owning component, null when the module is not mapped to one. |
+| `module`, `file` | string | Where it was found. Never null. |
+| `line` | number \| null | Line, null when the finding is not tied to one. |
+| `severity` | `"error"` \| `"warning"` | From the rule. Never null. |
+| `subject` | object | The key parts, verbatim from the `ViolationRecord`: `offending_type` + `via`, or `from`/`to`. |
+| `reason` | string | Why it is a violation. Never null. |
+| `suggestion` | string \| null | Proposed fix; null when the finding carries none. |
+| `confidence` | number \| null | Model-asserted soft signal, null for rule-engine findings. **Not a metric** (guardrail C-9). |
+
+Each entry of `checks_performed` carries `rule_id`, `scope`, `source` and the `file` it was
+evaluated on. The analysis needs it to tell "rule checked, nothing found" from "rule was never in
+scope" — a missed violation and a never-checked module are not the same result.
+
+**No aggregation happens here.** No deduplication, no median over repetitions, no re-sorting. Two
+findings on the same `match_key` stay two entries; whether they collapse into one hit is a
+pre-registered decision of the analysis, and the CLI must not pre-empt it.
+
+Note when reading `runs[]`: the deterministic rule-engine runs exactly once, so its findings appear
+in `run_index: 0` only. Repetitions 1..N-1 contain the model's findings alone.
+
+The printed report and the exit code are unaffected by this flag and still come from repetition 0.
 
 ## Requirements
 

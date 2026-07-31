@@ -19,7 +19,9 @@ import { parseArgs } from './cliArgs'
  * llm_call per checked file and repetition, one run_footer at the end); without it nothing is
  * written. `--runs N` repeats the LLM path N times so the eval harness can measure model variance.
  * `--timeout-ms N` bounds a single model call; transport trouble (timeout, network, 429, 5xx) is
- * retried on its own budget and never counted as a model failure.
+ * retried on its own budget and never counted as a model failure. `--json-out <file.json>` writes
+ * the findings of every repetition in machine-readable form — what was found; the run log keeps
+ * what it cost, and the two are joined on (run_id, file, run_index).
  *
  * Exit codes: 0 clean, 1 violations found, 2 program/configuration error, 3 the run is not a sound
  * measurement (3 wins over 0 and 1 — see exitCodeFor). A provider outage aborts the run but is a
@@ -65,6 +67,7 @@ async function main(): Promise<void> {
     runLogPath: args.runLog,
     runs: args.runs,
     timeoutMs: args.timeoutMs,
+    jsonOutPath: args.jsonOut,
     cliArgs,
     llm: llmFromEnv(args.timeoutMs),
   })

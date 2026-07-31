@@ -28,6 +28,13 @@ import {
 import { SYSTEM_PROMPT, buildUserPrompt } from './contextBuilder'
 import { CANARY_CONTEXT } from './promptCanary'
 import {
+  RESULT_SCHEMA_VERSION,
+  createJsonOutWriter,
+  toJsonRun,
+  type JsonRun,
+  type ResultProvenance,
+} from './jsonOut'
+import {
   LOG_SCHEMA_VERSION,
   createRunLogWriter,
   fileSha256,
@@ -70,6 +77,8 @@ export interface ConformanceRunInput {
   runs?: number
   /** Value of --timeout-ms, logged as a measurement parameter; the client enforces it per call. */
   timeoutMs?: number
+  /** Machine-readable result document; nothing is written when absent. */
+  jsonOutPath?: string
   /** argv without the process name, logged verbatim in the run header. */
   cliArgs: readonly string[]
   llm?: LlmSetup
@@ -87,8 +96,9 @@ export interface ConformanceRunResult {
 
 export async function runConformance(input: ConformanceRunInput): Promise<ConformanceRunResult> {
   const startedAt = Date.now()
-  // Fail before any model call if the log is not writable.
+  // Fail before any model call if an output is not writable.
   const log = input.runLogPath ? createRunLogWriter(input.runLogPath) : null
+  const jsonOut = input.jsonOutPath ? createJsonOutWriter(input.jsonOutPath) : null
   const runId = newRunId()
   const soll = loadSoll(input.topologyPath, input.rulesPath)
 
@@ -109,7 +119,10 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
       : diff
 
   const skipped = dedupeByPath([...diff.skipped, ...graph.skipped])
-  log?.write(buildRunHeader(input, runId, changed.length, graph.facts.length, skipped))
+  // Built once: the header is also where the result document takes its provenance from, so the two
+  // documents can never disagree about which Soll, prompt and checker build produced the findings.
+  const header = buildRunHeader(input, runId, changed.length, graph.facts.length, skipped)
+  log?.write(header)
 
   const runsRequested = input.runs ?? 1
   const tally = newCallTally()
@@ -117,6 +130,8 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
   let results: CheckResult[] = []
   let exit = 2
   let providerOutage = false
+  // Every repetition, not just the one the report prints: the analysis needs each run's findings.
+  const perRun: JsonRun[] = []
 
   // The footer is written whichever way this ends: a header with no footer is the mark of a run
   // that died hard, so every ordinary abort must still close its own record.
@@ -132,6 +147,7 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
           : undefined,
       })
       recordCalls(log, runId, diff.facts, results)
+      perRun.push(toJsonRun(0, results))
       runsCompleted++
 
       // Further repetitions measure the model only. They deliberately do NOT go through check(): the
@@ -144,6 +160,8 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
         if (input.llm) {
           const repeated = await repeatLlmRun(soll, diff.facts, input.llm, runIndex, tally)
           recordCalls(log, runId, diff.facts, repeated)
+          // Model findings only: the rule-engine ran once, so its findings live in run_index 0.
+          perRun.push(toJsonRun(runIndex, repeated))
         }
         runsCompleted++
       }
@@ -163,6 +181,25 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
     // problem, and exitCodeFor has already put 3 in `exit` for it.
     if (status === 'aborted' && !providerOutage) exit = 2
     const validity = buildValidity(tally, runsRequested, runsCompleted, skipped.length)
+    // Written from the same finally as the footer, so even an aborted run leaves its partial result.
+    jsonOut?.write({
+      result_schema_version: RESULT_SCHEMA_VERSION,
+      run_id: runId,
+      timestamp: nowIso(),
+      provenance: buildProvenance(header),
+      runs: perRun,
+      validity: {
+        status,
+        runs_completed: runsCompleted,
+        calls_total: tally.total,
+        calls_invalid: tally.invalid.length,
+        calls_transport_failed: tally.transportFailed.length,
+        skipped_count: skipped.length,
+        invalid_reasons: invalidReasons(validity),
+        exit_code: exit,
+      },
+      skipped,
+    })
     log?.write({
       record_type: 'run_footer',
       run_id: runId,
@@ -261,6 +298,26 @@ function buildRunHeader(
     changed_files_count: changedFilesCount,
     graph_files_count: graphFilesCount,
     skipped,
+  }
+}
+
+/** Straight from the header record: no value is recomputed, so the two documents cannot drift. */
+function buildProvenance(header: RunHeaderRecord): ResultProvenance {
+  return {
+    topology_sha256: header.topology_sha256,
+    rules_sha256: header.rules_sha256,
+    prompt_template_sha256: header.prompt_template_sha256,
+    user_prompt_render_sha256: header.user_prompt_render_sha256,
+    checker_git_head: header.checker_git_head,
+    target_repo_git_head: header.target_repo_git_head,
+    base_ref: header.base_ref,
+    rule_graph_mode: header.rule_graph_mode,
+    model_requested: header.model_requested,
+    endpoint: header.endpoint,
+    seed_requested: header.seed_requested,
+    temperature_requested: header.temperature_requested,
+    runs_requested: header.runs_requested,
+    timeout_ms: header.timeout_ms,
   }
 }
 
