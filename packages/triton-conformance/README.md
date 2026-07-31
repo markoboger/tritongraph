@@ -62,8 +62,12 @@ and never omitted — a `null` is data, a missing key is a hole in the measureme
 `*_requested` say what was asked of the provider, not what it honoured: a provider may ignore a
 seed, and the log must not claim otherwise.
 
-Every line carries a `record_type` and a `run_id`. There are two record types. The current schema is
-version **2** (`log_schema_version`).
+Every line carries a `record_type` and a `run_id`. There are three record types. The current schema
+is version **2** (`log_schema_version`).
+
+**Invariant: a header is always followed by a footer.** The footer is written even when the run
+throws. A header without a matching footer therefore means the process died hard (SIGKILL, power
+loss) — that absence is how the analysis recognises an aborted run, so never repair it by hand.
 
 #### `record_type: "run_header"` — exactly one per invocation, written before any model call
 
@@ -114,11 +118,53 @@ version **2** (`log_schema_version`).
 | `prompt_hash` | string | FNV-1a hash of the initial prompt. |
 | `raw_response` | string | Last raw model response, verbatim. |
 
+#### `record_type: "run_footer"` — exactly one per invocation, always the last line
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `run_id` | string | Same value as the header of this invocation. |
+| `timestamp` | string | UTC ISO 8601 with milliseconds, taken when the run ended. |
+| `status` | `"completed"` \| `"aborted"` | `aborted` when fewer repetitions ran than were requested, i.e. something threw. |
+| `runs_requested` | number | Value of `--runs`. |
+| `runs_completed` | number | Repetitions that finished. Less than `runs_requested` on an abort. |
+| `calls_total` | number | Model calls logged in this run (across all repetitions). |
+| `calls_invalid` | number | Calls whose final response never validated. |
+| `invalid_calls` | `{file, run_index}[]` | Which calls those were — not just how many. |
+| `skipped_count` | number | Files that could not be read or parsed. |
+| `exit_code` | number | The code the process exits with; see the table below. |
+| `invalid_reasons` | string[] | Empty, or a subset of `invalid_final_response`, `incomplete_runs`, `skipped_files`. |
+| `wall_clock_ms` | number | Duration of the whole run. |
+
+No field is ever null: the footer is written from values the run knows by then. Lists are empty
+rather than absent.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | No violations, measurement sound. |
+| 1 | Violations found, measurement sound. |
+| 2 | Program or configuration error: usage, log not writable, violated pairing invariant, unexpected exception. |
+| 3 | The run finished, but it is not a sound measurement. |
+
+**3 takes precedence over 0 and 1.** A run with violations *and* an invalid call exits 3, never 1 —
+otherwise the finding would hide the fact that the measurement cannot be trusted. Each of these
+alone is enough for 3:
+
+- at least one call with `valid_final: false`
+- `runs_completed < runs_requested`
+- a non-empty skipped list
+
+Code 3 is an attention signal for unattended runs, **not** a verdict: whether a configuration stays
+usable is decided by the eval harness in aggregate, not by a single CLI invocation. On exit 3 the
+report prints one plain-text line per reason, with the numbers behind it.
+
 Example:
 
 ```
 {"record_type":"run_header","log_schema_version":"2","run_id":"20260731T110810Z-a3f19c2b", ...}
 {"record_type":"llm_call","run_id":"20260731T110810Z-a3f19c2b","file":"app/domain/pricing.py","run_index":0, ...}
+{"record_type":"run_footer","run_id":"20260731T110810Z-a3f19c2b","status":"completed","exit_code":0, ...}
 ```
 
 #### Prompt freeze

@@ -2,6 +2,7 @@ import { appendFileSync, readFileSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import type { ChangedFact, CheckResult, RunAttempt, RunLog } from './types'
 import type { SkippedFile } from './cliExtractor'
+import type { InvalidCall, InvalidReason } from './reporter'
 
 /**
  * Run-log persistence (C-6): one JSON Lines file per measurement campaign, appended to, never
@@ -91,7 +92,30 @@ export interface LlmCallRecord {
   raw_response: string
 }
 
-export type RunLogRecord = RunHeaderRecord | LlmCallRecord
+/**
+ * Closing record, always the last line of an invocation and written even when the run throws. A
+ * header without a footer therefore means: this run died hard (or was killed) — that absence is the
+ * signal, so the analysis can tell an aborted run from a completed one without guessing.
+ */
+export interface RunFooterRecord {
+  record_type: 'run_footer'
+  run_id: string
+  timestamp: string
+  status: 'completed' | 'aborted'
+  runs_requested: number
+  runs_completed: number
+  calls_total: number
+  calls_invalid: number
+  /** Not just the count: which file and which repetition, so the bad calls can be looked up. */
+  invalid_calls: readonly InvalidCall[]
+  skipped_count: number
+  /** The code the process exits with. */
+  exit_code: number
+  invalid_reasons: readonly InvalidReason[]
+  wall_clock_ms: number
+}
+
+export type RunLogRecord = RunHeaderRecord | LlmCallRecord | RunFooterRecord
 
 export interface RunLogWriter {
   write(record: RunLogRecord): void

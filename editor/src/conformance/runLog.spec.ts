@@ -180,7 +180,8 @@ describe('run log', () => {
     const repo = makeRepo(BASE_FILES, { 'app/domain/pricing.py': LEAKY_PRICING })
     const lines = readLog(await run(repo, { llm: fakeLlm([VALID_RESPONSE]) }))
 
-    expect(lines).toHaveLength(2)
+    // header + one call + footer
+    expect(lines).toHaveLength(3)
     const [header, call] = lines
     // Presence, not truthiness — a null endpoint is data, a missing endpoint is a hole.
     expect(Object.keys(header)).toEqual(expect.arrayContaining(HEADER_FIELDS))
@@ -290,8 +291,9 @@ describe('run log', () => {
     await run(repo, { llm: fakeLlm([VALID_RESPONSE]) })
     const lines = readLog(await run(repo, { llm: fakeLlm([VALID_RESPONSE]) }))
 
-    expect(lines).toHaveLength(4)
+    expect(lines).toHaveLength(6)
     expect(lines.filter((l) => l.record_type === 'run_header')).toHaveLength(2)
     expect(lines.filter((l) => l.record_type === 'llm_call')).toHaveLength(2)
+    expect(lines.filter((l) => l.record_type === 'run_footer')).toHaveLength(2)
   })
 })

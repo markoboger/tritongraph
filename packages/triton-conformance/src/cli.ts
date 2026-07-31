@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createOpenAiClient } from './llmClient'
-import { formatReport, exitCode } from './reporter'
+import { formatReport, formatValidityWarnings } from './reporter'
 import { runConformance, type LlmSetup } from './run'
 import { parseArgs } from './cliArgs'
 
@@ -16,8 +16,11 @@ import { parseArgs } from './cliArgs'
  * way.
  *
  * `--run-log <file.jsonl>` persists the raw measurement records (one run_header per invocation, one
- * llm_call per checked file and repetition); without it nothing is written. `--runs N` repeats the
- * LLM path N times so the eval harness can measure model variance.
+ * llm_call per checked file and repetition, one run_footer at the end); without it nothing is
+ * written. `--runs N` repeats the LLM path N times so the eval harness can measure model variance.
+ *
+ * Exit codes: 0 clean, 1 violations found, 2 program/configuration error, 3 the run finished but is
+ * not a sound measurement (3 wins over 0 and 1 — see exitCodeFor).
  *
  * Run after `npm install && npm run build`: `triton-conformance --topology soll.ilograph.yaml --rules architecture-rules.yaml`
  */
@@ -44,6 +47,11 @@ function llmFromEnv(): LlmSetup | undefined {
 async function main(): Promise<void> {
   const cliArgs = process.argv.slice(2)
   const args = parseArgs(cliArgs)
+  if (args.runs > 1 && !args.runLog) {
+    console.error(
+      `warning: --runs ${args.runs} without --run-log — repetitions 1..${args.runs - 1} are paid for but only repetition 0 is visible`,
+    )
+  }
   const run = await runConformance({
     repoRoot: process.cwd(),
     topologyPath: args.topology,
@@ -59,9 +67,12 @@ async function main(): Promise<void> {
 
   for (const file of run.skipped) console.error(`skipped ${file.path}: ${file.reason}`)
   console.log(formatReport(run.results))
-  process.exit(exitCode(run.results))
+  for (const line of formatValidityWarnings(run.validity)) console.log(line)
+  process.exit(run.exitCode)
 }
 
+// Anything that escapes main() is a program or configuration error: exit 2, never a measurement
+// code. The run log has already closed itself with an "aborted" footer at this point.
 main().catch((err) => {
   console.error(err instanceof Error ? err.message : String(err))
   process.exit(2)

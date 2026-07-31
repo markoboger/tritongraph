@@ -10,6 +10,12 @@ import { changedPythonFiles, gitHead } from './gitDiff'
 import { extractFacts, pythonFilesUnder, type SkippedFile } from './cliExtractor'
 import { observedImportsFromFacts } from './ruleEngine'
 import { check } from './check'
+import {
+  exitCodeFor,
+  invalidReasons,
+  type InvalidCall,
+  type RunValidity,
+} from './reporter'
 import type { LlmClient } from './llmClient'
 import { checkFactWithLlm, type LlmCheckOptions } from './llmChecker'
 import { SYSTEM_PROMPT, buildUserPrompt } from './contextBuilder'
@@ -64,9 +70,14 @@ export interface ConformanceRunInput {
 export interface ConformanceRunResult {
   results: CheckResult[]
   skipped: SkippedFile[]
+  /** Whether the run was a sound measurement; drives exit code 3 and the footer. */
+  validity: RunValidity
+  /** The code the CLI exits with (see exitCodeFor). */
+  exitCode: number
 }
 
 export async function runConformance(input: ConformanceRunInput): Promise<ConformanceRunResult> {
+  const startedAt = Date.now()
   // Fail before any model call if the log is not writable.
   const log = input.runLogPath ? createRunLogWriter(input.runLogPath) : null
   const runId = newRunId()
@@ -91,28 +102,81 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
   const skipped = dedupeByPath([...diff.skipped, ...graph.skipped])
   log?.write(buildRunHeader(input, runId, changed.length, graph.facts.length, skipped))
 
-  // Repetition 0 is the run that produces the report: rule-engine plus, if configured, the LLM.
-  const results = await check({
-    soll,
-    changedFacts: diff.facts,
-    observedImports: observedImportsFromFacts(graph.facts),
-    llm: input.llm
-      ? { client: input.llm.client, options: { ...input.llm.options, runIndex: 0 } }
-      : undefined,
-  })
-  if (log) writeLlmCalls(log, runId, diff.facts, results)
+  const runsRequested = input.runs ?? 1
+  const invalidCalls: InvalidCall[] = []
+  let callsTotal = 0
+  let runsCompleted = 0
+  let results: CheckResult[] = []
+  let exit = 2
 
-  // Further repetitions measure the model only. They deliberately do NOT go through check(): the
-  // deterministic rule-engine cannot vary between repetitions, so re-running it would only produce
-  // duplicate structural findings. Repetitions are logged, never merged into the reported results —
-  // aggregating across runs is the eval harness's job.
-  for (let runIndex = 1; runIndex < (input.runs ?? 1); runIndex++) {
-    if (!input.llm) break
-    const repeated = await repeatLlmRun(soll, diff.facts, input.llm, runIndex)
-    if (log) writeLlmCalls(log, runId, diff.facts, repeated)
+  // The footer is written whichever way this ends: a header with no footer is the mark of a run
+  // that died hard, so every ordinary abort must still close its own record.
+  try {
+    // Repetition 0 is the run that produces the report: rule-engine plus, if configured, the LLM.
+    results = await check({
+      soll,
+      changedFacts: diff.facts,
+      observedImports: observedImportsFromFacts(graph.facts),
+      llm: input.llm
+        ? { client: input.llm.client, options: { ...input.llm.options, runIndex: 0 } }
+        : undefined,
+    })
+    callsTotal += recordCalls(log, runId, diff.facts, results, invalidCalls)
+    runsCompleted++
+
+    // Further repetitions measure the model only. They deliberately do NOT go through check(): the
+    // deterministic rule-engine cannot vary between repetitions, so re-running it would only produce
+    // duplicate structural findings. Repetitions are logged, never merged into the reported results —
+    // aggregating across runs is the eval harness's job.
+    for (let runIndex = 1; runIndex < runsRequested; runIndex++) {
+      // Without an LLM a repetition has nothing to call, so it completes trivially — counting it as
+      // incomplete would raise a false alarm about a run that did everything it was asked to do.
+      if (input.llm) {
+        const repeated = await repeatLlmRun(soll, diff.facts, input.llm, runIndex)
+        callsTotal += recordCalls(log, runId, diff.facts, repeated, invalidCalls)
+      }
+      runsCompleted++
+    }
+
+    const validity = buildValidity(invalidCalls, runsRequested, runsCompleted, skipped.length)
+    exit = exitCodeFor(results, validity)
+    return { results, skipped, validity, exitCode: exit }
+  } finally {
+    const status = runsCompleted === runsRequested ? 'completed' : 'aborted'
+    // On an abort the process ends with 2 (program error), decided by the CLI's catch.
+    if (status === 'aborted') exit = 2
+    log?.write({
+      record_type: 'run_footer',
+      run_id: runId,
+      timestamp: nowIso(),
+      status,
+      runs_requested: runsRequested,
+      runs_completed: runsCompleted,
+      calls_total: callsTotal,
+      calls_invalid: invalidCalls.length,
+      invalid_calls: invalidCalls,
+      skipped_count: skipped.length,
+      exit_code: exit,
+      invalid_reasons: invalidReasons(
+        buildValidity(invalidCalls, runsRequested, runsCompleted, skipped.length),
+      ),
+      wall_clock_ms: Date.now() - startedAt,
+    })
   }
+}
 
-  return { results, skipped }
+function buildValidity(
+  invalidCalls: readonly InvalidCall[],
+  runsRequested: number,
+  runsCompleted: number,
+  skippedCount: number,
+): RunValidity {
+  return {
+    invalid_calls: invalidCalls,
+    runs_requested: runsRequested,
+    runs_completed: runsCompleted,
+    skipped_count: skippedCount,
+  }
 }
 
 async function repeatLlmRun(
@@ -176,13 +240,24 @@ function buildRunHeader(
   }
 }
 
-function writeLlmCalls(
-  log: RunLogWriter,
+/**
+ * Build the call records once and use them for both jobs: writing the log (when there is one) and
+ * counting what the run is worth. The pairing invariant in llmCallRecords therefore also holds for
+ * runs without a log — an unattributable result is a program error either way.
+ */
+function recordCalls(
+  log: RunLogWriter | null,
   runId: string,
   facts: readonly ChangedFact[],
   results: readonly CheckResult[],
-): void {
-  for (const record of llmCallRecords(runId, facts, results)) log.write(record)
+  invalidCalls: InvalidCall[],
+): number {
+  const records = llmCallRecords(runId, facts, results)
+  for (const record of records) {
+    if (!record.valid_final) invalidCalls.push({ file: record.file, run_index: record.run_index })
+    log?.write(record)
+  }
+  return records.length
 }
 
 function checkerDirectory(): string {
