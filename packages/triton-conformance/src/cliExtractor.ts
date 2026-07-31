@@ -1,4 +1,6 @@
 import { execFileSync } from 'node:child_process'
+import { readdirSync } from 'node:fs'
+import { join, relative, sep } from 'node:path'
 import type { ChangedFact, DiffKind, ResolvedTopology } from './types'
 import { rawAstToChangedFact, type RawAst } from './rawAstFacts'
 
@@ -22,8 +24,12 @@ def params(args):
     return [{"name": a.arg, "annotation": ann(a.annotation)} for a in seq]
 out = []
 for path in sys.argv[1:]:
-    src = open(path, encoding='utf-8').read()
-    tree = ast.parse(src)
+    try:
+        src = open(path, encoding='utf-8').read()
+        tree = ast.parse(src)
+    except Exception as exc:
+        out.append({"error": "%s: %s" % (type(exc).__name__, exc)})
+        continue
     imports, functions, classes = [], [], []
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -40,19 +46,85 @@ for path in sys.argv[1:]:
 print(json.dumps(out))
 `
 
-/** Extract facts for all changed files with a single python3 invocation (one interpreter start). */
+/** A file the extractor could not parse. Reported on stderr and kept in the run result. */
+export interface SkippedFile {
+  /** Repo-relative path. */
+  path: string
+  /** Python exception as `Type: message`, e.g. `SyntaxError: invalid syntax (broken.py, line 1)`. */
+  reason: string
+}
+
+export interface ExtractedFacts {
+  facts: ChangedFact[]
+  skipped: SkippedFile[]
+}
+
+/**
+ * Extract facts for the given files with a single python3 invocation (one interpreter start).
+ * Files that fail to read or parse are skipped, never fatal — one broken file must not end the run.
+ */
+export function extractFacts(
+  repoRoot: string,
+  files: readonly { path: string; diff_kind: DiffKind }[],
+  topology: ResolvedTopology,
+  sourceRoots: readonly string[] = [],
+): ExtractedFacts {
+  if (files.length === 0) return { facts: [], skipped: [] }
+  const json = execFileSync('python3', ['-c', AST_SCRIPT, ...files.map((f) => f.path)], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  const raws = JSON.parse(json) as (RawAst | { error: string })[]
+
+  const facts: ChangedFact[] = []
+  const skipped: SkippedFile[] = []
+  files.forEach((f, i) => {
+    const raw = raws[i]
+    if ('error' in raw) skipped.push({ path: f.path, reason: raw.error })
+    else facts.push(rawAstToChangedFact(f.path, raw, f.diff_kind, topology, sourceRoots))
+  })
+  return { facts, skipped }
+}
+
+/** Facts only — the original entry point, unchanged for callers that ignore skipped files. */
 export function extractChangedFacts(
   repoRoot: string,
   files: readonly { path: string; diff_kind: DiffKind }[],
   topology: ResolvedTopology,
   sourceRoots: readonly string[] = [],
 ): ChangedFact[] {
-  if (files.length === 0) return []
-  const json = execFileSync('python3', ['-c', AST_SCRIPT, ...files.map((f) => f.path)], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-  })
-  const raws = JSON.parse(json) as RawAst[]
-  return files.map((f, i) => rawAstToChangedFact(f.path, raws[i], f.diff_kind, topology, sourceRoots))
+  return extractFacts(repoRoot, files, topology, sourceRoots).facts
+}
+
+const SKIPPED_DIRS = new Set(['node_modules', '__pycache__'])
+
+/**
+ * All `*.py` under the source roots (or the whole repo when none are given), repo-relative and
+ * sorted — the file list for `--rule-graph full`.
+ *
+ * ponytail: hidden directories, node_modules and __pycache__ are pruned; virtualenvs named without
+ * a leading dot (`venv/`) are not. Pass --src-root if that ever matters.
+ */
+export function pythonFilesUnder(
+  repoRoot: string,
+  sourceRoots: readonly string[] = [],
+): { path: string; diff_kind: DiffKind }[] {
+  const roots = sourceRoots.length > 0 ? sourceRoots : ['.']
+  const absolute = new Set<string>()
+  for (const root of roots) collectPythonFiles(join(repoRoot, root), absolute)
+  return [...absolute]
+    .map((file) => relative(repoRoot, file).split(sep).join('/'))
+    .sort()
+    // Unchanged files carry no diff kind; 'modified' is inert here because only their imports are used.
+    .map((path) => ({ path, diff_kind: 'modified' as DiffKind }))
+}
+
+function collectPythonFiles(dir: string, out: Set<string>): void {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith('.') || SKIPPED_DIRS.has(entry.name)) continue
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) collectPythonFiles(full, out)
+    else if (entry.name.endsWith('.py')) out.add(full)
+  }
 }

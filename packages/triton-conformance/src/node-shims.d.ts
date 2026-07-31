@@ -13,6 +13,17 @@ declare module 'node:child_process' {
 
 declare module 'node:fs' {
   export function readFileSync(path: string, encoding: 'utf8'): string
+  export interface Dirent {
+    name: string
+    isDirectory(): boolean
+  }
+  export function readdirSync(path: string, options: { withFileTypes: true }): Dirent[]
+}
+
+declare module 'node:path' {
+  export function join(...parts: string[]): string
+  export function relative(from: string, to: string): string
+  export const sep: string
 }
 
 declare module 'js-yaml' {
