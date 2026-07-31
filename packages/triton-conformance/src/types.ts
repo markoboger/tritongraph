@@ -164,6 +164,26 @@ export interface RunAttempt {
   raw_response: string
 }
 
+/**
+ * Why a model call never produced a usable HTTP response. Deliberately separate from a validation
+ * failure: the validity rate is a measurement of what the model can do, and counting a dead socket
+ * or a rate limit into it would turn it into a measurement of the infrastructure instead.
+ */
+export type TransportFailureKind = 'timeout' | 'network' | 'http_429' | 'http_5xx'
+
+/** One failed transport try, successful retries included — those are cost, not measurement error. */
+export interface TransportFailure {
+  kind: TransportFailureKind
+  /** HTTP status when there was one; null for timeouts and network errors. */
+  http_status: number | null
+  latency_ms: number
+  /** 0-based try within this call's transport-retry budget. */
+  try_index: number
+}
+
+/** Did this call get a model answer at all? `transport_failed` means: not measured. */
+export type CallOutcome = 'measured' | 'transport_failed'
+
 /** Full per-run log (C-6). Present for LLM checks; rule-engine-only results omit it. */
 export interface RunLog {
   /** Requested model name. */
@@ -182,10 +202,16 @@ export interface RunLog {
   run_index: number
   tokens: { prompt: number; completion: number }
   latency_ms: number
-  /** Did the first raw response parse/validate? (C-2) */
-  valid_raw: boolean
-  /** Did the final response (after retries) validate? (C-2) */
-  valid_final: boolean
+  /** Did the first raw response parse/validate? (C-2) Null when no response was ever received. */
+  valid_raw: boolean | null
+  /**
+   * Did the final response (after retries) validate? (C-2) Null — never false — when the call ended
+   * in a transport failure: false would claim the model failed, and it never got the question.
+   */
+  valid_final: boolean | null
+  outcome: CallOutcome
+  /** Every failed transport try of this call, in order. Empty when the transport was clean. */
+  transport_failures: readonly TransportFailure[]
   retries: number
   prompt_hash: string
   raw_response: string

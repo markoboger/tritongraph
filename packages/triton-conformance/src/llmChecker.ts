@@ -1,17 +1,39 @@
 import type {
   ArchitectureRule,
+  CallOutcome,
   ChangedFact,
   CheckPerformed,
   RunAttempt,
   RunLog,
   SollModel,
+  TransportFailure,
   ViolationRecord,
   ViolationSubject,
 } from './types'
 import { buildMatchKey } from './matchKey'
 import { validateViolationRecord } from './validate'
 import { buildMessages, buildPromptContext, type ChatMessage } from './contextBuilder'
-import { VIOLATIONS_SCHEMA, promptHash, type LlmClient } from './llmClient'
+import { VIOLATIONS_SCHEMA, TransportError, promptHash, type LlmClient, type LlmRequest, type LlmResponse } from './llmClient'
+import type { CallTally } from './reporter'
+
+/** Transport retries per call: fixed and small. No jitter, no exponential growth — explainable. */
+export const TRANSPORT_BACKOFF_MS: readonly number[] = [1000, 4000]
+export const TRANSPORT_MAX_RETRIES = TRANSPORT_BACKOFF_MS.length
+/** A provider's `Retry-After` is honoured, but never longer than this. */
+export const RETRY_AFTER_CAP_MS = 60_000
+/** Consecutive calls lost to transport before the run gives up on the provider. */
+export const TRANSPORT_ABORT_THRESHOLD = 5
+
+/**
+ * The provider has failed TRANSPORT_ABORT_THRESHOLD calls in a row, so the run stops instead of
+ * burning an unattended campaign against a dead endpoint. Not a program error: it exits 3.
+ */
+export class TransportAbortError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'TransportAbortError'
+  }
+}
 
 /** Model-asserted violation (the subset the model fills; we add source + match_key). */
 interface LlmViolation {
@@ -32,6 +54,10 @@ export interface LlmCheckOptions {
   maxRetries?: number
   temperature?: number
   seed?: number
+  /** Shared across every call of one run: the call tally and the outage brake. */
+  tally?: CallTally
+  /** Backoff between transport retries. Only tests shorten it; a run uses TRANSPORT_BACKOFF_MS. */
+  transportBackoffMs?: readonly number[]
 }
 
 export interface LlmCheckOutput {
@@ -52,6 +78,13 @@ export async function checkFactWithLlm(
   client: LlmClient,
   options: LlmCheckOptions,
 ): Promise<LlmCheckOutput> {
+  // Checked before the call is paid for, so every failure that opened the brake is still logged.
+  if ((options.tally?.consecutiveTransportFailures ?? 0) >= TRANSPORT_ABORT_THRESHOLD) {
+    throw new TransportAbortError(
+      `provider unreachable: ${TRANSPORT_ABORT_THRESHOLD} consecutive calls failed in transport`,
+    )
+  }
+
   const context = buildPromptContext(soll, fact)
   const checks_performed: CheckPerformed[] = context.rules.map((rule) => ({
     rule_id: rule.id,
@@ -78,16 +111,29 @@ export async function checkFactWithLlm(
   let validFinal = false
   const attempts: RunAttempt[] = []
   const conversation: ChatMessage[] = [...messages]
+  const transportFailures: TransportFailure[] = []
+  let outcome: CallOutcome = 'measured'
 
   while (attempt <= maxRetries) {
-    const start = Date.now()
-    const response = await client.complete({
-      messages: conversation,
-      schema: VIOLATIONS_SCHEMA as unknown as object,
-      schemaName: 'conformance_violations',
-    })
-    const latency = Date.now() - start
-    totalLatency += latency
+    const call = await completeWithTransportRetry(
+      client,
+      {
+        messages: conversation,
+        schema: VIOLATIONS_SCHEMA as unknown as object,
+        schemaName: 'conformance_violations',
+      },
+      options.transportBackoffMs ?? TRANSPORT_BACKOFF_MS,
+    )
+    transportFailures.push(...call.failures)
+    totalLatency += call.latencyMs
+    // No response at all: this call was never measured. Leaving the validation loop here is what
+    // keeps a dead endpoint out of valid_raw/valid_final.
+    if (!call.response) {
+      outcome = 'transport_failed'
+      break
+    }
+    const response = call.response
+    const latency = call.latencyMs
     totalPromptTokens += response.promptTokens
     totalCompletionTokens += response.completionTokens
     lastRaw = response.text
@@ -128,8 +174,12 @@ export async function checkFactWithLlm(
     run_index: options.runIndex ?? 0,
     tokens: { prompt: totalPromptTokens, completion: totalCompletionTokens },
     latency_ms: totalLatency,
-    valid_raw: validRaw,
-    valid_final: validFinal,
+    // Null, not false, once the transport swallowed the call: claiming the model produced an
+    // invalid answer when it was never asked would corrupt the validity rate.
+    valid_raw: attempts.length > 0 ? validRaw : null,
+    valid_final: outcome === 'measured' ? validFinal : null,
+    outcome,
+    transport_failures: transportFailures,
     // On exhaustion the loop exits with attempt = maxRetries + 1; clamp so the log never
     // reports more retries than were configured.
     retries: Math.min(attempt, maxRetries),
@@ -137,7 +187,66 @@ export async function checkFactWithLlm(
     raw_response: lastRaw,
   }
 
+  tallyCall(options.tally, fact, run)
   return { violations, checks_performed, run }
+}
+
+/**
+ * The one place the two failure classes are kept apart. A model that answered but never validly is
+ * a measurement failure about the model; a call that never got an answer says nothing about the
+ * model at all, so it lands in a different bucket and never touches `invalid`.
+ */
+function tallyCall(tally: CallTally | undefined, fact: ChangedFact, run: RunLog): void {
+  if (!tally) return
+  tally.total++
+  const call = { file: fact.path, run_index: run.run_index }
+  if (run.outcome === 'transport_failed') {
+    tally.transportFailed.push(call)
+    tally.consecutiveTransportFailures++
+    return
+  }
+  tally.consecutiveTransportFailures = 0
+  // Retries that worked in the end are cost information (latency, money), never a measurement error.
+  if (run.transport_failures.length > 0) tally.withTransportRetry++
+  if (run.valid_final === false) tally.invalid.push(call)
+}
+
+interface TransportOutcome {
+  /** Null when the transport budget ran out without ever reaching the model. */
+  response: LlmResponse | null
+  latencyMs: number
+  failures: TransportFailure[]
+}
+
+/**
+ * One model call plus its own retry budget, separate from the validation retries: a rate limit or a
+ * dead socket must not consume the attempts that measure whether the model can answer correctly.
+ */
+async function completeWithTransportRetry(
+  client: LlmClient,
+  request: LlmRequest,
+  backoff: readonly number[],
+): Promise<TransportOutcome> {
+  const failures: TransportFailure[] = []
+  for (let tryIndex = 0; ; tryIndex++) {
+    const start = Date.now()
+    try {
+      const response = await client.complete(request)
+      return { response, latencyMs: Date.now() - start, failures }
+    } catch (err) {
+      if (!(err instanceof TransportError)) throw err
+      const latencyMs = Date.now() - start
+      failures.push({ kind: err.kind, http_status: err.httpStatus, latency_ms: latencyMs, try_index: tryIndex })
+      if (tryIndex >= backoff.length) return { response: null, latencyMs, failures }
+      await sleep(
+        err.retryAfterMs === null ? backoff[tryIndex] : Math.min(err.retryAfterMs, RETRY_AFTER_CAP_MS),
+      )
+    }
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 type ParseResult =

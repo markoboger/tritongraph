@@ -16,7 +16,7 @@ The CLI is run from the repository root of the code under test.
 ## Flags
 
 ```
-usage: triton-conformance --topology <ilograph.yaml> --rules <rules.yaml> [--base <ref>] [--src-root <dir>] [--rule-graph diff|full]
+usage: triton-conformance --topology <ilograph.yaml> --rules <rules.yaml> [--base <ref>] [--src-root <dir>] [--rule-graph diff|full] [--run-log <file.jsonl>] [--runs <N>] [--timeout-ms <N>]
 ```
 
 | Flag | Default | Meaning |
@@ -28,6 +28,7 @@ usage: triton-conformance --topology <ilograph.yaml> --rules <rules.yaml> [--bas
 | `--rule-graph` | `diff` | Which import graph the rule-engine evaluates — see below. |
 | `--run-log` | — | JSONL file the raw measurement records are appended to — see below. |
 | `--runs` | `1` | How often the LLM path is repeated, integer >= 1 — see below. |
+| `--timeout-ms` | `120000` | Budget of a **single model call**, integer >= 1000 — see below. |
 
 ### `--rule-graph diff|full`
 
@@ -93,6 +94,9 @@ loss) — that absence is how the analysis recognises an aborted run, so never r
 | `seed_requested` | number \| null | Seed sent to the provider; null when no LLM was configured. Requested, not confirmed. |
 | `temperature_requested` | number \| null | Temperature sent to the provider; null when no LLM was configured. |
 | `runs_requested` | number | Value of `--runs`; the repetitions share this `run_id` and differ by `run_index`. |
+| `timeout_ms` | number | Value of `--timeout-ms`: the budget of one model call. |
+| `transport_max_retries` | number | Transport retries allowed per call, on top of the first try. Currently 2. |
+| `transport_abort_threshold` | number | Consecutive calls lost to transport before the run gives up. Currently 5. |
 | `changed_files_count` | number | Python files in the diff. |
 | `graph_files_count` | number | Files whose facts formed the rule-engine graph. |
 | `skipped` | `{path, reason}[]` | Files that could not be read or parsed. |
@@ -108,8 +112,10 @@ loss) — that absence is how the analysis recognises an aborted run, so never r
 | `model_version` | string \| null | Build the provider reported; null when it reported none — never backfilled from `model_requested`. |
 | `attempts` | object[] | One entry per model call: `attempt_index` (0-based), `tokens_in`, `tokens_out`, `latency_ms`, `valid`, `raw_response` (the text of that attempt, kept even when discarded as invalid). |
 | `attempts_used` | number | Length of `attempts`. |
-| `valid_raw` | boolean | Did the first attempt validate? |
-| `valid_final` | boolean | Did the last attempt validate? |
+| `valid_raw` | boolean \| null | Did the first attempt validate? Null when no answer was ever received. |
+| `valid_final` | boolean \| null | Did the last attempt validate? Null — never `false` — when `outcome` is `transport_failed`. |
+| `outcome` | `"measured"` \| `"transport_failed"` | Did this call get a model answer at all? |
+| `transport_failures` | object[] | One entry per failed transport try: `kind` (`timeout`, `network`, `http_429`, `http_5xx`), `http_status` (null for timeout/network), `latency_ms`, `try_index` (0-based). Non-empty and `outcome: "measured"` means a retry worked — cost information, not a measurement error. |
 | `tokens_in_total`, `tokens_out_total`, `latency_ms_total` | number | Sums over all attempts. |
 | `temperature_requested`, `seed_requested` | number | Sampling parameters asked of the provider for this call. |
 | `run_index` | number | 0-based repetition index within this `run_id`. |
@@ -124,15 +130,18 @@ loss) — that absence is how the analysis recognises an aborted run, so never r
 | --- | --- | --- |
 | `run_id` | string | Same value as the header of this invocation. |
 | `timestamp` | string | UTC ISO 8601 with milliseconds, taken when the run ended. |
-| `status` | `"completed"` \| `"aborted"` | `aborted` when fewer repetitions ran than were requested, i.e. something threw. |
+| `status` | `"completed"` \| `"aborted"` | `aborted` when fewer repetitions ran than were requested, i.e. something threw or the provider gave out. |
 | `runs_requested` | number | Value of `--runs`. |
 | `runs_completed` | number | Repetitions that finished. Less than `runs_requested` on an abort. |
-| `calls_total` | number | Model calls logged in this run (across all repetitions). |
-| `calls_invalid` | number | Calls whose final response never validated. |
+| `calls_total` | number | Model calls made in this run (across all repetitions). |
+| `calls_invalid` | number | Calls the model answered, but never validly. Transport losses are **not** counted here. |
 | `invalid_calls` | `{file, run_index}[]` | Which calls those were — not just how many. |
+| `calls_transport_failed` | number | Calls that never reached the model at all. Kept apart from `calls_invalid` on purpose. |
+| `failed_calls` | `{file, run_index}[]` | Which calls those were. |
+| `calls_with_transport_retry` | number | Calls that only completed because a transport retry worked — cost information, no effect on the exit code. |
 | `skipped_count` | number | Files that could not be read or parsed. |
 | `exit_code` | number | The code the process exits with; see the table below. |
-| `invalid_reasons` | string[] | Empty, or a subset of `invalid_final_response`, `incomplete_runs`, `skipped_files`. |
+| `invalid_reasons` | string[] | Empty, or a subset of `invalid_final_response`, `transport_failure`, `incomplete_runs`, `skipped_files`. |
 | `wall_clock_ms` | number | Duration of the whole run. |
 
 No field is ever null: the footer is written from values the run knows by then. Lists are empty
@@ -145,15 +154,20 @@ rather than absent.
 | 0 | No violations, measurement sound. |
 | 1 | Violations found, measurement sound. |
 | 2 | Program or configuration error: usage, log not writable, violated pairing invariant, unexpected exception. |
-| 3 | The run finished, but it is not a sound measurement. |
+| 3 | The run is not a sound measurement — including a provider outage, where `status` is `aborted` but the code is still 3. |
 
 **3 takes precedence over 0 and 1.** A run with violations *and* an invalid call exits 3, never 1 —
 otherwise the finding would hide the fact that the measurement cannot be trusted. Each of these
 alone is enough for 3:
 
 - at least one call with `valid_final: false`
+- at least one call with `outcome: "transport_failed"`
 - `runs_completed < runs_requested`
 - a non-empty skipped list
+
+A dead provider is **not** a program error. It aborts the run (`status: "aborted"`) but exits 3, not
+2; code 2 stays reserved for usage errors, an unwritable log, a violated pairing invariant and
+unexpected exceptions.
 
 Code 3 is an attention signal for unattended runs, **not** a verdict: whether a configuration stays
 usable is decided by the eval harness in aggregate, not by a single CLI invocation. On exit 3 the
@@ -194,6 +208,36 @@ The deterministic rule-engine runs **once** regardless of N: its findings follow
 and cannot vary between repetitions. Only the model is asked again. Consequently the printed report
 and the exit code come from repetition 0; repetitions 1..N-1 exist only in the log, so `--runs` is
 only useful together with `--run-log`.
+
+### `--timeout-ms <N>`
+
+Budget of a **single model call** — not of a file and not of the whole run. Default 120000, minimum
+1000; anything else is a usage error. It is enforced with an `AbortController` on the request, and
+the abort surfaces as an ordinary rejected promise, so the run still closes its log with a footer.
+
+Two failure classes are kept strictly apart, and this is the whole point of the flag:
+
+- **Validation failure** — the model answered, but the answer was unusable (not JSON, schema
+  violation). Counted in `attempts[]`, in `valid_raw`/`valid_final`, against the validation retry
+  budget. Unchanged behaviour.
+- **Transport failure** — there was no usable HTTP response at all: timeout, network error, HTTP
+  429, HTTP 5xx. These get their own retry budget, their own counters and their own reason, and they
+  never touch `valid_raw`/`valid_final`. The validity rate is a measurement of what the model can
+  do; folding transport trouble into it would silently turn it into a measurement of the
+  infrastructure.
+
+Other HTTP errors (401, 404, 400) are configuration mistakes, not transport: they are not retried
+and end the run with code 2.
+
+Each call gets up to **2 transport retries** with a fixed backoff of **1 s** and **4 s** — no jitter,
+no exponential growth, so a log can be explained after the fact. A `Retry-After` header on a 429 is
+respected instead of the backoff, capped at 60 s. Retries that end in a usable answer produce
+`outcome: "measured"`, keep their `transport_failures[]` as cost information and do **not** make the
+run unsound.
+
+If **5 calls in a row** end in a final transport failure, the run gives up on the provider rather
+than burning an unattended campaign against a dead endpoint. The log keeps all five `llm_call`
+records, the footer says `status: "aborted"`, and the exit code is 3.
 
 ## Requirements
 

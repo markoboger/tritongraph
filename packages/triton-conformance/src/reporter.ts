@@ -13,17 +13,43 @@ export function exitCode(results: readonly CheckResult[]): number {
   return allViolations(results).some((v) => v.severity === 'error') ? 1 : 0
 }
 
-/** One model call whose final response never validated, identified the way the run log logs it. */
+/** One model call, identified the way the run log identifies it. */
 export interface InvalidCall {
   file: string
   run_index: number
 }
 
-export type InvalidReason = 'invalid_final_response' | 'incomplete_runs' | 'skipped_files'
+export type InvalidReason =
+  | 'invalid_final_response'
+  | 'transport_failure'
+  | 'incomplete_runs'
+  | 'skipped_files'
+
+/**
+ * Live tally of one run's model calls, filled where the calls happen instead of reconstructed
+ * afterwards — so a run that dies mid-batch can still say what it paid for and what it got.
+ * `consecutiveTransportFailures` doubles as the outage brake (see TRANSPORT_ABORT_THRESHOLD).
+ */
+export interface CallTally {
+  total: number
+  /** Calls whose final response never validated: a statement about the model. */
+  invalid: InvalidCall[]
+  /** Calls that never got an answer: a statement about the infrastructure, kept strictly apart. */
+  transportFailed: InvalidCall[]
+  /** Calls that only completed because a transport retry worked — cost information, not an error. */
+  withTransportRetry: number
+  consecutiveTransportFailures: number
+}
+
+export function newCallTally(): CallTally {
+  return { total: 0, invalid: [], transportFailed: [], withTransportRetry: 0, consecutiveTransportFailures: 0 }
+}
 
 /** Everything the CLI knows about whether the run itself was a sound measurement. */
 export interface RunValidity {
   invalid_calls: readonly InvalidCall[]
+  /** Calls lost to transport. Unsound for a different reason, so never merged into invalid_calls. */
+  failed_calls: readonly InvalidCall[]
   runs_requested: number
   runs_completed: number
   skipped_count: number
@@ -33,6 +59,7 @@ export interface RunValidity {
 export function invalidReasons(validity: RunValidity): InvalidReason[] {
   const reasons: InvalidReason[] = []
   if (validity.invalid_calls.length > 0) reasons.push('invalid_final_response')
+  if (validity.failed_calls.length > 0) reasons.push('transport_failure')
   if (validity.runs_completed < validity.runs_requested) reasons.push('incomplete_runs')
   if (validity.skipped_count > 0) reasons.push('skipped_files')
   return reasons
@@ -59,6 +86,9 @@ export function formatValidityWarnings(validity: RunValidity): string[] {
     if (reason === 'invalid_final_response') {
       const calls = validity.invalid_calls.map((c) => `${c.file}#${c.run_index}`).join(', ')
       lines.push(`measurement not clean [invalid_final_response]: ${validity.invalid_calls.length} call(s) never returned a valid response — ${calls}`)
+    } else if (reason === 'transport_failure') {
+      const calls = validity.failed_calls.map((c) => `${c.file}#${c.run_index}`).join(', ')
+      lines.push(`measurement not clean [transport_failure]: ${validity.failed_calls.length} call(s) never reached the model — ${calls}`)
     } else if (reason === 'incomplete_runs') {
       lines.push(`measurement not clean [incomplete_runs]: ${validity.runs_completed} of ${validity.runs_requested} repetition(s) completed`)
     } else {

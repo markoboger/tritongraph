@@ -185,6 +185,8 @@ describe('llmCallRecords pairing invariant', () => {
     latency_ms: 1,
     valid_raw: true,
     valid_final: true,
+    outcome: 'measured',
+    transport_failures: [],
     retries: 0,
     prompt_hash: 'deadbeef',
     raw_response: '{}',

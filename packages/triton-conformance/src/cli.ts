@@ -18,9 +18,12 @@ import { parseArgs } from './cliArgs'
  * `--run-log <file.jsonl>` persists the raw measurement records (one run_header per invocation, one
  * llm_call per checked file and repetition, one run_footer at the end); without it nothing is
  * written. `--runs N` repeats the LLM path N times so the eval harness can measure model variance.
+ * `--timeout-ms N` bounds a single model call; transport trouble (timeout, network, 429, 5xx) is
+ * retried on its own budget and never counted as a model failure.
  *
- * Exit codes: 0 clean, 1 violations found, 2 program/configuration error, 3 the run finished but is
- * not a sound measurement (3 wins over 0 and 1 — see exitCodeFor).
+ * Exit codes: 0 clean, 1 violations found, 2 program/configuration error, 3 the run is not a sound
+ * measurement (3 wins over 0 and 1 — see exitCodeFor). A provider outage aborts the run but is a
+ * measurement problem, so it exits 3, not 2.
  *
  * Run after `npm install && npm run build`: `triton-conformance --topology soll.ilograph.yaml --rules architecture-rules.yaml`
  */
@@ -29,12 +32,12 @@ const TEMPERATURE = 0
 const SEED = 42
 
 /** Optional LLM from env (key only ever supplied here, server-side — never in the browser). */
-function llmFromEnv(): LlmSetup | undefined {
+function llmFromEnv(timeoutMs: number): LlmSetup | undefined {
   const apiKey = process.env.CONFORMANCE_API_KEY
   if (!apiKey) return undefined
   const model = process.env.CONFORMANCE_MODEL ?? 'openai/gpt-4o-mini'
   const baseUrl = process.env.CONFORMANCE_BASE_URL ?? 'https://openrouter.ai/api/v1'
-  const client = createOpenAiClient({ apiKey, baseUrl, model, temperature: TEMPERATURE, seed: SEED })
+  const client = createOpenAiClient({ apiKey, baseUrl, model, temperature: TEMPERATURE, seed: SEED, timeoutMs })
   return {
     client,
     options: { modelRequested: model, temperature: TEMPERATURE, seed: SEED },
@@ -61,8 +64,9 @@ async function main(): Promise<void> {
     ruleGraph: args.ruleGraph,
     runLogPath: args.runLog,
     runs: args.runs,
+    timeoutMs: args.timeoutMs,
     cliArgs,
-    llm: llmFromEnv(),
+    llm: llmFromEnv(args.timeoutMs),
   })
 
   for (const file of run.skipped) console.error(`skipped ${file.path}: ${file.reason}`)

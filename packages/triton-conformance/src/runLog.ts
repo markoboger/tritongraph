@@ -1,6 +1,6 @@
 import { appendFileSync, readFileSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
-import type { ChangedFact, CheckResult, RunAttempt, RunLog } from './types'
+import type { CallOutcome, ChangedFact, CheckResult, RunAttempt, RunLog, TransportFailure } from './types'
 import type { SkippedFile } from './cliExtractor'
 import type { InvalidCall, InvalidReason } from './reporter'
 
@@ -57,6 +57,12 @@ export interface RunHeaderRecord {
   temperature_requested: number | null
   /** Value of --runs: how many times the LLM path was repeated within this run_id. */
   runs_requested: number
+  /** Value of --timeout-ms: the budget of a single model call, not of a file or of the run. */
+  timeout_ms: number
+  /** Transport retries allowed per call, on top of the first try. */
+  transport_max_retries: number
+  /** Consecutive calls lost to transport before the run gives up on the provider. */
+  transport_abort_threshold: number
   changed_files_count: number
   graph_files_count: number
   skipped: readonly SkippedFile[]
@@ -74,8 +80,13 @@ export interface LlmCallRecord {
   model_version: string | null
   attempts: readonly RunAttempt[]
   attempts_used: number
-  valid_raw: boolean
-  valid_final: boolean
+  /** Null when the call never reached the model — see `outcome`. */
+  valid_raw: boolean | null
+  valid_final: boolean | null
+  /** `transport_failed` means: not measured. It is never a statement about the model. */
+  outcome: CallOutcome
+  /** Failed transport tries, successful retries included — those are cost, not measurement error. */
+  transport_failures: readonly TransportFailure[]
   tokens_in_total: number
   tokens_out_total: number
   latency_ms_total: number
@@ -105,9 +116,15 @@ export interface RunFooterRecord {
   runs_requested: number
   runs_completed: number
   calls_total: number
+  /** Calls the model answered, but never validly. Transport losses are NOT in here. */
   calls_invalid: number
   /** Not just the count: which file and which repetition, so the bad calls can be looked up. */
   invalid_calls: readonly InvalidCall[]
+  /** Calls that never reached the model. Kept apart from calls_invalid on purpose. */
+  calls_transport_failed: number
+  failed_calls: readonly InvalidCall[]
+  /** Calls that only completed because a transport retry worked: cost, not a measurement error. */
+  calls_with_transport_retry: number
   skipped_count: number
   /** The code the process exits with. */
   exit_code: number
@@ -218,6 +235,8 @@ function buildLlmCallRecord(runId: string, fact: ChangedFact, run: RunLog): LlmC
     attempts_used: run.attempts.length,
     valid_raw: run.valid_raw,
     valid_final: run.valid_final,
+    outcome: run.outcome,
+    transport_failures: run.transport_failures,
     tokens_in_total: run.tokens.prompt,
     tokens_out_total: run.tokens.completion,
     latency_ms_total: run.latency_ms,
