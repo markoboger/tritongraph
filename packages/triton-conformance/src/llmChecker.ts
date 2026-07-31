@@ -26,6 +26,7 @@ interface LlmViolation {
 
 export interface LlmCheckOptions {
   modelRequested: string
+  /** 0-based repetition index (--runs); defaults to the single run 0. */
   runIndex?: number
   /** Max retries after an invalid attempt (C-2). Default 2. */
   maxRetries?: number
@@ -124,7 +125,7 @@ export async function checkFactWithLlm(
     attempts,
     temperature: options.temperature ?? 0,
     seed: options.seed ?? 42,
-    run_index: options.runIndex ?? 1,
+    run_index: options.runIndex ?? 0,
     tokens: { prompt: totalPromptTokens, completion: totalCompletionTokens },
     latency_ms: totalLatency,
     valid_raw: validRaw,

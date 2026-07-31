@@ -27,6 +27,7 @@ usage: triton-conformance --topology <ilograph.yaml> --rules <rules.yaml> [--bas
 | `--src-root` | repo root | Source root for module-path derivation. Repeatable. |
 | `--rule-graph` | `diff` | Which import graph the rule-engine evaluates — see below. |
 | `--run-log` | — | JSONL file the raw measurement records are appended to — see below. |
+| `--runs` | `1` | How often the LLM path is repeated, integer >= 1 — see below. |
 
 ### `--rule-graph diff|full`
 
@@ -86,11 +87,12 @@ version **2** (`log_schema_version`).
 | `endpoint` | string \| null | Effective base URL, scheme + host + path only — never keys, tokens, credentials or query parameters. Null when no LLM was configured. |
 | `seed_requested` | number \| null | Seed sent to the provider; null when no LLM was configured. Requested, not confirmed. |
 | `temperature_requested` | number \| null | Temperature sent to the provider; null when no LLM was configured. |
+| `runs_requested` | number | Value of `--runs`; the repetitions share this `run_id` and differ by `run_index`. |
 | `changed_files_count` | number | Python files in the diff. |
 | `graph_files_count` | number | Files whose facts formed the rule-engine graph. |
 | `skipped` | `{path, reason}[]` | Files that could not be read or parsed. |
 
-#### `record_type: "llm_call"` — one per checked file
+#### `record_type: "llm_call"` — one per checked file and repetition
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -117,6 +119,18 @@ Example:
 {"record_type":"run_header","log_schema_version":"2","run_id":"20260731T110810Z-a3f19c2b", ...}
 {"record_type":"llm_call","run_id":"20260731T110810Z-a3f19c2b","file":"app/domain/pricing.py","run_index":0, ...}
 ```
+
+### `--runs <N>`
+
+Repeats the LLM path N times (default 1) so model variance can be measured. All repetitions belong
+to the same `run_id` and are told apart by `run_index` (0-based); there is still exactly one
+`run_header` per invocation. Nothing is aggregated — no median, no majority vote; the log keeps every
+repetition verbatim and the eval harness decides what to do with them.
+
+The deterministic rule-engine runs **once** regardless of N: its findings follow from the topology
+and cannot vary between repetitions. Only the model is asked again. Consequently the printed report
+and the exit code come from repetition 0; repetitions 1..N-1 exist only in the log, so `--runs` is
+only useful together with `--run-log`.
 
 ## Requirements
 

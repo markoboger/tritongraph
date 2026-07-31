@@ -2,7 +2,7 @@
 import { createOpenAiClient } from './llmClient'
 import { formatReport, exitCode } from './reporter'
 import { runConformance, type LlmSetup } from './run'
-import type { RuleGraphMode } from './runLog'
+import { parseArgs } from './cliArgs'
 
 /**
  * The measurement core CLI (C-8). Runs the full check locally: git diff → Python ast → changed_facts
@@ -16,47 +16,14 @@ import type { RuleGraphMode } from './runLog'
  * way.
  *
  * `--run-log <file.jsonl>` persists the raw measurement records (one run_header per invocation, one
- * llm_call per checked file); without it nothing is written.
+ * llm_call per checked file and repetition); without it nothing is written. `--runs N` repeats the
+ * LLM path N times so the eval harness can measure model variance.
  *
  * Run after `npm install && npm run build`: `triton-conformance --topology soll.ilograph.yaml --rules architecture-rules.yaml`
  */
-interface CliArgs {
-  topology: string
-  rules: string
-  base: string
-  sourceRoots: string[]
-  ruleGraph: RuleGraphMode
-  runLog?: string
-}
-
-const USAGE =
-  'usage: triton-conformance --topology <ilograph.yaml> --rules <rules.yaml> [--base <ref>] [--src-root <dir>] [--rule-graph diff|full] [--run-log <file.jsonl>]'
-
 /** Effective sampling parameters (C-5): fixed here, sent to the provider and logged as such. */
 const TEMPERATURE = 0
 const SEED = 42
-
-function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { topology: '', rules: '', base: 'HEAD', sourceRoots: [], ruleGraph: 'diff' }
-  for (let i = 0; i < argv.length; i++) {
-    const next = () => argv[++i]
-    if (argv[i] === '--topology') args.topology = next()
-    else if (argv[i] === '--rules') args.rules = next()
-    else if (argv[i] === '--base') args.base = next()
-    else if (argv[i] === '--src-root') args.sourceRoots.push(next())
-    else if (argv[i] === '--rule-graph') args.ruleGraph = parseRuleGraph(next())
-    else if (argv[i] === '--run-log') args.runLog = next()
-  }
-  if (!args.topology || !args.rules) throw new Error(USAGE)
-  return args
-}
-
-function parseRuleGraph(value: string): RuleGraphMode {
-  if (value !== 'diff' && value !== 'full') {
-    throw new Error(`--rule-graph must be 'diff' or 'full', got '${value}'\n${USAGE}`)
-  }
-  return value
-}
 
 /** Optional LLM from env (key only ever supplied here, server-side — never in the browser). */
 function llmFromEnv(): LlmSetup | undefined {
@@ -85,6 +52,7 @@ async function main(): Promise<void> {
     sourceRoots: args.sourceRoots,
     ruleGraph: args.ruleGraph,
     runLogPath: args.runLog,
+    runs: args.runs,
     cliArgs,
     llm: llmFromEnv(),
   })

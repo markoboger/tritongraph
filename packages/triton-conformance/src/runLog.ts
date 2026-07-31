@@ -52,6 +52,8 @@ export interface RunHeaderRecord {
    */
   seed_requested: number | null
   temperature_requested: number | null
+  /** Value of --runs: how many times the LLM path was repeated within this run_id. */
+  runs_requested: number
   changed_files_count: number
   graph_files_count: number
   skipped: readonly SkippedFile[]

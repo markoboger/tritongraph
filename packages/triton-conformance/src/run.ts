@@ -11,7 +11,7 @@ import { extractFacts, pythonFilesUnder, type SkippedFile } from './cliExtractor
 import { observedImportsFromFacts } from './ruleEngine'
 import { check } from './check'
 import type { LlmClient } from './llmClient'
-import type { LlmCheckOptions } from './llmChecker'
+import { checkFactWithLlm, type LlmCheckOptions } from './llmChecker'
 import { SYSTEM_PROMPT } from './contextBuilder'
 import {
   LOG_SCHEMA_VERSION,
@@ -52,6 +52,8 @@ export interface ConformanceRunInput {
   ruleGraph: RuleGraphMode
   /** JSONL run log; nothing is written when absent. */
   runLogPath?: string
+  /** Repetitions of the LLM path (--runs), default 1. The rule-engine always runs exactly once. */
+  runs?: number
   /** argv without the process name, logged verbatim in the run header. */
   cliArgs: readonly string[]
   llm?: LlmSetup
@@ -88,15 +90,48 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
   const skipped = dedupeByPath([...diff.skipped, ...graph.skipped])
   log?.write(buildRunHeader(input, runId, changed.length, graph.facts.length, skipped))
 
+  // Repetition 0 is the run that produces the report: rule-engine plus, if configured, the LLM.
   const results = await check({
     soll,
     changedFacts: diff.facts,
     observedImports: observedImportsFromFacts(graph.facts),
-    llm: input.llm ? { client: input.llm.client, options: input.llm.options } : undefined,
+    llm: input.llm
+      ? { client: input.llm.client, options: { ...input.llm.options, runIndex: 0 } }
+      : undefined,
   })
-
   if (log) writeLlmCalls(log, runId, diff.facts, results)
+
+  // Further repetitions measure the model only. They deliberately do NOT go through check(): the
+  // deterministic rule-engine cannot vary between repetitions, so re-running it would only produce
+  // duplicate structural findings. Repetitions are logged, never merged into the reported results —
+  // aggregating across runs is the eval harness's job.
+  for (let runIndex = 1; runIndex < (input.runs ?? 1); runIndex++) {
+    if (!input.llm) break
+    const repeated = await repeatLlmRun(soll, diff.facts, input.llm, runIndex)
+    if (log) writeLlmCalls(log, runId, diff.facts, repeated)
+  }
+
   return { results, skipped }
+}
+
+async function repeatLlmRun(
+  soll: SollModel,
+  facts: readonly ChangedFact[],
+  llm: LlmSetup,
+  runIndex: number,
+): Promise<CheckResult[]> {
+  const results: CheckResult[] = []
+  for (const fact of facts) {
+    const out = await checkFactWithLlm(fact, soll, llm.client, { ...llm.options, runIndex })
+    results.push({
+      file: fact.path,
+      module: fact.module,
+      violations: out.violations,
+      checks_performed: out.checks_performed,
+      run: out.run,
+    })
+  }
+  return results
 }
 
 export function loadSoll(topologyPath: string, rulesPath: string): SollModel {
@@ -132,6 +167,7 @@ function buildRunHeader(
     endpoint: input.llm ? sanitizeEndpoint(input.llm.baseUrl) : null,
     seed_requested: input.llm?.seed ?? null,
     temperature_requested: input.llm?.temperature ?? null,
+    runs_requested: input.runs ?? 1,
     changed_files_count: changedFilesCount,
     graph_files_count: graphFilesCount,
     skipped,
