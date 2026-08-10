@@ -89,7 +89,7 @@ function stubFetch(responseBody: Record<string, unknown>): () => Record<string, 
 }
 
 const OPENAI_BODY = {
-  model: 'zai/glm-4.6',
+  model: 'example/test-model',
   choices: [{ message: { content: CLEAN_RESPONSE } }],
   usage: { prompt_tokens: 11, completion_tokens: 5 },
 }
@@ -99,7 +99,7 @@ async function callWith(providerPin?: string): Promise<Record<string, unknown>> 
   const client = createOpenAiClient({
     baseUrl: 'https://openrouter.example/api/v1',
     apiKey: 'test-key',
-    model: 'zai/glm-4.6',
+    model: 'example/test-model',
     providerPin,
   })
   await client.complete({
