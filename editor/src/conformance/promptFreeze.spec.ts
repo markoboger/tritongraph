@@ -12,7 +12,7 @@ import { runConformance, type LlmSetup } from '../../../packages/triton-conforma
 import { buildUserPrompt } from '../../../packages/triton-conformance/src/contextBuilder'
 import { CANARY_CONTEXT } from '../../../packages/triton-conformance/src/promptCanary'
 import { sha256Text } from '../../../packages/triton-conformance/src/runLog'
-import type { LlmClient } from '../../../packages/triton-conformance/src/llmClient'
+import { VIOLATIONS_SCHEMA, type LlmClient } from '../../../packages/triton-conformance/src/llmClient'
 
 const repos: string[] = []
 afterAll(() => repos.forEach((dir) => rmSync(dir, { recursive: true, force: true })))
@@ -93,6 +93,18 @@ describe('user_prompt_render_sha256', () => {
 
     expect(first.user_prompt_render_sha256).toMatch(/^[0-9a-f]{64}$/)
     expect(first.user_prompt_render_sha256).toBe(sha256Text(buildUserPrompt(CANARY_CONTEXT)))
+    // Literal pin of the frozen canary render: if this breaks, buildUserPrompt was edited.
+    expect(sha256Text(buildUserPrompt(CANARY_CONTEXT))).toBe(
+      '45780c70c486ea8f608d1b2ca11178049a02b7a6ece9ba33fcdc8d1b815b03ef',
+    )
+  })
+
+  it('pins the response schema to the frozen literal', () => {
+    // Literal pin of the frozen response schema: if this breaks, VIOLATIONS_SCHEMA was edited.
+    // Serialisation is JSON.stringify over the `as const` object — no formatting, source key order.
+    expect(sha256Text(JSON.stringify(VIOLATIONS_SCHEMA))).toBe(
+      '940533fc1833345aee108605e83f77b3d333849662d9ee5874a83032dbe7fbb6',
+    )
   })
 
   it('is stable across invocations — the render is deterministic', async () => {

@@ -139,6 +139,8 @@ describe('run log schema v2', () => {
 
     expect(header.prompt_template_sha256).toBe(sha256Text(SYSTEM_PROMPT))
     expect(header.prompt_template_sha256).toMatch(/^[0-9a-f]{64}$/)
+    // Literal pin of the frozen system prompt: if this breaks, SYSTEM_PROMPT was edited.
+    expect(sha256Text(SYSTEM_PROMPT)).toBe('65e78f38e7b1fee20000ea70c654df042f5e0831fc6a68ccb340f833bd915035')
     // The hash tracks the content: a template edit is a different hash.
     expect(sha256Text(SYSTEM_PROMPT)).not.toBe(sha256Text(`${SYSTEM_PROMPT} edited`))
   })
