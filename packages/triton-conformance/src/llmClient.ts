@@ -22,6 +22,12 @@ export interface LlmResponse {
   model: string
   promptTokens: number
   completionTokens: number
+  /**
+   * Backend that served the call, as reported in the response body (OpenRouter top-level
+   * `provider`). Absent with providers that report none, e.g. Ollama — never backfilled from the
+   * requested pin, for the same reason `model` is not backfilled from the requested model.
+   */
+  provider?: string | null
 }
 
 export interface LlmClient {
@@ -39,6 +45,29 @@ export interface OpenAiClientOptions {
   seed?: number
   /** Per-call budget; the call is aborted when it is used up. Default DEFAULT_TIMEOUT_MS. */
   timeoutMs?: number
+  /**
+   * Backend the request is pinned to (OpenRouter provider slug, e.g. `digitalocean`). Empty or
+   * absent → the `provider` field is left out of the body entirely (see providerPinBody).
+   */
+  providerPin?: string
+}
+
+/** Routing block as sent to the provider; also what the run header records verbatim. */
+export interface ProviderPin {
+  order: readonly string[]
+  allow_fallbacks: boolean
+}
+
+/**
+ * The pin as it goes into the request body, or null when none is configured — the body then carries
+ * no `provider` key at all, because a provider that does not know the field (Ollama, which serves
+ * the local arm of the measurement) must not be sent one.
+ *
+ * `allow_fallbacks` is fixed false and deliberately not configurable: a fallback would reopen the
+ * silent rerouting the pin exists to prevent.
+ */
+export function providerPinBody(name: string | undefined): ProviderPin | null {
+  return name ? { order: [name], allow_fallbacks: false } : null
 }
 
 /** Per model call, not per file and not per run. */
@@ -67,6 +96,7 @@ export class TransportError extends Error {
 
 export function createOpenAiClient(options: OpenAiClientOptions): LlmClient {
   const { baseUrl, apiKey, model, temperature = 0, seed = 42, timeoutMs = DEFAULT_TIMEOUT_MS } = options
+  const pin = providerPinBody(options.providerPin)
   return {
     async complete(request: LlmRequest): Promise<LlmResponse> {
       // The abort surfaces as a normal rejected promise, never as a hard process exit: a run that
@@ -86,6 +116,7 @@ export function createOpenAiClient(options: OpenAiClientOptions): LlmClient {
             messages: request.messages,
             temperature,
             seed,
+            ...(pin ? { provider: pin } : {}),
             response_format: {
               type: 'json_schema',
               json_schema: { name: request.schemaName, schema: request.schema, strict: true },
@@ -104,6 +135,7 @@ export function createOpenAiClient(options: OpenAiClientOptions): LlmClient {
         }
         const data = (await response.json()) as {
           model?: string
+          provider?: string
           choices?: { message?: { content?: string } }[]
           usage?: { prompt_tokens?: number; completion_tokens?: number }
         }
@@ -114,6 +146,8 @@ export function createOpenAiClient(options: OpenAiClientOptions): LlmClient {
           model: data.model ?? '',
           promptTokens: data.usage?.prompt_tokens ?? 0,
           completionTokens: data.usage?.completion_tokens ?? 0,
+          // Null when the body carries no `provider` — that is the Ollama case, not an error.
+          provider: data.provider ?? null,
         }
       } catch (err) {
         throw classifyCallError(err, controller.signal.aborted, timeoutMs)

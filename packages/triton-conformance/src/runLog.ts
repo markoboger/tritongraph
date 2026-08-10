@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import type { CallOutcome, ChangedFact, CheckResult, RunAttempt, RunLog, TransportFailure } from './types'
 import type { SkippedFile } from './cliExtractor'
 import type { InvalidCall, InvalidReason } from './reporter'
+import type { ProviderPin } from './llmClient'
 
 /**
  * Run-log persistence (C-6): one JSON Lines file per measurement campaign, appended to, never
@@ -55,6 +56,12 @@ export interface RunHeaderRecord {
    */
   seed_requested: number | null
   temperature_requested: number | null
+  /**
+   * The routing block as sent, or null when the run sent none — again requested, not honoured: which
+   * backend answered is recorded per call as provider_served. Mirrors the request body verbatim so
+   * the header reads without knowledge of the code.
+   */
+  provider_pin: ProviderPin | null
   /** Value of --runs: how many times the LLM path was repeated within this run_id. */
   runs_requested: number
   /** Value of --timeout-ms: the budget of a single model call, not of a file or of the run. */
@@ -78,6 +85,8 @@ export interface LlmCallRecord {
   model_requested: string
   /** What the provider reported; null when it reported nothing. */
   model_version: string | null
+  /** Which backend served this call; null when the provider named none (Ollama). */
+  provider_served: string | null
   attempts: readonly RunAttempt[]
   attempts_used: number
   /** Null when the call never reached the model — see `outcome`. */
@@ -231,6 +240,7 @@ function buildLlmCallRecord(runId: string, fact: ChangedFact, run: RunLog): LlmC
     module: fact.module,
     model_requested: run.model_requested,
     model_version: run.model_version_reported,
+    provider_served: run.provider_served ?? null,
     attempts: run.attempts,
     attempts_used: run.attempts.length,
     valid_raw: run.valid_raw,

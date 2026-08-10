@@ -39,13 +39,26 @@ function llmFromEnv(timeoutMs: number): LlmSetup | undefined {
   if (!apiKey) return undefined
   const model = process.env.CONFORMANCE_MODEL ?? 'openai/gpt-4o-mini'
   const baseUrl = process.env.CONFORMANCE_BASE_URL ?? 'https://openrouter.ai/api/v1'
-  const client = createOpenAiClient({ apiKey, baseUrl, model, temperature: TEMPERATURE, seed: SEED, timeoutMs })
+  // Unset → no pin at all. A router that multiplexes backends (OpenRouter) needs one so a run
+  // cannot be served by a different backend than the one it was measured on; a single-backend
+  // endpoint (Ollama) must not be sent the field, since its handling of it is unknown.
+  const providerPin = process.env.CONFORMANCE_PROVIDER_PIN || undefined
+  const client = createOpenAiClient({
+    apiKey,
+    baseUrl,
+    model,
+    temperature: TEMPERATURE,
+    seed: SEED,
+    timeoutMs,
+    providerPin,
+  })
   return {
     client,
     options: { modelRequested: model, temperature: TEMPERATURE, seed: SEED },
     baseUrl,
     seed: SEED,
     temperature: TEMPERATURE,
+    providerPin,
   }
 }
 

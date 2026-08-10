@@ -195,6 +195,11 @@ export interface RunLog {
    * `model_version` this is never backfilled from the requested name.
    */
   model_version_reported: string | null
+  /**
+   * Backend that served the call, as reported by the provider; null when it reported none. Requested
+   * routing lives in the run header (provider_pin) — asked for is not the same as served.
+   */
+  provider_served?: string | null
   /** Every attempt of the retry loop, in order. */
   attempts: readonly RunAttempt[]
   temperature: number

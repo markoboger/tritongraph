@@ -107,6 +107,7 @@ export async function checkFactWithLlm(
   let lastRaw = ''
   let modelVersion = options.modelRequested
   let modelVersionReported: string | null = null
+  let providerServed: string | null = null
   let violations: ViolationRecord[] = []
   let validFinal = false
   const attempts: RunAttempt[] = []
@@ -143,6 +144,8 @@ export async function checkFactWithLlm(
       modelVersion = response.model
       modelVersionReported = response.model
     }
+    // Providers that report no backend (Ollama) leave this null; that is data, not a failure.
+    providerServed = response.provider ?? null
 
     const parsed = parseAndFinalize(response.text, context.rules, fact)
     attempts.push({
@@ -168,6 +171,7 @@ export async function checkFactWithLlm(
     model_requested: options.modelRequested,
     model_version: modelVersion,
     model_version_reported: modelVersionReported,
+    provider_served: providerServed,
     attempts,
     temperature: options.temperature ?? 0,
     seed: options.seed ?? 42,

@@ -17,7 +17,7 @@ import {
   type CallTally,
   type RunValidity,
 } from './reporter'
-import { DEFAULT_TIMEOUT_MS, type LlmClient } from './llmClient'
+import { DEFAULT_TIMEOUT_MS, providerPinBody, type LlmClient } from './llmClient'
 import {
   TRANSPORT_ABORT_THRESHOLD,
   TRANSPORT_MAX_RETRIES,
@@ -62,6 +62,8 @@ export interface LlmSetup {
   /** Effective values as sent to the provider (C-5). */
   seed: number
   temperature: number
+  /** Backend the calls are pinned to; the header logs the routing block this produces. */
+  providerPin?: string
 }
 
 export interface ConformanceRunInput {
@@ -291,6 +293,8 @@ function buildRunHeader(
     endpoint: input.llm ? sanitizeEndpoint(input.llm.baseUrl) : null,
     seed_requested: input.llm?.seed ?? null,
     temperature_requested: input.llm?.temperature ?? null,
+    // Same helper the client sends with, so header and request body cannot drift apart.
+    provider_pin: providerPinBody(input.llm?.providerPin),
     runs_requested: input.runs ?? 1,
     timeout_ms: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     transport_max_retries: TRANSPORT_MAX_RETRIES,
