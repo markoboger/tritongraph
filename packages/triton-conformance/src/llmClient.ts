@@ -161,10 +161,18 @@ export const VIOLATIONS_SCHEMA = {
             type: 'object',
             additionalProperties: false,
             properties: {
-              offending_type: { type: 'string' },
-              via: { type: 'string' },
-              from: { type: 'string' },
-              to: { type: 'string' },
+              offending_type: {
+                type: 'string',
+                description:
+                  "The single type, module, or symbol name this finding is about, written exactly as it appears in the file's imports or signatures.",
+              },
+              via: {
+                type: 'string',
+                description:
+                  'Optional. How the element enters the file, for example an import or a signature annotation.',
+              },
+              from: { type: 'string', description: 'The component the offending dependency starts at.' },
+              to: { type: 'string', description: 'The component the offending dependency points to.' },
             },
           },
           reason: { type: 'string' },

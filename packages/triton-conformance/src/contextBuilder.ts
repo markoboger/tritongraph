@@ -52,7 +52,14 @@ For structural rules, check edges and import boundaries directly. For semantic r
 names, signatures, and type annotations.
 
 Return JSON only, matching the provided schema. Every violation MUST include a concrete reason and a
-concrete suggestion for how to fix it. Reference a rule by its exact id.`
+concrete suggestion for how to fix it. Reference a rule by its exact id.
+
+How to fill \`subject\`: use exactly one of the two forms, whichever fits the finding.
+- One named element -> \`offending_type\`: the type, module, or symbol name, verbatim as it
+  appears in the imports or signatures given to you. Example: \`pkg.Thing\`.
+- A dependency edge -> \`from\` and \`to\`: the two component names. Example: \`componentA\` and
+  \`componentB\`.
+Never leave both forms empty. The optional \`symbol\` field is not a substitute for \`subject\`.`
 
 /**
  * Pure render: the output depends on nothing but `context` — no env, no clock, no file system — so

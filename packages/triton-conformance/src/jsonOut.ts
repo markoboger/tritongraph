@@ -53,6 +53,8 @@ export interface JsonFinding {
   module: string
   file: string
   line: number | null
+  /** The accused symbol name — qualitative evidence that would otherwise only survive in raw_response. */
+  symbol: string | null
   severity: Severity
   subject: ViolationSubject
   reason: string
@@ -143,6 +145,7 @@ function toJsonFinding(v: ViolationRecord): JsonFinding {
     module: v.location.module,
     file: v.location.file,
     line: v.location.line ?? null,
+    symbol: v.location.symbol ?? null,
     severity: v.severity,
     subject: v.subject,
     reason: v.reason,
