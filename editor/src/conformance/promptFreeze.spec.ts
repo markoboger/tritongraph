@@ -103,7 +103,7 @@ describe('user_prompt_render_sha256', () => {
     // Literal pin of the frozen response schema: if this breaks, VIOLATIONS_SCHEMA was edited.
     // Serialisation is JSON.stringify over the `as const` object — no formatting, source key order.
     expect(sha256Text(JSON.stringify(VIOLATIONS_SCHEMA))).toBe(
-      '940533fc1833345aee108605e83f77b3d333849662d9ee5874a83032dbe7fbb6',
+      'c74fcc28ad1fbad3c60c85cb7eec52e7318329ff5a85e0b1e06b810d59792572',
     )
   })
 

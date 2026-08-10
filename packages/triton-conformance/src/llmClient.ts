@@ -155,7 +155,11 @@ export const VIOLATIONS_SCHEMA = {
         required: ['rule_id', 'subject', 'reason', 'suggestion'],
         properties: {
           rule_id: { type: 'string' },
-          symbol: { type: 'string' },
+          symbol: {
+            type: 'string',
+            description:
+              'Optional. The symbol in the file where the violation occurs, given for context only. It is not part of the finding identity — that is always `subject`.',
+          },
           line: { type: 'number' },
           subject: {
             type: 'object',
