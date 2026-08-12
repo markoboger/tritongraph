@@ -90,6 +90,11 @@ function forbiddenEdgeRecord(edge: ComponentEdge): ViolationRecord {
  * Report cycles in the observed component graph. One violation per back-edge that closes a cycle
  * (DFS over the recursion stack). Considers all observed edges, allowed or not — an architectural
  * cycle is a smell regardless of the whitelist.
+ *
+ * Which back-edge of a cycle is reported is a property of the traversal, not of the code under
+ * test, so the traversal is canonicalized: without it the reported module — and with it the
+ * match_key the eval joins on — would change when unrelated files are added or renamed. Both
+ * order-dependent inputs are sorted below: every node's adjacency list, and the list of DFS roots.
  */
 function cycleViolations(edges: readonly ComponentEdge[]): ViolationRecord[] {
   const adjacency = new Map<string, ComponentEdge[]>()
@@ -98,6 +103,10 @@ function cycleViolations(edges: readonly ComponentEdge[]): ViolationRecord[] {
     list.push(edge)
     adjacency.set(edge.from, list)
   }
+  // Canonical branch order per node. Target component first — that is what decides which branch the
+  // DFS descends into. The representative import (module, then file, then line) only breaks ties
+  // between parallel edges to the same component, so a repeated pair always elects the same witness.
+  for (const list of adjacency.values()) list.sort(compareComponentEdges)
 
   const VISITING = 1
   const DONE = 2
@@ -118,10 +127,27 @@ function cycleViolations(edges: readonly ComponentEdge[]): ViolationRecord[] {
     state.set(node, DONE)
   }
 
-  for (const node of adjacency.keys()) {
+  // Canonical root order: ascending component name, so the walk always starts at the same node.
+  for (const node of [...adjacency.keys()].sort(compareStrings)) {
     if (state.get(node) === undefined) visit(node)
   }
   return [...out.values()]
+}
+
+/** Code-unit order. Deliberately not localeCompare, whose result depends on the runtime locale. */
+function compareStrings(a: string, b: string): number {
+  if (a === b) return 0
+  return a < b ? -1 : 1
+}
+
+/** Total order on the edges leaving one component; see the sort key note in cycleViolations. */
+function compareComponentEdges(a: ComponentEdge, b: ComponentEdge): number {
+  return (
+    compareStrings(a.to, b.to) ||
+    compareStrings(a.via.fromModule, b.via.fromModule) ||
+    compareStrings(a.via.file, b.via.file) ||
+    (a.via.line ?? -1) - (b.via.line ?? -1)
+  )
 }
 
 function cycleRecord(edge: ComponentEdge): ViolationRecord {
