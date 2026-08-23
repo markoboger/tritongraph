@@ -23,6 +23,11 @@ import { parseArgs } from './cliArgs'
  * the findings of every repetition in machine-readable form — what was found; the run log keeps
  * what it cost, and the two are joined on (run_id, file, run_index).
  *
+ * `--control-files <file.txt>` sends UNCHANGED files through the same LLM path, with the same
+ * prompt, marked `diff_kind: control` in the log — anything they produce is a false positive, and
+ * without them the false-positive rate has no denominator. The list is supplied from outside; the
+ * tool derives no control set of its own.
+ *
  * Exit codes: 0 clean, 1 violations found, 2 program/configuration error, 3 the run is not a sound
  * measurement (3 wins over 0 and 1 — see exitCodeFor). A provider outage aborts the run but is a
  * measurement problem, so it exits 3, not 2.
@@ -81,11 +86,15 @@ async function main(): Promise<void> {
     runs: args.runs,
     timeoutMs: args.timeoutMs,
     jsonOutPath: args.jsonOut,
+    controlFilesPath: args.controlFiles,
     cliArgs,
     llm: llmFromEnv(args.timeoutMs),
   })
 
   for (const file of run.skipped) console.error(`skipped ${file.path}: ${file.reason}`)
+  for (const path of run.controlOverlap) {
+    console.error(`control file ${path} is also in the diff — checked as modified, not as control`)
+  }
   console.log(formatReport(run.results))
   for (const line of formatValidityWarnings(run.validity)) console.log(line)
   process.exit(run.exitCode)

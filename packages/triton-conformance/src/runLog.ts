@@ -1,6 +1,14 @@
 import { appendFileSync, readFileSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
-import type { CallOutcome, ChangedFact, CheckResult, RunAttempt, RunLog, TransportFailure } from './types'
+import type {
+  CallOutcome,
+  ChangedFact,
+  CheckResult,
+  DiffKind,
+  RunAttempt,
+  RunLog,
+  TransportFailure,
+} from './types'
 import type { SkippedFile } from './cliExtractor'
 import type { InvalidCall, InvalidReason } from './reporter'
 import type { ProviderPin } from './llmClient'
@@ -71,6 +79,19 @@ export interface RunHeaderRecord {
   /** Consecutive calls lost to transport before the run gives up on the provider. */
   transport_abort_threshold: number
   changed_files_count: number
+  /**
+   * Files checked although nothing changed in them (--control-files), after removing any that the
+   * diff already carries. The run acceptance rule of an injection run is
+   * `changed_files_count == 1 AND calls_total == 1`; for a control run it reads
+   * `control_files_count == calls_total`, and without this field it is not checkable.
+   */
+  control_files_count: number
+  /**
+   * Control paths that the diff also carries. They were counted as `modified`, not as control
+   * observations — recorded here because a reclassification that leaves no trace would move the
+   * false-positive denominator invisibly.
+   */
+  control_files_overlap: readonly string[]
   graph_files_count: number
   skipped: readonly SkippedFile[]
 }
@@ -82,6 +103,12 @@ export interface LlmCallRecord {
   timestamp: string
   file: string
   module: string
+  /**
+   * Why this file was checked — `control` for an unchanged file from --control-files. Lets the
+   * harness separate control findings from injection findings without re-reading the file lists.
+   * Log metadata only: the prompt is rendered identically either way (see DiffKind).
+   */
+  diff_kind: DiffKind
   model_requested: string
   /** What the provider reported; null when it reported nothing. */
   model_version: string | null
@@ -238,6 +265,7 @@ function buildLlmCallRecord(runId: string, fact: ChangedFact, run: RunLog): LlmC
     timestamp: nowIso(),
     file: fact.path,
     module: fact.module,
+    diff_kind: fact.diff_kind,
     model_requested: run.model_requested,
     model_version: run.model_version_reported,
     provider_served: run.provider_served ?? null,

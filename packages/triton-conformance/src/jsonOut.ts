@@ -40,6 +40,10 @@ export interface ResultProvenance {
   temperature_requested: number | null
   runs_requested: number
   timeout_ms: number
+  /** Files from the diff. Part of the run acceptance rule of an injection run (protocol §6). */
+  changed_files_count: number
+  /** Unchanged files checked anyway (--control-files) — the false-positive denominator. */
+  control_files_count: number
 }
 
 export interface JsonFinding {

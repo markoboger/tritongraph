@@ -7,7 +7,12 @@ import type { ChangedFact, CheckResult, SollModel } from './types'
 import { resolveTopology } from './topology'
 import { parseArchitectureRules } from './rules'
 import { changedPythonFiles, gitHead } from './gitDiff'
-import { extractFacts, pythonFilesUnder, type SkippedFile } from './cliExtractor'
+import {
+  extractFacts,
+  pythonFilesUnder,
+  readControlFileList,
+  type SkippedFile,
+} from './cliExtractor'
 import { observedImportsFromFacts } from './ruleEngine'
 import { check } from './check'
 import {
@@ -81,6 +86,11 @@ export interface ConformanceRunInput {
   timeoutMs?: number
   /** Machine-readable result document; nothing is written when absent. */
   jsonOutPath?: string
+  /**
+   * Path to a list of unchanged files (--control-files) that go through the LLM path too. Their
+   * findings are false positives by construction, which is what makes the rate measurable.
+   */
+  controlFilesPath?: string
   /** argv without the process name, logged verbatim in the run header. */
   cliArgs: readonly string[]
   llm?: LlmSetup
@@ -94,10 +104,17 @@ export interface ConformanceRunResult {
   validity: RunValidity
   /** The code the CLI exits with (see exitCodeFor). */
   exitCode: number
+  /** Control paths the diff also carries; they ran as `modified`. Reported on stderr by the CLI. */
+  controlOverlap: string[]
 }
 
 export async function runConformance(input: ConformanceRunInput): Promise<ConformanceRunResult> {
   const startedAt = Date.now()
+  // Read before anything is opened or paid for: a missing control path must abort, and it must
+  // abort without leaving a half-written log behind.
+  const controlPaths = input.controlFilesPath
+    ? readControlFileList(input.repoRoot, input.controlFilesPath)
+    : []
   // Fail before any model call if an output is not writable.
   const log = input.runLogPath ? createRunLogWriter(input.runLogPath) : null
   const jsonOut = input.jsonOutPath ? createJsonOutWriter(input.jsonOutPath) : null
@@ -107,6 +124,22 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
   // The LLM checker and the per-file results always follow the diff, in both rule-graph modes.
   const changed = changedPythonFiles({ repoRoot: input.repoRoot, base: input.base })
   const diff = extractFacts(input.repoRoot, changed, soll.topology, input.sourceRoots)
+
+  // A file that is in both sets is a changed file, not a control observation: `modified` wins, and
+  // the reclassification is written down rather than applied quietly.
+  const changedPaths = new Set(changed.map((file) => file.path))
+  const controlOverlap = controlPaths.filter((path) => changedPaths.has(path))
+  const controlOnly = controlPaths.filter((path) => !changedPaths.has(path))
+  const control = extractFacts(
+    input.repoRoot,
+    controlOnly.map((path) => ({ path, diff_kind: 'control' as const })),
+    soll.topology,
+    input.sourceRoots,
+  )
+  // One list for the LLM path: control files are checked by exactly the same code, with exactly the
+  // same prompt — a false-positive rate measured under a different stimulus than the hits would not
+  // be comparable with them.
+  const checkedFacts = [...diff.facts, ...control.facts]
 
   // In full mode the rule-engine sees every file under the source roots, so cycles and forbidden
   // edges running through unchanged files are found too.
@@ -120,10 +153,16 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
         )
       : diff
 
-  const skipped = dedupeByPath([...diff.skipped, ...graph.skipped])
+  const skipped = dedupeByPath([...diff.skipped, ...control.skipped, ...graph.skipped])
   // Built once: the header is also where the result document takes its provenance from, so the two
   // documents can never disagree about which Soll, prompt and checker build produced the findings.
-  const header = buildRunHeader(input, runId, changed.length, graph.facts.length, skipped)
+  const header = buildRunHeader(input, runId, {
+    changedFilesCount: changed.length,
+    controlFilesCount: controlOnly.length,
+    controlOverlap,
+    graphFilesCount: graph.facts.length,
+    skipped,
+  })
   log?.write(header)
 
   const runsRequested = input.runs ?? 1
@@ -142,13 +181,13 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
       // Repetition 0 is the run that produces the report: rule-engine plus, if configured, the LLM.
       results = await check({
         soll,
-        changedFacts: diff.facts,
+        changedFacts: checkedFacts,
         observedImports: observedImportsFromFacts(graph.facts),
         llm: input.llm
           ? { client: input.llm.client, options: { ...input.llm.options, runIndex: 0, tally } }
           : undefined,
       })
-      recordCalls(log, runId, diff.facts, results)
+      recordCalls(log, runId, checkedFacts, results)
       perRun.push(toJsonRun(0, results))
       runsCompleted++
 
@@ -160,8 +199,8 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
         // Without an LLM a repetition has nothing to call, so it completes trivially — counting it as
         // incomplete would raise a false alarm about a run that did everything it was asked to do.
         if (input.llm) {
-          const repeated = await repeatLlmRun(soll, diff.facts, input.llm, runIndex, tally)
-          recordCalls(log, runId, diff.facts, repeated)
+          const repeated = await repeatLlmRun(soll, checkedFacts, input.llm, runIndex, tally)
+          recordCalls(log, runId, checkedFacts, repeated)
           // Model findings only: the rule-engine ran once, so its findings live in run_index 0.
           perRun.push(toJsonRun(runIndex, repeated))
         }
@@ -176,7 +215,7 @@ export async function runConformance(input: ConformanceRunInput): Promise<Confor
 
     const validity = buildValidity(tally, runsRequested, runsCompleted, skipped.length)
     exit = exitCodeFor(results, validity)
-    return { results, skipped, validity, exitCode: exit }
+    return { results, skipped, validity, exitCode: exit, controlOverlap }
   } finally {
     const status = runsCompleted === runsRequested ? 'completed' : 'aborted'
     // Only a program error keeps code 2; a provider outage aborts too but stays a measurement
@@ -265,12 +304,18 @@ export function loadSoll(topologyPath: string, rulesPath: string): SollModel {
   return { topology: resolveTopology(topologyDoc), rules: parseArchitectureRules(rulesRaw) }
 }
 
+interface RunCounts {
+  changedFilesCount: number
+  controlFilesCount: number
+  controlOverlap: readonly string[]
+  graphFilesCount: number
+  skipped: readonly SkippedFile[]
+}
+
 function buildRunHeader(
   input: ConformanceRunInput,
   runId: string,
-  changedFilesCount: number,
-  graphFilesCount: number,
-  skipped: readonly SkippedFile[],
+  counts: RunCounts,
 ): RunHeaderRecord {
   return {
     record_type: 'run_header',
@@ -299,9 +344,11 @@ function buildRunHeader(
     timeout_ms: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     transport_max_retries: TRANSPORT_MAX_RETRIES,
     transport_abort_threshold: TRANSPORT_ABORT_THRESHOLD,
-    changed_files_count: changedFilesCount,
-    graph_files_count: graphFilesCount,
-    skipped,
+    changed_files_count: counts.changedFilesCount,
+    control_files_count: counts.controlFilesCount,
+    control_files_overlap: counts.controlOverlap,
+    graph_files_count: counts.graphFilesCount,
+    skipped: counts.skipped,
   }
 }
 
@@ -322,6 +369,8 @@ function buildProvenance(header: RunHeaderRecord): ResultProvenance {
     temperature_requested: header.temperature_requested,
     runs_requested: header.runs_requested,
     timeout_ms: header.timeout_ms,
+    changed_files_count: header.changed_files_count,
+    control_files_count: header.control_files_count,
   }
 }
 

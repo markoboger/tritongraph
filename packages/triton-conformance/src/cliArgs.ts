@@ -19,13 +19,19 @@ export interface CliArgs {
   timeoutMs: number
   /** Machine-readable result document. */
   jsonOut?: string
+  /**
+   * List of unchanged files to send through the LLM path anyway (one repo-relative path per line).
+   * Their findings are the false-positive measurement, so the set is supplied from outside, never
+   * derived here.
+   */
+  controlFiles?: string
 }
 
 /** Below this a timeout would only measure the network, never the model. */
 export const MIN_TIMEOUT_MS = 1000
 
 export const USAGE =
-  'usage: triton-conformance --topology <ilograph.yaml> --rules <rules.yaml> [--base <ref>] [--src-root <dir>] [--rule-graph diff|full] [--run-log <file.jsonl>] [--runs <N>] [--timeout-ms <N>] [--json-out <file.json>]'
+  'usage: triton-conformance --topology <ilograph.yaml> --rules <rules.yaml> [--base <ref>] [--src-root <dir>] [--rule-graph diff|full] [--run-log <file.jsonl>] [--runs <N>] [--timeout-ms <N>] [--json-out <file.json>] [--control-files <file.txt>]'
 
 export function parseArgs(argv: readonly string[]): CliArgs {
   const args: CliArgs = {
@@ -48,6 +54,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     else if (argv[i] === '--runs') args.runs = parseRuns(next())
     else if (argv[i] === '--timeout-ms') args.timeoutMs = parseTimeout(next())
     else if (argv[i] === '--json-out') args.jsonOut = next()
+    else if (argv[i] === '--control-files') args.controlFiles = next()
   }
   if (!args.topology || !args.rules) throw new Error(USAGE)
   return args

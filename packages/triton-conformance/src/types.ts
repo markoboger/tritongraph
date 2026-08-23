@@ -72,7 +72,13 @@ export interface SollModel {
 
 // ── changed_facts: output of the AST-extractor (§3.2) ────────────────────────
 
-export type DiffKind = 'added' | 'modified'
+/**
+ * Why a file is in the fact set. `added`/`modified` come from the diff; `control` marks a file that
+ * was NOT changed and is checked only to measure the false-positive rate (--control-files). The
+ * value names the role in the measurement, not just the file state — and it is log metadata only:
+ * buildUserPrompt never reads it, so a control file and a changed one render the same prompt.
+ */
+export type DiffKind = 'added' | 'modified' | 'control'
 
 export interface FactImport {
   target: string

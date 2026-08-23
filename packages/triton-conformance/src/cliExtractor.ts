@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import type { ChangedFact, DiffKind, ResolvedTopology } from './types'
 import { rawAstToChangedFact, type RawAst } from './rawAstFacts'
@@ -95,6 +95,35 @@ export function extractChangedFacts(
   sourceRoots: readonly string[] = [],
 ): ChangedFact[] {
   return extractFacts(repoRoot, files, topology, sourceRoots).facts
+}
+
+/**
+ * Read a control-file list (--control-files): one repo-relative path per line, blank lines and
+ * `#` comments ignored, duplicates collapsed. The listed files are checked by the LLM although
+ * nothing changed in them — that is how the false-positive rate gets a denominator.
+ *
+ * A path that does not exist aborts the run instead of being skipped: a silent drop here shrinks
+ * that denominator without anyone noticing, which is exactly the failure class the protocol
+ * already documents three times.
+ *
+ * Deliberately NO derivation of the set inside the tool ("everything outside the diff", "every
+ * non-empty __init__.py"): what belongs in the control set is a protocol decision, and keeping it
+ * out of the frozen measurement path makes the list itself an external, hashable artefact.
+ */
+export function readControlFileList(repoRoot: string, listPath: string): string[] {
+  const paths = [
+    ...new Set(
+      readFileSync(listPath, 'utf8')
+        .split('\n')
+        .map((line) => line.replace(/#.*$/, '').trim())
+        .filter((line) => line !== ''),
+    ),
+  ]
+  const missing = paths.filter((path) => !existsSync(join(repoRoot, path)))
+  if (missing.length > 0) {
+    throw new Error(`--control-files ${listPath}: path(s) not found under ${repoRoot}: ${missing.join(', ')}`)
+  }
+  return paths
 }
 
 const SKIPPED_DIRS = new Set(['node_modules', '__pycache__'])
