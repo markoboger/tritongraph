@@ -23,7 +23,7 @@ usage: triton-conformance --topology <ilograph.yaml> --rules <rules.yaml> [--bas
 | --- | --- | --- |
 | `--topology` | — | Target topology as an Ilograph YAML document (required). |
 | `--rules` | — | Architecture rules YAML (required). |
-| `--base` | `HEAD` | Git ref to diff against; `HEAD` means the uncommitted working tree. |
+| `--base` | `HEAD` | Git ref to diff against, from its merge-base with `HEAD` (PR semantics: a branch is compared with the point it forked off, not with the newer tip). `HEAD` means the uncommitted working tree. |
 | `--src-root` | repo root | Source root for module-path derivation. Repeatable. |
 | `--rule-graph` | `diff` | Which import graph the rule-engine evaluates — see below. |
 | `--run-log` | — | JSONL file the raw measurement records are appended to — see below. |

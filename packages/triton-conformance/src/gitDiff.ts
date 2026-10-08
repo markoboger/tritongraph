@@ -17,8 +17,12 @@ export interface GitDiffOptions {
   base?: string
 }
 
+/**
+ * `--merge-base`: diff the working tree against the point it branched off `base`, like a PR review —
+ * commits that landed on `base` afterwards are not changes of the code under test.
+ */
 export function changedPythonFiles({ repoRoot, base = 'HEAD' }: GitDiffOptions): ChangedPythonFile[] {
-  const output = execFileSync('git', ['diff', '--name-status', base], {
+  const output = execFileSync('git', ['diff', '--merge-base', '--name-status', base], {
     cwd: repoRoot,
     encoding: 'utf8',
   })
