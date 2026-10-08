@@ -293,34 +293,74 @@ function parseGitNumstat(text) {
   return files
 }
 
-/** Per-file line churn between two revisions. `--relative` keeps paths workspace-relative. */
-function readWorkspaceGitDiff(repoRoot, base, head) {
-  if (base.startsWith('-') || head.startsWith('-')) {
-    return { ok: false, error: 'invalid_ref' }
-  }
-  let out
+function gitOutput(repoRoot, args) {
+  return cp.execFileSync('git', ['-C', repoRoot, ...args], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+}
+
+/** Commit SHA of a user-supplied ref (branch, tag, SHA, `HEAD~3`), or null when git does not know it. */
+function resolveCommit(repoRoot, ref) {
   try {
-    out = cp.execFileSync('git', ['-C', repoRoot, 'diff', '--numstat', '--relative', `${base}..${head}`], {
-      encoding: 'utf8',
-    })
-  } catch (err) {
-    return { ok: false, error: 'git_diff_failed', detail: String((err && err.message) || err) }
+    return gitOutput(repoRoot, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]).trim() || null
+  } catch {
+    return null
   }
-  return { ok: true, base, head, files: parseGitNumstat(out) }
 }
 
 /**
- * Every `.py` file as it existed at `base`, for building the previous-revision CodeModel (import diff).
- * ponytail: one `git show` per file — fine for typical repos; switch to `git archive` if it drags.
+ * The two revisions a diff compares. An empty `head` means the working tree. `merge-base` mode
+ * starts at the common ancestor — what head introduced since it branched off, like a PR review;
+ * `direct` compares the two states as they are.
  */
-function readWorkspaceBasePython(repoRoot, base) {
-  if (base.startsWith('-')) return { ok: false, error: 'invalid_ref' }
+function resolveDiffRange(repoRoot, { base, head = '', mode = 'merge-base' }) {
+  if (mode !== 'merge-base' && mode !== 'direct') return { ok: false, error: 'invalid_mode', detail: mode }
+  const baseSha = resolveCommit(repoRoot, base)
+  if (!baseSha) return { ok: false, error: 'unknown_base_ref', detail: base }
+  const headSha = head ? resolveCommit(repoRoot, head) : null
+  if (head && !headSha) return { ok: false, error: 'unknown_head_ref', detail: head }
+  let from = baseSha
+  if (mode === 'merge-base') {
+    try {
+      from = gitOutput(repoRoot, ['merge-base', baseSha, headSha || 'HEAD']).trim()
+    } catch {
+      return { ok: false, error: 'no_merge_base', detail: `${base} / ${head || 'working tree'}` }
+    }
+  }
+  return { ok: true, base, head, mode, from, to: headSha }
+}
+
+/** Per-file line churn of a diff range. `--relative` keeps paths workspace-relative. */
+function readWorkspaceGitDiff(repoRoot, rangeParams) {
+  const range = resolveDiffRange(repoRoot, rangeParams)
+  if (!range.ok) return range
+  let out
+  try {
+    out = gitOutput(repoRoot, ['diff', '--numstat', '--relative', range.from, ...(range.to ? [range.to] : [])])
+  } catch (err) {
+    return { ok: false, error: 'git_diff_failed', detail: String((err && err.message) || err) }
+  }
+  return { ...range, files: parseGitNumstat(out) }
+}
+
+/** The `.py` sources at the start of a diff range, for the previous-revision CodeModel (import diff). */
+function readWorkspaceBasePython(repoRoot, rangeParams) {
+  const range = resolveDiffRange(repoRoot, rangeParams)
+  if (!range.ok) return range
+  const read = readPythonAtCommit(repoRoot, range.from)
+  return read.ok ? { ...range, pyFiles: read.pyFiles } : read
+}
+
+/**
+ * Every `.py` file as it existed at `commit` (a resolved SHA).
+ * ponytail: one `git show` per file — ~2.5 s for nova-modulith; switch to `git cat-file --batch` if it drags.
+ */
+function readPythonAtCommit(repoRoot, commit) {
   let listing
   try {
-    listing = cp.execFileSync('git', ['-C', repoRoot, 'ls-tree', '-r', '--name-only', base], {
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-    })
+    listing = gitOutput(repoRoot, ['ls-tree', '-r', '--name-only', commit])
   } catch (err) {
     return { ok: false, error: 'git_ls_tree_failed', detail: String((err && err.message) || err) }
   }
@@ -337,16 +377,44 @@ function readWorkspaceBasePython(repoRoot, base) {
     if (rel.split('/').some((seg) => IGNORED_DIRS.has(seg) || PYTHON_SKIP_DIRS.has(seg))) continue
     if (restrict && !isUnderSourceRoot(rel, sourceRoots)) continue
     try {
-      const source = cp.execFileSync('git', ['-C', repoRoot, 'show', `${base}:${rel}`], {
-        encoding: 'utf8',
-        maxBuffer: 64 * 1024 * 1024,
-      })
-      pyFiles.push({ relPath: rel, source })
+      pyFiles.push({ relPath: rel, source: gitOutput(repoRoot, ['show', `${commit}:${rel}`]) })
     } catch {
-      // File unreadable at base (e.g. submodule gitlink) — skip it.
+      // File unreadable at that commit (e.g. submodule gitlink) — skip it.
     }
   }
-  return { ok: true, base, pyFiles }
+  return { ok: true, pyFiles }
+}
+
+const RECENT_COMMIT_LIMIT = 30
+
+/** Branches and tags (newest first) plus the recent commits of `ref`, for the diff-range picker. */
+function readWorkspaceGitRefs(repoRoot, ref) {
+  const commit = resolveCommit(repoRoot, ref || 'HEAD')
+  if (!commit) return { ok: false, error: 'unknown_ref', detail: ref }
+  try {
+    const refs = gitOutput(repoRoot, [
+      'for-each-ref',
+      '--sort=-committerdate',
+      '--format=%(refname:short)%09%(symref)',
+      'refs/heads',
+      'refs/remotes',
+      'refs/tags',
+    ])
+      .split('\n')
+      .map((line) => line.split('\t'))
+      .filter(([name, symref]) => name && !symref) // drops `origin/HEAD`-style aliases
+      .map(([name]) => name)
+    const commits = gitOutput(repoRoot, ['log', '--format=%h%x09%s', '-n', String(RECENT_COMMIT_LIMIT), commit])
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [sha, ...subject] = line.split('\t')
+        return { sha, subject: subject.join('\t') }
+      })
+    return { ok: true, refs, commits }
+  } catch (err) {
+    return { ok: false, error: 'git_refs_failed', detail: String((err && err.message) || err) }
+  }
 }
 
 function validateWorkspaceRelativeFile(workspacePath, relPath) {
@@ -989,6 +1057,24 @@ function readWorkspaceBundle(workspacePath) {
     testLog: findSbtTestLog(root),
     coverageReports,
     coverageReport: coverageReports.length ? coverageReports[0] : null,
+  }
+}
+
+/** The workspace bundle with its Python sources taken from a git ref instead of the working tree. */
+function readWorkspaceBundleAtRef(workspacePath, ref) {
+  const commit = resolveCommit(workspacePath, ref)
+  if (!commit) return { ok: false, error: 'unknown_ref', detail: ref }
+  const read = readPythonAtCommit(workspacePath, commit)
+  if (!read.ok) return read
+  return { ...readWorkspaceBundle(workspacePath), ref, commit, pyFiles: read.pyFiles }
+}
+
+/** `base` / `head` / `mode` query params of the git-diff endpoints; defaults keep the old HEAD~1 view. */
+function diffRangeParams(url) {
+  return {
+    base: String(url.searchParams.get('base') || 'HEAD~1').trim(),
+    head: String(url.searchParams.get('head') || '').trim(),
+    mode: String(url.searchParams.get('mode') || 'merge-base').trim(),
   }
 }
 
@@ -2524,7 +2610,8 @@ function createRuntimeServer(options = {}) {
         })
         return
       }
-      sendJson(res, 200, readWorkspaceBundle(validation.workspacePath))
+      const ref = String(url.searchParams.get('ref') || '').trim()
+      sendJson(res, 200, ref ? readWorkspaceBundleAtRef(validation.workspacePath, ref) : readWorkspaceBundle(validation.workspacePath))
       return
     }
 
@@ -2540,9 +2627,7 @@ function createRuntimeServer(options = {}) {
         })
         return
       }
-      const base = String(url.searchParams.get('base') || 'HEAD~1').trim()
-      const head = String(url.searchParams.get('head') || 'HEAD').trim()
-      sendJson(res, 200, readWorkspaceGitDiff(validation.workspacePath, base, head))
+      sendJson(res, 200, readWorkspaceGitDiff(validation.workspacePath, diffRangeParams(url)))
       return
     }
 
@@ -2558,8 +2643,24 @@ function createRuntimeServer(options = {}) {
         })
         return
       }
-      const base = String(url.searchParams.get('base') || 'HEAD~1').trim()
-      sendJson(res, 200, readWorkspaceBasePython(validation.workspacePath, base))
+      sendJson(res, 200, readWorkspaceBasePython(validation.workspacePath, diffRangeParams(url)))
+      return
+    }
+
+    if (method === 'GET' && pathname === '/api/workspace/git-refs') {
+      const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
+      const validation = validateWorkspacePath(workspacePath, config)
+      if (!validation.ok) {
+        sendJson(res, validation.statusCode, {
+          ok: false,
+          error: validation.error,
+          workspacePath: validation.workspacePath,
+          allowedRepoRoots: validation.allowedRepoRoots,
+        })
+        return
+      }
+      const ref = String(url.searchParams.get('ref') || '').trim()
+      sendJson(res, 200, readWorkspaceGitRefs(validation.workspacePath, ref))
       return
     }
 
@@ -2807,5 +2908,8 @@ module.exports = {
   readWorkspaceBasePython,
   readWorkspaceBundle,
   readWorkspaceGitDiff,
+  readWorkspaceGitRefs,
+  readWorkspaceBundleAtRef,
+  resolveDiffRange,
   startRuntimeServer,
 }

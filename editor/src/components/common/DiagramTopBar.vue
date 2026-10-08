@@ -191,12 +191,13 @@ function onFocusDepthInput(ev: Event) {
             class="diagram-top-bar__viewmode-btn"
             :class="{ 'diagram-top-bar__viewmode-btn--active': gitDiffVisible }"
             :aria-pressed="!!gitDiffVisible"
-            title="Grey the boxes; colour those changed since the last commit"
+            title="Grey the boxes; colour those changed in the diff range"
             @click="emit('update:git-diff-visible', true)"
           >
             Diff
           </button>
         </div>
+        <slot name="diff-range" />
       </template>
       <span class="diagram-top-bar__sep" aria-hidden="true" />
       <label

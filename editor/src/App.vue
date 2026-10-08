@@ -7,6 +7,8 @@ import GroupNode from './components/GroupNode.vue'
 import LayerBandNode from './components/LayerBandNode.vue'
 import GraphWorkspace from './components/GraphWorkspace.vue'
 import DiagramTopBar from './components/common/DiagramTopBar.vue'
+import DiffRangePicker from './components/common/DiffRangePicker.vue'
+import { DEFAULT_DIFF_RANGE, diffRangeFor, setDiffRangeParams } from './conformance/diffRange'
 import TritonRuntimeHome from './components/TritonRuntimeHome.vue'
 import ConformanceChecker from './components/ConformanceChecker.vue'
 import type { StarterCard } from './triton/tritonStarterCard'
@@ -220,7 +222,7 @@ const metricVisibility = ref<Record<'coverage' | 'debt' | 'issues', boolean>>({
 /** Draw a faint coloured box behind each dependency-layer column (visual only). */
 const showLayerBands = ref(false)
 
-/** Git-diff overlay: grey every box, colour the ones changed since the diff base (HEAD~1..HEAD). */
+/** Git-diff overlay: grey every box, colour the ones changed in the active diff range. */
 const gitDiffVisible = ref(false)
 const gitDiffStatusByNodeId = ref<Record<string, DiffStatus>>({})
 const gitDiffImportDiff = ref<ImportDiff>(emptyImportDiff())
@@ -1566,7 +1568,7 @@ const gitDiffActive = computed(() => gitDiffVisible.value && gitDiffAvailable.va
 
 /**
  * The diff overlay has two independent sources feeding the same `gitDiffKey` context: git churn
- * (HEAD~1..HEAD) on a runtime tab, or Ist/Soll on a target-editor tab. At most one applies to any
+ * (the active diff range) on a runtime tab, or Ist/Soll on a target-editor tab. At most one applies to any
  * given tab (target-editor tabs never have a `runtimeWorkspaceSession`), so a simple fallback is enough.
  */
 const effectiveDiffVisible = computed(() => !!activeSollDiff.value || gitDiffActive.value)
@@ -1577,18 +1579,26 @@ const effectiveDiffImportDiff = computed<ImportDiff>(
   () => activeSollDiff.value?.importDiff ?? gitDiffImportDiff.value,
 )
 
-/** Fetch per-file line churn (HEAD~1..HEAD) from the runtime and key it by workspace-relative path. */
+/** The diff range of the active runtime workspace (the overlay and the head-ref reload follow it). */
+const activeDiffRange = computed(() => {
+  const session = runtimeWorkspaceSession.value
+  return session ? diffRangeFor(session.workspacePath) : DEFAULT_DIFF_RANGE
+})
+
+/** Fetch per-file line churn of the diff range from the runtime and key it by workspace-relative path. */
 async function fetchWorkspaceGitDiff(runtimeUrl: string, workspacePath: string): Promise<ChurnByFile> {
   const u = new URL(`${runtimeUrl}/api/workspace/git-diff`)
   u.searchParams.set('workspacePath', workspacePath)
+  setDiffRangeParams(u, diffRangeFor(workspacePath))
   const res = await fetch(u.toString())
   if (!res.ok) throw new Error(`git-diff request failed (${res.status})`)
   const body = (await res.json()) as {
     ok?: boolean
     error?: string
+    detail?: string
     files?: { path: string; added: number; removed: number }[]
   }
-  if (!body.ok) throw new Error(body.error || 'git_diff_failed')
+  if (!body.ok) throw new Error(body.detail ? `${body.error}: ${body.detail}` : body.error || 'git_diff_failed')
   const churn: ChurnByFile = {}
   for (const f of body.files ?? []) churn[f.path] = { added: f.added ?? 0, removed: f.removed ?? 0 }
   return churn
@@ -1598,13 +1608,14 @@ function setGitDiffVisible(on: boolean) {
   gitDiffVisible.value = on
 }
 
-/** Fetch the `.py` sources as they were at `base` (HEAD~1) to rebuild the previous CodeModel. */
+/** Fetch the `.py` sources at the start of the diff range to rebuild the previous CodeModel. */
 async function fetchWorkspaceBasePython(
   runtimeUrl: string,
   workspacePath: string,
 ): Promise<{ relPath: string; source: string }[]> {
   const u = new URL(`${runtimeUrl}/api/workspace/git-base-python`)
   u.searchParams.set('workspacePath', workspacePath)
+  setDiffRangeParams(u, diffRangeFor(workspacePath))
   const res = await fetch(u.toString())
   if (!res.ok) throw new Error(`git-base-python request failed (${res.status})`)
   const body = (await res.json()) as {
@@ -1661,9 +1672,12 @@ function applyGhostEdges() {
  * model reference is stable across a drill-down (same workspace), so this only refetches when the
  * toggle flips on or the workspace actually changes — not on every drill.
  */
+// Head is not a dependency here: a head change reloads the tab (below), which swaps the model.
+let gitDiffRequestSeq = 0
 watch(
-  [gitDiffVisible, gitDiffModel],
+  [gitDiffVisible, gitDiffModel, () => activeDiffRange.value.base, () => activeDiffRange.value.mode],
   async ([visible, model]) => {
+    const seq = ++gitDiffRequestSeq
     if (!visible || !model) {
       gitDiffStatusByNodeId.value = {}
       gitDiffImportDiff.value = emptyImportDiff()
@@ -1674,15 +1688,28 @@ watch(
     if (!session) return
     try {
       const churn = await fetchWorkspaceGitDiff(session.runtimeUrl, session.workspacePath)
+      const importDiff = await computeImportDiff(session.runtimeUrl, session.workspacePath, model)
+      if (seq !== gitDiffRequestSeq) return // a newer range or model superseded this request
       gitDiffStatusByNodeId.value = diffStatusByNode(model, churn)
-      gitDiffImportDiff.value = await computeImportDiff(session.runtimeUrl, session.workspacePath, model)
+      gitDiffImportDiff.value = importDiff
       applyGhostEdges()
     } catch (err) {
+      if (seq !== gitDiffRequestSeq) return
       status.value = `Failed to load git diff: ${err instanceof Error ? err.message : String(err)}`
       gitDiffVisible.value = false
     }
   },
   { immediate: true },
+)
+
+/** The diagram shows the head revision, so a new head means re-reading the workspace at that ref. */
+watch(
+  () => activeDiffRange.value.head,
+  (head, previous) => {
+    if (head === previous || !activeRuntimeWorkspace.value) return
+    stopRuntimeAutoRefresh()
+    void reloadActiveRuntimeTab().then(startRuntimeAutoRefresh)
+  },
 )
 
 /** Leaving the tab mid-selection abandons the pick (the editor tab re-projects on return, wiping pick classes). */
@@ -2099,6 +2126,8 @@ async function fetchRuntimeWorkspaceBundle(
   }
   const url = new URL(`${runtimeUrl}/api/workspace/bundle`)
   url.searchParams.set('workspacePath', workspacePath)
+  const headRef = diffRangeFor(workspacePath).head
+  if (headRef) url.searchParams.set('ref', headRef)
   const res = await fetch(url.toString(), { method: 'GET' })
   if (!res.ok) {
     throw new Error(`Runtime bundle request failed (${res.status}).`)
@@ -3838,7 +3867,7 @@ async function openDojoTab(id: string): Promise<void> {
   }
 }
 
-function runtimeTabKey(prefix: 'runtime-sbt' | 'runtime-packages', workspacePath: string, workspaceName: string): string {
+function runtimeTabKey(prefix: 'runtime-sbt' | 'runtime-packages' | 'runtime-python', workspacePath: string, workspaceName: string): string {
   return `${prefix}:${workspacePath}::${workspaceName}`
 }
 
@@ -4423,6 +4452,15 @@ async function reloadActiveRuntimeTab(): Promise<void> {
     snapshotActiveTab()
     return
   }
+  const pythonKey = runtimeTabKey('runtime-python', runtimeWs.workspacePath, runtimeWs.workspaceName)
+  const pythonEntry = tabs.value.find((t) => t.key === pythonKey)
+  if (pythonEntry) {
+    // ponytail: a drilled tab is not re-drilled on the new model; we jump back to the workspace root.
+    await activateTabById(pythonEntry.id)
+    await loadPythonPackagesForRuntimeWorkspace(runtimeWs.workspacePath, runtimeWs.workspaceName)
+    snapshotActiveTab()
+    return
+  }
   const sbtKey = runtimeTabKey('runtime-sbt', runtimeWs.workspacePath, runtimeWs.workspaceName)
   const sbtEntry = tabs.value.find((t) => t.key === sbtKey)
   if (sbtEntry) {
@@ -4922,6 +4960,8 @@ function startRuntimeAutoRefresh(): void {
     const ws = activeRuntimeWorkspace.value
     // Only run while a runtime tab is actually active.
     if (!ws || !activeTab.value || !activeTab.value.key.startsWith('runtime-')) return
+    // A head ref is a fixed commit — nothing on disk can change it, and re-reading it costs seconds.
+    if (diffRangeFor(ws.workspacePath).head) return
     if (runtimeAutoRefreshBusy) return
     runtimeAutoRefreshBusy = true
     try {
@@ -5731,7 +5771,15 @@ onUnmounted(() => {
           "
           @update:layers-visible="(v) => (showLayerBands = v)"
           @update:git-diff-visible="(v) => void setGitDiffVisible(v)"
-        />
+        >
+          <template #diff-range>
+            <DiffRangePicker
+              v-if="gitDiffActive && runtimeWorkspaceSession"
+              :runtime-url="runtimeWorkspaceSession.runtimeUrl"
+              :workspace-path="runtimeWorkspaceSession.workspacePath"
+            />
+          </template>
+        </DiagramTopBar>
         <div
           v-if="!activeSourceTab && activeTab?.kind !== 'runtime' && ideSession"
           class="ide-session-overlay"

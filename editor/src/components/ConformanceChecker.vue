@@ -5,9 +5,9 @@
  * and edit which component edges are allowed (Increment 7b). The LLM (optional) runs via the server
  * proxy so the key stays server-side. Each violation links onward to the project's diagram.
  *
- * ponytail: scope is `python-examples/` only; runtime workspaces are a documented follow-up.
+ * Repositories are read at the head of the shared diff range (working tree when no head is set).
  */
-import { ref, computed, onMounted, shallowRef } from 'vue'
+import { ref, computed, onMounted, shallowRef, watch } from 'vue'
 import yaml from 'js-yaml'
 import { check } from '../../../packages/triton-conformance/src/check'
 import { observedImportsFromCodeModel, runRuleEngine } from '../../../packages/triton-conformance/src/ruleEngine'
@@ -36,6 +36,8 @@ import {
 } from '../conformance/loadProject'
 import { splitViolationsByHistory, type ViolationHistory } from '../conformance/violationHistory'
 import { createServerLlmClient } from '../conformance/serverLlmClient'
+import { DEFAULT_DIFF_RANGE, diffRangeFor, diffRangeLabel } from '../conformance/diffRange'
+import DiffRangePicker from './common/DiffRangePicker.vue'
 
 const props = defineProps<{ runtimeBaseUrl: string }>()
 
@@ -86,9 +88,14 @@ const error = ref<string | null>(null)
 const results = ref<CheckResult[] | null>(null)
 const useLlm = ref(false)
 
-/** Phase 3: for repositories, split violations into new/legacy/fixed against the previous commit (HEAD~1). */
+/** Phase 3: for repositories, split violations into new/legacy/fixed against the base of the diff range. */
 const historyMode = ref(false)
 const history = ref<ViolationHistory | null>(null)
+
+const diffRange = computed(() =>
+  loadedWorkspace.value ? diffRangeFor(loadedWorkspace.value.workspacePath) : DEFAULT_DIFF_RANGE,
+)
+const rangeLabel = computed(() => diffRangeLabel(diffRange.value))
 
 async function selectProject(): Promise<void> {
   results.value = null
@@ -124,7 +131,12 @@ async function loadRepository(): Promise<void> {
   const workspaceName = known?.workspaceName || workspacePath.split(/[\\/]/).filter(Boolean).pop() || 'workspace'
   loading.value = true
   try {
-    project.value = await loadRuntimeWorkspaceProject(props.runtimeBaseUrl, workspacePath, workspaceName)
+    project.value = await loadRuntimeWorkspaceProject(
+      props.runtimeBaseUrl,
+      workspacePath,
+      workspaceName,
+      diffRangeFor(workspacePath).head,
+    )
     loadedWorkspace.value = { workspacePath, workspaceName }
     disabledEdges.value = new Set()
     const savedTarget = await fetchTargetTopologyYaml(props.runtimeBaseUrl, workspacePath).catch(() => null)
@@ -138,6 +150,28 @@ async function loadRepository(): Promise<void> {
     loading.value = false
   }
 }
+
+/** A new head swaps the checked code; any range change makes earlier results stale. */
+watch(
+  () => ({ ...diffRange.value, workspacePath: loadedWorkspace.value?.workspacePath }),
+  async (range, previous) => {
+    const ws = loadedWorkspace.value
+    // Switching repositories is loadRepository's job — it already reads the new head.
+    if (!ws || range.workspacePath !== previous.workspacePath) return
+    results.value = null
+    history.value = null
+    if (range.head === previous.head) return
+    error.value = null
+    loading.value = true
+    try {
+      project.value = await loadRuntimeWorkspaceProject(props.runtimeBaseUrl, ws.workspacePath, ws.workspaceName, range.head)
+    } catch (err) {
+      error.value = `Failed to load ${range.head || 'working tree'}: ${err instanceof Error ? err.message : String(err)}`
+    } finally {
+      loading.value = false
+    }
+  },
+)
 
 /** Open the target-architecture editor for the currently-loaded repository (repository sources only). */
 function editTarget(): void {
@@ -257,7 +291,7 @@ async function run(): Promise<void> {
 }
 
 /**
- * Phase 3: check the current revision and its previous commit against the same target architecture and
+ * Phase 3: check the head and the base of the diff range against the same target architecture and
  * split structural violations by `match_key` (new = regressions, legacy = pre-existing, fixed = removed).
  * The rule-engine runs directly on both CodeModels — deterministic and cheap. The LLM (if enabled) runs
  * only on changed files and all its findings count as new; legacy semantics are skipped (see plan).
@@ -266,7 +300,13 @@ async function runWithHistory(soll: SollModel, t: ResolvedTopology): Promise<Vio
   const ws = loadedWorkspace.value!
   const head = project.value!
   const roots = head.pythonSourceRoots ?? []
-  const base = await loadRuntimeWorkspaceBaseProject(props.runtimeBaseUrl, ws.workspacePath, ws.workspaceName, roots)
+  const base = await loadRuntimeWorkspaceBaseProject(
+    props.runtimeBaseUrl,
+    ws.workspacePath,
+    ws.workspaceName,
+    roots,
+    diffRange.value,
+  )
 
   const headImports = observedImportsFromCodeModel(head.codeModel)
   const split = splitViolationsByHistory(
@@ -275,7 +315,7 @@ async function runWithHistory(soll: SollModel, t: ResolvedTopology): Promise<Vio
   )
 
   if (useLlm.value) {
-    const changed = await fetchChangedPythonFiles(props.runtimeBaseUrl, ws.workspacePath)
+    const changed = await fetchChangedPythonFiles(props.runtimeBaseUrl, ws.workspacePath, diffRange.value)
     const changedFacts = head.summaries
       .filter(({ filePath }) => changed.has(filePath))
       .map(({ summary }) => summaryToChangedFact(summary, t, 'modified'))
@@ -312,9 +352,9 @@ const buckets = computed(() => {
   const h = history.value
   if (!h) return []
   return [
-    { key: 'new', title: `New — introduced since HEAD~1 (${h.added.length})`, groups: groupByFile(h.added) },
+    { key: 'new', title: `New — introduced in ${rangeLabel.value} (${h.added.length})`, groups: groupByFile(h.added) },
     { key: 'legacy', title: `Legacy — pre-existing (${h.legacy.length})`, groups: groupByFile(h.legacy) },
-    { key: 'fixed', title: `Fixed — removed since HEAD~1 (${h.fixed.length})`, groups: groupByFile(h.fixed) },
+    { key: 'fixed', title: `Fixed — removed in ${rangeLabel.value} (${h.fixed.length})`, groups: groupByFile(h.fixed) },
   ]
 })
 
@@ -396,6 +436,11 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
           {{ loading ? 'Loading…' : 'Load repository' }}
         </button>
       </div>
+      <div v-if="loadedWorkspace" class="conformance__controls">
+        <span class="conformance__muted">Revision</span>
+        <DiffRangePicker :runtime-url="runtimeBaseUrl" :workspace-path="loadedWorkspace.workspacePath" />
+        <span v-if="loading" class="conformance__muted">loading…</span>
+      </div>
     </section>
 
     <section v-if="project" class="conformance__soll conformance__card">
@@ -466,14 +511,14 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
         <label v-if="loadedWorkspace" class="conformance__toggle">
           <input type="checkbox" class="conformance__toggle-input" v-model="historyMode" />
           <span class="conformance__toggle-track" aria-hidden="true"></span>
-          <span class="conformance__toggle-label">Compare vs previous commit (new vs legacy)</span>
+          <span class="conformance__toggle-label">Compare vs base (new vs legacy)</span>
         </label>
         <button type="button" :disabled="running || !topology" @click="void run()">
           {{ running ? 'Checking…' : 'Run check' }}
         </button>
       </div>
       <p v-if="historyMode" class="conformance__muted">
-        Structural violations are split against HEAD~1. LLM findings (if enabled) run on changed files
+        Structural violations are split along {{ rangeLabel }}. LLM findings (if enabled) run on changed files
         only and all count as new — legacy semantics are not re-checked.
       </p>
     </section>
