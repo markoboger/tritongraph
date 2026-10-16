@@ -41,6 +41,26 @@ export function parseArchitectureRules(raw: unknown): ArchitectureRule[] {
   return (raw as { rules: unknown[] }).rules.map((rule, i) => parseRule(rule, i))
 }
 
+/**
+ * The inverse of `parseArchitectureRules`: rules as the plain `architecture-rules.yaml` object, ready
+ * for `yaml.dump`. Field order follows the hand-written example files.
+ */
+export function serializeArchitectureRules(rules: readonly ArchitectureRule[]): { rules: Record<string, unknown>[] } {
+  return {
+    rules: rules.map((rule) => ({
+      id: rule.id,
+      category: rule.category,
+      kind: rule.kind,
+      scope: { components: [...rule.scope.components] },
+      statement: rule.statement,
+      severity: rule.severity,
+      ...(rule.predicate
+        ? { predicate: { type: rule.predicate.type, allowed_importers: [...rule.predicate.allowed_importers] } }
+        : {}),
+    })),
+  }
+}
+
 function parseRule(raw: unknown, index: number): ArchitectureRule {
   const at = `rules[${index}]`
   if (typeof raw !== 'object' || raw === null) throw new Error(`${at}: must be an object`)

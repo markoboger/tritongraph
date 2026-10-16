@@ -1,11 +1,11 @@
 import yaml from 'js-yaml'
-import { parseArchitectureRules } from '../../../packages/triton-conformance/src/rules'
+import { parseArchitectureRules, serializeArchitectureRules } from '../../../packages/triton-conformance/src/rules'
 import { resolveTopology } from '../../../packages/triton-conformance/src/topology'
 import type { ArchitectureRule, ResolvedTopology } from '../../../packages/triton-conformance/src/types'
 import type { IlographDocument } from '../../../packages/triton-core/src/ilographTypes'
 
 /**
- * Validating readers for the two Soll files a user can bring into the conformance checker. Both
+ * Readers and writers for the two Soll files of the conformance checker. The readers validate and
  * throw an Error whose message says what is wrong, so the caller can show it and keep its current
  * state instead of silently falling back to something else.
  */
@@ -13,6 +13,11 @@ import type { IlographDocument } from '../../../packages/triton-core/src/ilograp
 /** Parse an `architecture-rules.yaml` text into rules, or throw with a field-level reason. */
 export function readRulesYaml(text: string): ArchitectureRule[] {
   return parseArchitectureRules(loadYaml(text))
+}
+
+/** Render rules as `architecture-rules.yaml` text that `readRulesYaml` (and the CLI's `--rules`) reads back. */
+export function writeRulesYaml(rules: readonly ArchitectureRule[]): string {
+  return yaml.dump(serializeArchitectureRules(rules), { lineWidth: 100, noRefs: true })
 }
 
 /** Parse a target-topology `ilograph.yaml` text into a resolved topology, or throw with a reason. */

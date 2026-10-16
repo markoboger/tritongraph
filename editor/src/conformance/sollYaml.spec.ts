@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readRulesYaml, readSollYaml } from './yamlImport'
+import { readRulesYaml, readSollYaml, writeRulesYaml } from './sollYaml'
 
 const VALID_RULES = `
 rules:
@@ -59,5 +59,23 @@ describe('readSollYaml', () => {
 
   it('reports broken YAML syntax', () => {
     expect(() => readSollYaml('resources: [')).toThrow(/^invalid YAML:/)
+  })
+})
+
+describe('writeRulesYaml', () => {
+  it('round-trips through readRulesYaml, predicate included', () => {
+    const rules = [
+      ...readRulesYaml(VALID_RULES),
+      {
+        id: 'only-api-imports-core',
+        category: 'structural-boundary',
+        kind: 'structural' as const,
+        scope: { components: ['core'] },
+        statement: 'Only the api may import core.',
+        severity: 'warning' as const,
+        predicate: { type: 'import-boundary' as const, allowed_importers: ['api'] },
+      },
+    ]
+    expect(readRulesYaml(writeRulesYaml(rules))).toEqual(rules)
   })
 })

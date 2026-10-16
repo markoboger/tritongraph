@@ -24,20 +24,23 @@ import { listPythonExamples, type PythonExampleEntry } from '../python/pythonExa
 import {
   fetchChangedPythonFiles,
   fetchRuntimeRepos,
+  fetchArchitectureRulesYaml,
   fetchTargetTopologyYaml,
   loadExampleProject,
   loadRuntimeWorkspaceBaseProject,
   loadRuntimeWorkspaceProject,
   type LoadedProject,
+  saveArchitectureRulesYaml,
   type RuntimeRepoOption,
 } from '../conformance/loadProject'
-import { readRulesYaml, readSollYaml } from '../conformance/yamlImport'
+import { readRulesYaml, readSollYaml, writeRulesYaml } from '../conformance/sollYaml'
 import { peekSession } from '../targetTopology/targetEditSession'
 import { splitViolationsByHistory, type ViolationHistory } from '../conformance/violationHistory'
 import { createServerLlmClient } from '../conformance/serverLlmClient'
 import { DEFAULT_DIFF_RANGE, diffRangeFor, diffRangeLabel } from '../conformance/diffRange'
 import DiffRangePicker from './common/DiffRangePicker.vue'
 import ChoiceDialog, { type ChoiceDialogAction } from './common/ChoiceDialog.vue'
+import RulesPanel from './RulesPanel.vue'
 
 const props = defineProps<{ runtimeBaseUrl: string }>()
 
@@ -174,6 +177,7 @@ async function selectProject(): Promise<void> {
   const hit = examples.find((e) => e.dir === selectedDir.value)
   entry.value = hit ?? null
   project.value = null
+  rulesFile.value = hit ? bundledRulesFile(hit) : null
   if (!hit) return
   loading.value = true
   try {
@@ -193,6 +197,7 @@ async function loadRepository(): Promise<void> {
   entry.value = null
   project.value = null
   loadedWorkspace.value = null
+  rulesFile.value = null
   const workspacePath = (selectedRepoPath.value || manualRepoPath.value).trim()
   if (!workspacePath) return
   const known = repos.value.find((r) => r.workspacePath === workspacePath)
@@ -212,6 +217,8 @@ async function loadRepository(): Promise<void> {
     sollYamlText.value = savedTarget ?? ''
     topologyMode.value = 'derive'
     savedTargetChoiceOpen.value = savedTarget !== null
+    const savedRules = await fetchArchitectureRulesYaml(props.runtimeBaseUrl, workspacePath).catch(() => null)
+    rulesFile.value = savedRules === null ? null : { text: savedRules, label: REPO_RULES_LABEL }
   } catch (err) {
     error.value = `Failed to load repository: ${err instanceof Error ? err.message : String(err)}`
   } finally {
@@ -267,6 +274,7 @@ function onSourceChange(): void {
   project.value = null
   entry.value = null
   loadedWorkspace.value = null
+  rulesFile.value = null
 }
 
 const derivedTopology = computed<ResolvedTopology | null>(() =>
@@ -295,15 +303,25 @@ const loadedSoll = computed<{ topology: ResolvedTopology | null; error: string |
 })
 const loadedTopology = computed(() => loadedSoll.value.topology)
 
-const projectRulesText = computed<string | null>(() => {
-  const files = entry.value?.files ?? {}
-  const key = Object.keys(files).find((k) => k.endsWith('architecture-rules.yaml'))
-  return key ? files[key]! : null
-})
+/**
+ * The project's rules file: the repository's `.triton/architecture-rules.yaml`, a bundled example's
+ * `architecture-rules.yaml`, or what the rules panel saved. Null when there is none — then the
+ * built-in default rules apply.
+ */
+const rulesFile = ref<{ text: string; label: string } | null>(null)
+const REPO_RULES_LABEL = '.triton/architecture-rules.yaml'
 
-/** The project's rules file, or why it is invalid — an invalid file blocks the run, never falls back. */
+/** True while the rules panel is in edit mode — the check and project switches wait for Save or Discard. */
+const rulesEditing = ref(false)
+
+function bundledRulesFile(example: PythonExampleEntry): { text: string; label: string } | null {
+  const key = Object.keys(example.files).find((k) => k.endsWith('architecture-rules.yaml'))
+  return key ? { text: example.files[key]!, label: 'bundled architecture-rules.yaml' } : null
+}
+
+/** The rules file's rules, or why it is invalid — an invalid file blocks the run, never falls back. */
 const projectRules = computed<{ rules: ArchitectureRule[] | null; error: string | null }>(() => {
-  const text = projectRulesText.value
+  const text = rulesFile.value?.text
   if (!text) return { rules: null, error: null }
   try {
     return { rules: readRulesYaml(text), error: null }
@@ -322,7 +340,17 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-const rulesSource = computed(() => (projectRulesText.value ? 'project architecture-rules.yaml' : 'built-in default'))
+const rulesSource = computed(() => rulesFile.value?.label ?? 'built-in default')
+
+/** Rules panel Save: repositories persist to `.triton/`, bundled examples keep the edit for this session. */
+async function saveRules(edited: ArchitectureRule[]): Promise<void> {
+  const text = writeRulesYaml(edited)
+  const ws = loadedWorkspace.value
+  if (ws) await saveArchitectureRulesYaml(props.runtimeBaseUrl, ws.workspacePath, text)
+  rulesFile.value = { text, label: ws ? REPO_RULES_LABEL : 'edited in this session (examples are not saved to disk)' }
+  results.value = null
+  history.value = null
+}
 
 function toggleEdge(key: string, allowed: boolean): void {
   const next = new Set(disabledEdges.value)
@@ -480,6 +508,8 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
 
     <section class="conformance__card">
       <h2 class="conformance__card-title">Source</h2>
+      <p v-if="rulesEditing" class="conformance__muted">Save or discard the rule changes before switching the project.</p>
+      <fieldset class="conformance__fieldset" :disabled="rulesEditing">
       <div class="conformance__controls conformance__segmented">
         <label><input type="radio" value="example" v-model="projectSource" @change="onSourceChange" /> Example</label>
         <label><input type="radio" value="repository" v-model="projectSource" @change="onSourceChange" /> Repository</label>
@@ -521,6 +551,7 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
         <DiffRangePicker :runtime-url="runtimeBaseUrl" :workspace-path="loadedWorkspace.workspacePath" />
         <span v-if="loading" class="conformance__muted">loading…</span>
       </div>
+      </fieldset>
     </section>
 
     <section v-if="project" class="conformance__soll conformance__card">
@@ -583,8 +614,21 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
         <p v-if="loadedSoll.error" class="conformance__error">Invalid ilograph.yaml: {{ loadedSoll.error }}</p>
       </div>
 
-      <p v-if="projectRules.error" class="conformance__error">Invalid architecture-rules.yaml: {{ projectRules.error }}</p>
-      <p v-else class="conformance__muted">Rules: {{ rules.length }} ({{ rulesSource }})</p>
+    </section>
+
+    <section v-if="project" class="conformance__card">
+      <p v-if="projectRules.error && !rulesEditing" class="conformance__error">
+        Invalid {{ rulesSource }}: {{ projectRules.error }} — import a valid file or edit the rules to replace it.
+      </p>
+      <RulesPanel
+        v-model:editing="rulesEditing"
+        :rules="rules"
+        :source="rulesSource"
+        :components="topology?.components ?? []"
+        :allowed-edge-count="topology?.allowedEdges.length ?? 0"
+        :save="saveRules"
+        @invalid-file="(e) => (importError = e)"
+      />
     </section>
 
     <section v-if="project" class="conformance__card">
@@ -600,10 +644,11 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
           <span class="conformance__toggle-track" aria-hidden="true"></span>
           <span class="conformance__toggle-label">Compare vs base (new vs legacy)</span>
         </label>
-        <button type="button" :disabled="running || !topology" @click="void run()">
+        <button type="button" :disabled="running || !topology || rulesEditing" @click="void run()">
           {{ running ? 'Checking…' : 'Run check' }}
         </button>
       </div>
+      <p v-if="rulesEditing" class="conformance__muted">Save or discard the rule changes to run the check.</p>
       <p v-if="historyMode" class="conformance__muted">
         Structural violations are split along {{ rangeLabel }}. LLM findings (if enabled) run on changed files
         only and all count as new — legacy semantics are not re-checked.
@@ -776,6 +821,7 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
 }
 .conformance__segmented input[type='radio'] { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
 .conformance__segmented label:has(input:checked) { background: #0f172a; color: #fff; }
+.conformance__fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 .conformance__soll-source { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
 .conformance__file-btn {
   position: relative;
