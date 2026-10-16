@@ -11,6 +11,7 @@ import DiffRangePicker from './components/common/DiffRangePicker.vue'
 import { DEFAULT_DIFF_RANGE, diffRangeFor, setDiffRangeParams } from './conformance/diffRange'
 import TritonRuntimeHome from './components/TritonRuntimeHome.vue'
 import ConformanceChecker from './components/ConformanceChecker.vue'
+import ChoiceDialog, { type ChoiceDialogAction } from './components/common/ChoiceDialog.vue'
 import type { StarterCard } from './triton/tritonStarterCard'
 import { dockerDiagramExamples } from './triton/dockerDiagramExamples'
 import { dockerBrandIconUrl, isDockerConceptIconKey } from './triton/dockerConceptIcons'
@@ -131,8 +132,10 @@ import {
 import { saveTargetTopologyYaml } from './conformance/loadProject'
 import {
   applyTargetOps,
+  endSession,
   getOrCreateSession,
   groupIntoAbstraction,
+  hasUnsavedSession,
   opsFromDerivedSeed,
   opsFromForeignYamlEdgeDiff,
   opsFromTargetYaml,
@@ -727,13 +730,18 @@ function targetEditorScopeIdForTabKey(key: string): string | undefined {
   return parsePackageInnerTabKey(key)?.packageId
 }
 
-function targetEditorSessionForTabKey(key: string): TargetEditSession | null {
+/** The repository a target-editor tab (root or drilled) belongs to, or null for any other tab. */
+function targetEditorWorkspaceForTabKey(key: string): string | null {
   const root = baseTabKey(key)
   if (!root.startsWith('target-editor:')) return null
   const body = root.slice('target-editor:'.length)
   const sep = body.indexOf('::')
-  if (sep < 0) return null
-  return peekSession(body.slice(0, sep))
+  return sep < 0 ? null : body.slice(0, sep)
+}
+
+function targetEditorSessionForTabKey(key: string): TargetEditSession | null {
+  const workspacePath = targetEditorWorkspaceForTabKey(key)
+  return workspacePath ? peekSession(workspacePath) : null
 }
 
 /** Re-derive the Soll for `scopeId` and render it into the tab at `tabKey`. Mirrors `openPythonPackageDrillTab`'s loader body. */
@@ -907,26 +915,100 @@ async function confirmGroupSelection(): Promise<void> {
 }
 
 
-async function saveActiveTargetEditorTab(): Promise<void> {
+/*
+ * Leaving the editor: closing it always ends its session, either saved or discarded, so the next
+ * open starts clean from what the checker shows. Switching tabs does not count as leaving; closing
+ * the root editor tab (×) or the toolbar's Save & close / Discard buttons do.
+ */
+const checkerRef = ref<InstanceType<typeof ConformanceChecker> | null>(null)
+
+/** Pending decision for an editor with unsaved changes; `offerSave` is false for the Discard button. */
+const editorCloseRequest = ref<{ workspacePath: string; offerSave: boolean } | null>(null)
+const editorCloseActions = computed<ChoiceDialogAction[]>(() => [
+  { label: 'Cancel', value: 'cancel' },
+  { label: 'Discard changes', value: 'discard' },
+  ...(editorCloseRequest.value?.offerSave ? [{ label: 'Save & close', value: 'save', primary: true }] : []),
+])
+
+/** Fold the visible canvas into the session first, so `dirty` also covers edits made on this tab. */
+function unsavedEditorSession(workspacePath: string): TargetEditSession | null {
   const tab = activeTab.value
-  if (!tab || !isTargetEditorKey(tab.key)) return
-  const session = targetEditorSessionForTabKey(tab.key)
-  if (!session) return
-  reconcileActiveTargetEditorTab(tab)
+  if (tab && targetEditorWorkspaceForTabKey(tab.key) === workspacePath) reconcileActiveTargetEditorTab(tab)
+  const session = peekSession(workspacePath)
+  return session?.dirty ? session : null
+}
+
+/** Write the session to `.triton/target.ilograph.yaml` and hand the result to the checker. */
+async function saveTargetEditorSession(session: TargetEditSession): Promise<boolean> {
   const runtimeUrl = effectiveRuntimeUrl.value
   if (!runtimeUrl) {
     status.value = 'Configure the Triton runtime URL (?runtimeUrl=) to save the target architecture.'
-    return
+    return false
   }
   try {
     const yaml = stringifyIlographYaml(serializeTargetDocument(session))
     await saveTargetTopologyYaml(runtimeUrl, session.workspacePath, yaml)
     session.dirty = false
-    status.value = `Saved ${session.workspacePath}/.triton/target.ilograph.yaml — reload the repository in the Conformance tab to check against it.`
+    checkerRef.value?.applySavedTarget(session.workspacePath, yaml)
+    return true
   } catch (err) {
     status.value = `Failed to save target architecture: ${err instanceof Error ? err.message : String(err)}`
+    return false
   }
 }
+
+/** End the session and close every editor tab of the repository, landing on the checker. */
+async function closeTargetEditor(workspacePath: string): Promise<void> {
+  endSession(workspacePath)
+  const editorTabIds = tabs.value.filter((t) => targetEditorWorkspaceForTabKey(t.key) === workspacePath).map((t) => t.id)
+  if (activeTabId.value && editorTabIds.includes(activeTabId.value)) {
+    const landing = tabs.value.find((t) => t.kind === 'checker') ?? tabs.value.find((t) => !editorTabIds.includes(t.id))
+    if (landing) await activateTabById(landing.id)
+  }
+  for (const id of editorTabIds) await closeTab(id)
+}
+
+async function saveAndCloseTargetEditor(workspacePath: string): Promise<void> {
+  unsavedEditorSession(workspacePath)
+  const session = peekSession(workspacePath)
+  if (session && !(await saveTargetEditorSession(session))) return
+  await closeTargetEditor(workspacePath)
+}
+
+/** Discard button and root-tab ×: close at once when nothing is unsaved, otherwise ask first. */
+async function requestCloseTargetEditor(workspacePath: string, offerSave: boolean): Promise<void> {
+  if (unsavedEditorSession(workspacePath)) editorCloseRequest.value = { workspacePath, offerSave }
+  else await closeTargetEditor(workspacePath)
+}
+
+async function resolveEditorCloseRequest(choice: string): Promise<void> {
+  const request = editorCloseRequest.value
+  editorCloseRequest.value = null
+  if (!request || choice === 'cancel') return
+  if (choice === 'save') await saveAndCloseTargetEditor(request.workspacePath)
+  else await closeTargetEditor(request.workspacePath)
+}
+
+/** The tab bar's ×: closing a root editor tab closes the editor; drilled editor tabs close normally. */
+async function requestCloseTab(id: string): Promise<void> {
+  const tab = tabs.value.find((t) => t.id === id)
+  const workspacePath = tab ? targetEditorWorkspaceForTabKey(tab.key) : null
+  if (tab && workspacePath && !targetEditorScopeIdForTabKey(tab.key)) await requestCloseTargetEditor(workspacePath, true)
+  else await closeTab(id)
+}
+
+/** Workspace of the active editor tab, for the toolbar buttons. */
+const activeTargetEditorWorkspace = computed(() =>
+  activeTab.value ? targetEditorWorkspaceForTabKey(activeTab.value.key) : null,
+)
+
+function warnAboutUnsavedTargetEdits(event: BeforeUnloadEvent): void {
+  const tab = activeTab.value
+  if (tab) reconcileActiveTargetEditorTab(tab)
+  if (hasUnsavedSession()) event.preventDefault()
+}
+onMounted(() => window.addEventListener('beforeunload', warnAboutUnsavedTargetEdits))
+onUnmounted(() => window.removeEventListener('beforeunload', warnAboutUnsavedTargetEdits))
 
 const showYamlEditor = ref(false)
 
@@ -5736,9 +5818,9 @@ onUnmounted(() => {
           role="button"
           tabindex="0"
           aria-label="Close tab"
-          @click.stop="closeTab(tab.id)"
-          @keydown.enter.stop.prevent="closeTab(tab.id)"
-          @keydown.space.stop.prevent="closeTab(tab.id)"
+          @click.stop="void requestCloseTab(tab.id)"
+          @keydown.enter.stop.prevent="void requestCloseTab(tab.id)"
+          @keydown.space.stop.prevent="void requestCloseTab(tab.id)"
         >×</span>
       </button>
     </div>
@@ -5832,7 +5914,16 @@ onUnmounted(() => {
                 <label class="target-editor-toolbar__toggle">
                   <input type="checkbox" v-model="sollDiffVisible" /> Ist/Soll diff
                 </label>
-                <button type="button" class="tet-btn tet-btn--primary" @click="void saveActiveTargetEditorTab()">Save target</button>
+                <button
+                  type="button"
+                  class="tet-btn"
+                  @click="activeTargetEditorWorkspace && void requestCloseTargetEditor(activeTargetEditorWorkspace, false)"
+                >Discard</button>
+                <button
+                  type="button"
+                  class="tet-btn tet-btn--primary"
+                  @click="activeTargetEditorWorkspace && void saveAndCloseTargetEditor(activeTargetEditorWorkspace)"
+                >Save &amp; close</button>
               </template>
               <template v-else-if="!groupNameInputVisible">
                 <span class="target-editor-toolbar__prompt">
@@ -5891,8 +5982,8 @@ onUnmounted(() => {
                 <dd>Click a box to focus it (<kbd>Esc</kbd> goes back). The underlined subtitle link opens that package as its own editor tab — edits there belong to the same session.</dd>
                 <dt>Ist/Soll diff</dt>
                 <dd>Overlays your edits against the current code: green = newly allowed edge, red dashed = forbidden import that still exists in code.</dd>
-                <dt>Save target</dt>
-                <dd>Writes <code>.triton/target.ilograph.yaml</code> into the repository. The Conformance tab loads it automatically on the next repository load.</dd>
+                <dt>Save &amp; close / Discard</dt>
+                <dd>Save &amp; close writes <code>.triton/target.ilograph.yaml</code> into the repository and the Conformance tab checks against it right away. Discard drops your edits. Either way the editor closes, so the next open starts clean.</dd>
               </dl>
             </div>
           </div>
@@ -5954,9 +6045,11 @@ onUnmounted(() => {
              switches — e.g. after clicking a finding's "View diagram" and navigating back. -->
         <div v-if="hasCheckerTab" v-show="activeTab?.kind === 'checker'" class="triton-tab-page">
           <ConformanceChecker
+            ref="checkerRef"
             :runtime-base-url="effectiveRuntimeUrl"
             @open-diagram="(t) => void openConformanceDiagram(t)"
             @edit-target="(p) => void openTargetEditorTab(p)"
+            @close-target-editor="(workspacePath) => void closeTargetEditor(workspacePath)"
           />
         </div>
       </div>
@@ -6340,6 +6433,16 @@ onUnmounted(() => {
       :suggested-repo-root="editorLinkSuggestedRepoRoot"
       @internal="onEditorLinkDialogInternal"
       @external="onEditorLinkDialogExternal"
+    />
+    <ChoiceDialog
+      :open="editorCloseRequest !== null"
+      title="Unsaved target architecture"
+      :message="editorCloseRequest?.offerSave
+        ? 'The editor has changes that were not saved. Save them before closing, or discard them?'
+        : 'Discard the changes made in the editor? This cannot be undone.'"
+      :actions="editorCloseActions"
+      cancel-value="cancel"
+      @choose="(choice) => void resolveEditorCloseRequest(choice)"
     />
   </div>
 </template>

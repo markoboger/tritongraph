@@ -98,6 +98,16 @@ export function getOrCreateSession(
   return session
 }
 
+/** Drop a workspace's session, so the next editor open starts fresh from what the checker shows. */
+export function endSession(workspacePath: string): void {
+  sessions.delete(workspacePath)
+}
+
+/** True when any session holds edits that were never saved. */
+export function hasUnsavedSession(): boolean {
+  return [...sessions.values()].some((session) => session.dirty)
+}
+
 /** Look up an already-open session without creating one — used by reconcile/save call sites that only act if a session exists. */
 export function peekSession(workspacePath: string): TargetEditSession | null {
   return sessions.get(workspacePath) ?? null
@@ -334,9 +344,16 @@ export function reconcileScope(
   // View-only reconciles (tab switch without any canvas edit) must not touch the session: they
   // would mark it dirty and record the viewed scope into editedScopes, changing the component
   // granularity of the saved target just by looking at a tab.
-  if (JSON.stringify({ ...next, editedScopes: [] }) === JSON.stringify({ ...session.ops, editedScopes: [] })) return
+  if (sameEdits(next, session.ops)) return
   session.ops = next
   session.dirty = true
+}
+
+/** Same edits, ignoring `editedScopes` and the key order (seeded ops and reconciled ops build their objects differently). */
+function sameEdits(a: TargetEditOps, b: TargetEditOps): boolean {
+  const edits = (ops: TargetEditOps) =>
+    JSON.stringify([ops.removedImports, ops.addedImports, ops.addedContainers, ops.renames, ops.deletedNodes])
+  return edits(a) === edits(b)
 }
 
 /**

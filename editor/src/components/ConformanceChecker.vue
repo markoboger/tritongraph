@@ -32,6 +32,7 @@ import {
   type RuntimeRepoOption,
 } from '../conformance/loadProject'
 import { readRulesYaml, readSollYaml } from '../conformance/yamlImport'
+import { peekSession } from '../targetTopology/targetEditSession'
 import { splitViolationsByHistory, type ViolationHistory } from '../conformance/violationHistory'
 import { createServerLlmClient } from '../conformance/serverLlmClient'
 import { DEFAULT_DIFF_RANGE, diffRangeFor, diffRangeLabel } from '../conformance/diffRange'
@@ -54,7 +55,11 @@ interface EditTargetPayload {
   pythonSourceRoots?: readonly string[]
   seed: { mode: 'derive' | 'load'; componentDepth: number; disabledEdges: string[]; sollYamlText: string }
 }
-const emit = defineEmits<{ openDiagram: [target: OpenDiagramTarget]; editTarget: [payload: EditTargetPayload] }>()
+const emit = defineEmits<{
+  openDiagram: [target: OpenDiagramTarget]
+  editTarget: [payload: EditTargetPayload]
+  closeTargetEditor: [workspacePath: string]
+}>()
 
 const examples = listPythonExamples().filter((e) => e.root === 'python-examples')
 
@@ -111,9 +116,40 @@ async function importSollFile(event: Event): Promise<void> {
     importError.value = { fileName: file.name, message: errorMessage(err) }
     return
   }
+  const editorSession = loadedWorkspace.value ? peekSession(loadedWorkspace.value.workspacePath) : null
+  if (editorSession?.dirty) pendingSollImport.value = text
+  else applyImportedSoll(text)
+}
+
+/** A valid imported Soll that waits until the user agrees to drop the editor's unsaved changes. */
+const pendingSollImport = ref<string | null>(null)
+const DISCARD_EDITS_ACTIONS: ChoiceDialogAction[] = [
+  { label: 'Cancel', value: 'cancel' },
+  { label: 'Discard and import', value: 'import', primary: true },
+]
+
+function resolvePendingSollImport(choice: string): void {
+  const text = pendingSollImport.value
+  pendingSollImport.value = null
+  if (text !== null && choice === 'import') applyImportedSoll(text)
+}
+
+function applyImportedSoll(text: string): void {
+  // An open editor would keep showing its old session; closing it makes the next open start from this Soll.
+  if (loadedWorkspace.value) emit('closeTargetEditor', loadedWorkspace.value.workspacePath)
   sollYamlText.value = text
   topologyMode.value = 'load'
 }
+
+/** Called by the app after the editor saved a target: check against it right away. */
+function applySavedTarget(workspacePath: string, yamlText: string): void {
+  if (loadedWorkspace.value?.workspacePath !== workspacePath) return
+  sollYamlText.value = yamlText
+  topologyMode.value = 'load'
+  results.value = null
+  history.value = null
+}
+defineExpose({ applySavedTarget })
 
 const running = ref(false)
 const error = ref<string | null>(null)
@@ -636,6 +672,14 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
       :actions="IMPORT_ERROR_ACTIONS"
       cancel-value="ok"
       @choose="importError = null"
+    />
+    <ChoiceDialog
+      :open="pendingSollImport !== null"
+      title="Unsaved editor changes"
+      message="The target-architecture editor has changes that were not saved. Importing this file discards them and closes the editor."
+      :actions="DISCARD_EDITS_ACTIONS"
+      cancel-value="cancel"
+      @choose="resolvePendingSollImport"
     />
   </div>
 </template>

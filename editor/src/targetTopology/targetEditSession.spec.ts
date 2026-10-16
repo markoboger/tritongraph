@@ -2,12 +2,18 @@ import { describe, it, expect } from 'vitest'
 import type { CodeContainer, CodeModel } from '../../../packages/triton-core/src/languageModel'
 import { rollupImportRelations } from '../../../packages/triton-core/src/codeModelToIlograph'
 import { resolveTopology } from '../../../packages/triton-conformance/src/topology'
+import type { IlographDocument } from '../../../packages/triton-core/src/ilographTypes'
 import {
   applyTargetOps,
+  endSession,
   getOrCreateSession,
+  hasUnsavedSession,
+  opsFromTargetYaml,
+  peekSession,
   groupIntoAbstraction,
   reconcileScope,
   resolveScopeContainerId,
+  seedSessionOps,
   serializeTargetDocument,
   type TargetEditOps,
 } from './targetEditSession'
@@ -187,5 +193,36 @@ describe('reconcileScope + serializeTargetDocument', () => {
     const soll = applyTargetOps(session.baseModel, session.ops)
     const shop = soll.root.children.find((c) => c.id === 'shop')
     expect(shop?.children.map((c) => c.id).sort()).toEqual(['group:core', 'shop.shared'])
+  })
+})
+
+describe('endSession', () => {
+  it('drops the session so the next open starts clean', () => {
+    const session = getOrCreateSession('/repo-end', 'repo', buildModel())
+    reconcileScope(session, undefined, [{ id: 'app.billing' }, { id: 'app.orders' }, { id: 'app.shared' }], [])
+    expect(session.dirty).toBe(true)
+    expect(hasUnsavedSession()).toBe(true)
+
+    endSession('/repo-end')
+
+    expect(peekSession('/repo-end')).toBeNull()
+    const fresh = getOrCreateSession('/repo-end', 'repo', buildModel())
+    expect(fresh.dirty).toBe(false)
+    expect(fresh.ops.removedImports).toEqual([])
+  })
+})
+
+describe('dirty flag', () => {
+  it('stays clean when a session seeded from a saved target is only viewed', () => {
+    const nodes = [{ id: 'app.billing' }, { id: 'app.orders' }, { id: 'app.shared' }]
+    const edges = [{ source: 'app.billing', target: 'app.shared' }]
+    const saved = getOrCreateSession('/repo-saved', 'repo', buildModel())
+    reconcileScope(saved, undefined, nodes, edges)
+
+    const reopened = getOrCreateSession('/repo-reopened', 'repo', buildModel())
+    seedSessionOps(reopened, opsFromTargetYaml(serializeTargetDocument(saved) as IlographDocument)!)
+    reconcileScope(reopened, undefined, nodes, edges)
+
+    expect(reopened.dirty).toBe(false)
   })
 })
