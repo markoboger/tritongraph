@@ -41,6 +41,7 @@ import { DEFAULT_DIFF_RANGE, diffRangeFor, diffRangeLabel } from '../conformance
 import DiffRangePicker from './common/DiffRangePicker.vue'
 import ChoiceDialog, { type ChoiceDialogAction } from './common/ChoiceDialog.vue'
 import RulesPanel from './RulesPanel.vue'
+import { downloadTextFile } from '../downloadTextFile'
 
 const props = defineProps<{ runtimeBaseUrl: string }>()
 
@@ -342,6 +343,20 @@ function errorMessage(err: unknown): string {
 
 const rulesSource = computed(() => rulesFile.value?.label ?? 'built-in default')
 
+/** Name prefix for exported files, so copies of several projects can live side by side. */
+const exportFileStem = computed(() => loadedWorkspace.value?.workspaceName ?? entry.value?.dir ?? 'project')
+
+/** Download the loaded target topology exactly as it is checked against. */
+function exportSoll(): void {
+  if (!loadedTopology.value) return
+  downloadTextFile(`${exportFileStem.value}.target.ilograph.yaml`, sollYamlText.value)
+}
+
+/** Download the rules the check uses — in the format the CLI's `--rules` and the import read. */
+function exportRules(): void {
+  downloadTextFile(`${exportFileStem.value}.architecture-rules.yaml`, writeRulesYaml(rules.value))
+}
+
 /** Rules panel Save: repositories persist to `.triton/`, bundled examples keep the edit for this session. */
 async function saveRules(edited: ArchitectureRule[]): Promise<void> {
   const text = writeRulesYaml(edited)
@@ -573,6 +588,13 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
           Import target file…
           <input type="file" accept=".yaml,.yml" class="conformance__file-input" @change="void importSollFile($event)" />
         </label>
+        <button
+          type="button"
+          class="conformance__file-btn"
+          :disabled="!loadedTopology"
+          :title="loadedTopology ? undefined : 'Load a target file (or save one from the editor) to export it'"
+          @click="exportSoll()"
+        >Export target file</button>
       </div>
 
       <div v-if="topologyMode === 'derive' && derivedTopology">
@@ -628,6 +650,7 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
         :allowed-edge-count="topology?.allowedEdges.length ?? 0"
         :save="saveRules"
         @invalid-file="(e) => (importError = e)"
+        @export="exportRules()"
       />
     </section>
 
@@ -833,7 +856,9 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
   font-weight: 600;
   cursor: pointer;
 }
-.conformance__file-btn:hover { background: #f0fdfa; }
+.conformance button.conformance__file-btn { background: #fff; color: #0d9488; padding: 7px 14px; }
+.conformance__file-btn:hover,
+.conformance button.conformance__file-btn:hover:not(:disabled) { background: #f0fdfa; border-color: #0d9488; }
 .conformance__file-input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
 .conformance__file-btn:focus-within { outline: 2px solid #0ea5e9; outline-offset: 2px; }
 

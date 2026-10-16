@@ -130,6 +130,7 @@ import {
   type ImportDiff,
 } from './graph/gitDiffOverlay'
 import { saveTargetTopologyYaml } from './conformance/loadProject'
+import { downloadTextFile } from './downloadTextFile'
 import {
   applyTargetOps,
   endSession,
@@ -1455,19 +1456,6 @@ const activeTabHasCodeModel = computed(() => {
   void pythonTabModelVersion.value
   return pythonTabModel.has(activeTab.value?.key ?? '')
 })
-
-/** Trigger a client-side download of `text` as `fileName`. */
-function downloadTextFile(fileName: string, text: string, mime = 'text/yaml'): void {
-  const blob = new Blob([text], { type: `${mime};charset=utf-8` })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = fileName
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(url)
-}
 
 /**
  * Export the active Python tab's complete code model (current drill scope, fully expanded) as one

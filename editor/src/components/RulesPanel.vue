@@ -23,7 +23,7 @@ const props = defineProps<{
   save: (rules: ArchitectureRule[]) => Promise<void>
 }>()
 
-const emit = defineEmits<{ invalidFile: [error: { fileName: string; message: string }] }>()
+const emit = defineEmits<{ invalidFile: [error: { fileName: string; message: string }]; export: [] }>()
 
 /** True while the rules are being edited; the parent blocks the check meanwhile. */
 const editing = defineModel<boolean>('editing', { required: true })
@@ -114,6 +114,13 @@ async function importRulesFile(event: Event): Promise<void> {
           Import rules file…
           <input type="file" accept=".yaml,.yml" class="rules__file-input" @change="void importRulesFile($event)" />
         </label>
+        <button
+          type="button"
+          class="rules__btn rules__btn--outline"
+          :disabled="editing"
+          :title="editing ? 'Save or discard the changes first' : undefined"
+          @click="emit('export')"
+        >Export</button>
         <button v-if="!editing" type="button" class="rules__btn rules__btn--outline" @click="startEditing(rules)">Edit</button>
       </div>
     </div>
