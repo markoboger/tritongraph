@@ -3934,6 +3934,7 @@ async function openDojoTab(id: string): Promise<void> {
     id === PACKAGE_MEMBER_MATRIX_DOJO_ID ||
     id === BREAKPOINT_LAYOUTS_DOJO_ID
   ) {
+    showYamlEditor.value = true
     sidePanelTab.value = 'dojo'
   }
 }
@@ -5251,7 +5252,22 @@ async function addRootPackage() {
   await graphRef.value?.fitToViewport()
 }
 
-const yamlPreview = ref('')
+/**
+ * Computed, not a deep watcher: it tracks only the fields the export reads. A deep watch on
+ * `nodes`/`edges` also fires on Vue Flow's per-render writes (`edge.sourceX` …) — once per edge in
+ * a single flush, which trips Vue's recursive-update limit on large diagrams.
+ */
+const yamlPreview = computed(() => {
+  try {
+    return stringifyIlographYaml(
+      flowToIlographDocument(slimNodesForExport(nodes.value), slimEdgesForExport(edges.value), {
+        perspectiveName: perspectiveName.value,
+      }),
+    )
+  } catch {
+    return ''
+  }
+})
 /** YAML snapshot for Monaco diff “original” pane; reset when loading a file/example; use Accept to clear highlights. */
 const yamlBaseline = ref('')
 
@@ -5485,25 +5501,6 @@ async function copyEditPrompt() {
     promptCopyHint.value = ''
   }, 2000)
 }
-
-watch(
-  [nodes, edges, perspectiveName],
-  () => {
-    try {
-      const doc = flowToIlographDocument(
-        slimNodesForExport(nodes.value),
-        slimEdgesForExport(edges.value),
-        {
-          perspectiveName: perspectiveName.value,
-        },
-      )
-      yamlPreview.value = stringifyIlographYaml(doc)
-    } catch {
-      yamlPreview.value = ''
-    }
-  },
-  { deep: true, immediate: true },
-)
 
 watch(showYamlEditor, () => {
   if (!nodes.value.length) return

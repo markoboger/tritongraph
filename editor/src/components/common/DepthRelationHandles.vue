@@ -176,7 +176,12 @@ onUnmounted(() => {
   ro = null
 })
 
-watch(getEdges, () => void nextTick(scheduleMeasureRefresh), { deep: true })
+/** Structural signature, not `deep`: Vue Flow writes `sourceX`/`targetY` into every edge on each
+ *  render, and a deep watch per node instance turns that into an O(nodes × edges) storm. */
+watch(
+  () => getEdges.value.map((e) => `${e.id}|${e.source}|${e.target}|${e.sourceHandle}|${e.targetHandle}|${e.hidden}`).join(','),
+  () => void nextTick(scheduleMeasureRefresh),
+)
 </script>
 
 <template>
