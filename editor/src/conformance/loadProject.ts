@@ -140,34 +140,58 @@ export interface RuntimeRepoOption {
   workspaceName: string
 }
 
-/** The saved target-architecture YAML for a workspace, or null if none has been saved yet. */
-export async function fetchTargetTopologyYaml(
+/** A per-workspace Soll file the runtime stores under `<workspace>/.triton/`. */
+type WorkspaceYamlFile = 'target-topology' | 'architecture-rules'
+
+/** The saved YAML of a per-workspace Soll file, or null if none has been saved yet. */
+async function fetchWorkspaceYaml(
   runtimeBaseUrl: string,
   workspacePath: string,
+  file: WorkspaceYamlFile,
 ): Promise<string | null> {
-  const url = new URL(`${runtimeBaseUrl.replace(/\/$/, '')}/api/workspace/target-topology`)
+  const url = new URL(`${runtimeBaseUrl.replace(/\/$/, '')}/api/workspace/${file}`)
   url.searchParams.set('workspacePath', workspacePath)
   const res = await fetch(url.toString())
   if (res.status === 404) return null
-  if (!res.ok) throw new Error(`target-topology request failed (${res.status})`)
+  if (!res.ok) throw new Error(`${file} request failed (${res.status})`)
   const body = (await res.json()) as { ok?: boolean; yaml?: string }
   if (!body.ok || typeof body.yaml !== 'string') return null
   return body.yaml
 }
 
-/** Persist the target-architecture YAML for a workspace to `<workspace>/.triton/target.ilograph.yaml`. */
-export async function saveTargetTopologyYaml(
+async function saveWorkspaceYaml(
   runtimeBaseUrl: string,
   workspacePath: string,
+  file: WorkspaceYamlFile,
   yaml: string,
 ): Promise<void> {
-  const res = await fetch(`${runtimeBaseUrl.replace(/\/$/, '')}/api/workspace/target-topology`, {
+  const res = await fetch(`${runtimeBaseUrl.replace(/\/$/, '')}/api/workspace/${file}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ workspacePath, yaml }),
   })
   const body = (await res.json()) as { ok?: boolean; error?: string }
-  if (!res.ok || !body.ok) throw new Error(body.error || `target-topology save failed (${res.status})`)
+  if (!res.ok || !body.ok) throw new Error(body.error || `${file} save failed (${res.status})`)
+}
+
+/** The saved target-architecture YAML for a workspace, or null if none has been saved yet. */
+export function fetchTargetTopologyYaml(runtimeBaseUrl: string, workspacePath: string): Promise<string | null> {
+  return fetchWorkspaceYaml(runtimeBaseUrl, workspacePath, 'target-topology')
+}
+
+/** Persist the target-architecture YAML for a workspace to `<workspace>/.triton/target.ilograph.yaml`. */
+export function saveTargetTopologyYaml(runtimeBaseUrl: string, workspacePath: string, yaml: string): Promise<void> {
+  return saveWorkspaceYaml(runtimeBaseUrl, workspacePath, 'target-topology', yaml)
+}
+
+/** The saved architecture-rules YAML for a workspace, or null if none has been saved yet. */
+export function fetchArchitectureRulesYaml(runtimeBaseUrl: string, workspacePath: string): Promise<string | null> {
+  return fetchWorkspaceYaml(runtimeBaseUrl, workspacePath, 'architecture-rules')
+}
+
+/** Persist the architecture-rules YAML for a workspace to `<workspace>/.triton/architecture-rules.yaml`. */
+export function saveArchitectureRulesYaml(runtimeBaseUrl: string, workspacePath: string, yaml: string): Promise<void> {
+  return saveWorkspaceYaml(runtimeBaseUrl, workspacePath, 'architecture-rules', yaml)
 }
 
 /** Recent local repositories from the runtime home model, for the conformance repository picker. */

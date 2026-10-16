@@ -47,8 +47,20 @@ const PYTHON_MARKER_FILES = ['pyproject.toml', 'setup.py', 'setup.cfg']
 
 const REPO_DISCOVERY_MAX_DEPTH = 3
 const RUNTIME_VERSION = '0.7.5'
-/** Where the target-architecture editor saves its Soll YAML, relative to a workspace root. */
-const TARGET_TOPOLOGY_REL_PATH = path.join('.triton', 'target.ilograph.yaml')
+/**
+ * Conformance Soll files stored per workspace, keyed by their API route: the target topology the
+ * target-architecture editor saves and the architecture rules the conformance checker edits.
+ */
+const WORKSPACE_YAML_FILES = {
+  '/api/workspace/target-topology': {
+    relPath: path.join('.triton', 'target.ilograph.yaml'),
+    notFoundError: 'target_not_found',
+  },
+  '/api/workspace/architecture-rules': {
+    relPath: path.join('.triton', 'architecture-rules.yaml'),
+    notFoundError: 'rules_not_found',
+  },
+}
 
 function applyCorsHeaders(res) {
   res.setHeader('access-control-allow-origin', '*')
@@ -2736,7 +2748,9 @@ function createRuntimeServer(options = {}) {
       return
     }
 
-    if (method === 'GET' && pathname === '/api/workspace/target-topology') {
+    const workspaceYamlFile = WORKSPACE_YAML_FILES[pathname]
+
+    if (method === 'GET' && workspaceYamlFile) {
       const workspacePath = String(url.searchParams.get('workspacePath') || '').trim()
       const validation = validateWorkspacePath(workspacePath, config)
       if (!validation.ok) {
@@ -2748,22 +2762,22 @@ function createRuntimeServer(options = {}) {
         })
         return
       }
-      const absPath = path.join(validation.workspacePath, TARGET_TOPOLOGY_REL_PATH)
+      const absPath = path.join(validation.workspacePath, workspaceYamlFile.relPath)
       const yamlText = readUtf8IfFile(absPath)
       if (yamlText == null) {
-        sendJson(res, 404, { ok: false, error: 'target_not_found', workspacePath: validation.workspacePath })
+        sendJson(res, 404, { ok: false, error: workspaceYamlFile.notFoundError, workspacePath: validation.workspacePath })
         return
       }
       sendJson(res, 200, {
         ok: true,
         workspacePath: validation.workspacePath,
-        relPath: TARGET_TOPOLOGY_REL_PATH.replace(/\\/g, '/'),
+        relPath: workspaceYamlFile.relPath.replace(/\\/g, '/'),
         yaml: yamlText,
       })
       return
     }
 
-    if (method === 'POST' && pathname === '/api/workspace/target-topology') {
+    if (method === 'POST' && workspaceYamlFile) {
       const raw = await collectBody(req)
       const body = safeJsonParse(raw)
       if (!body) {
@@ -2786,13 +2800,13 @@ function createRuntimeServer(options = {}) {
         sendJson(res, 400, { ok: false, error: 'invalid_yaml' })
         return
       }
-      const absPath = path.join(validation.workspacePath, TARGET_TOPOLOGY_REL_PATH)
+      const absPath = path.join(validation.workspacePath, workspaceYamlFile.relPath)
       ensureDirSync(path.dirname(absPath))
       fs.writeFileSync(absPath, yamlText, 'utf8')
       sendJson(res, 200, {
         ok: true,
         workspacePath: validation.workspacePath,
-        relPath: TARGET_TOPOLOGY_REL_PATH.replace(/\\/g, '/'),
+        relPath: workspaceYamlFile.relPath.replace(/\\/g, '/'),
       })
       return
     }

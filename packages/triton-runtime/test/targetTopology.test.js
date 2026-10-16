@@ -86,3 +86,26 @@ test('POST target-topology rejects a missing/invalid yaml body', async (t) => {
     assert.strictEqual(body.error, 'invalid_yaml')
   })
 })
+
+test('architecture-rules: GET 404s before a save, POST writes .triton/architecture-rules.yaml, GET reads it back', async (t) => {
+  await withServer(t, async (baseUrl, workspaceDir) => {
+    const getUrl = `${baseUrl}/api/workspace/architecture-rules?workspacePath=${encodeURIComponent(workspaceDir)}`
+    const missing = await fetch(getUrl)
+    assert.strictEqual(missing.status, 404)
+    assert.strictEqual((await missing.json()).error, 'rules_not_found')
+
+    const yaml = 'rules: []\n'
+    const postRes = await fetch(`${baseUrl}/api/workspace/architecture-rules`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspacePath: workspaceDir, yaml }),
+    })
+    assert.strictEqual(postRes.status, 200)
+    assert.strictEqual((await postRes.json()).relPath, '.triton/architecture-rules.yaml')
+    assert.strictEqual(fs.readFileSync(path.join(workspaceDir, '.triton', 'architecture-rules.yaml'), 'utf8'), yaml)
+
+    const getBody = await (await fetch(getUrl)).json()
+    assert.strictEqual(getBody.ok, true)
+    assert.strictEqual(getBody.yaml, yaml)
+  })
+})
