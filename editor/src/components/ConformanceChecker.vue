@@ -36,6 +36,7 @@ import { splitViolationsByHistory, type ViolationHistory } from '../conformance/
 import { createServerLlmClient } from '../conformance/serverLlmClient'
 import { DEFAULT_DIFF_RANGE, diffRangeFor, diffRangeLabel } from '../conformance/diffRange'
 import DiffRangePicker from './common/DiffRangePicker.vue'
+import ChoiceDialog, { type ChoiceDialogAction } from './common/ChoiceDialog.vue'
 
 const props = defineProps<{ runtimeBaseUrl: string }>()
 
@@ -80,6 +81,39 @@ const componentDepth = ref(2)
 /** Edge keys (`from->to`) the user has un-checked → forbidden in the derived Soll. */
 const disabledEdges = ref<Set<string>>(new Set())
 const sollYamlText = ref('')
+
+/** Open while the user decides between a repository's saved target and its as-is code. */
+const savedTargetChoiceOpen = ref(false)
+const SAVED_TARGET_ACTIONS: ChoiceDialogAction[] = [
+  { label: 'Start from as-is code', value: 'derive' },
+  { label: 'Use target architecture', value: 'load', primary: true },
+]
+
+function chooseSavedTarget(mode: string): void {
+  topologyMode.value = mode === 'derive' ? 'derive' : 'load'
+  savedTargetChoiceOpen.value = false
+}
+
+/** A rejected import: which file and why. Null when no error dialog is shown. */
+const importError = ref<{ fileName: string; message: string } | null>(null)
+const IMPORT_ERROR_ACTIONS: ChoiceDialogAction[] = [{ label: 'OK', value: 'ok', primary: true }]
+
+/** Read a chosen target-topology file; a valid one replaces the Soll, an invalid one changes nothing. */
+async function importSollFile(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // allow re-importing the same file
+  if (!file) return
+  const text = await file.text()
+  try {
+    readSollYaml(text)
+  } catch (err) {
+    importError.value = { fileName: file.name, message: errorMessage(err) }
+    return
+  }
+  sollYamlText.value = text
+  topologyMode.value = 'load'
+}
 
 const running = ref(false)
 const error = ref<string | null>(null)
@@ -138,10 +172,10 @@ async function loadRepository(): Promise<void> {
     loadedWorkspace.value = { workspacePath, workspaceName }
     disabledEdges.value = new Set()
     const savedTarget = await fetchTargetTopologyYaml(props.runtimeBaseUrl, workspacePath).catch(() => null)
-    if (savedTarget) {
-      sollYamlText.value = savedTarget
-      topologyMode.value = 'load'
-    }
+    // Start from the as-is code; a saved target is offered, kept in the YAML field either way.
+    sollYamlText.value = savedTarget ?? ''
+    topologyMode.value = 'derive'
+    savedTargetChoiceOpen.value = savedTarget !== null
   } catch (err) {
     error.value = `Failed to load repository: ${err instanceof Error ? err.message : String(err)}`
   } finally {
@@ -463,9 +497,15 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
           @click="editTarget()"
         >Edit target architecture →</button>
       </div>
-      <div class="conformance__controls conformance__segmented">
-        <label><input type="radio" value="derive" v-model="topologyMode" /> Derive from project</label>
-        <label><input type="radio" value="load" v-model="topologyMode" /> Load ilograph.yaml</label>
+      <div class="conformance__soll-source">
+        <div class="conformance__controls conformance__segmented">
+          <label><input type="radio" value="derive" v-model="topologyMode" /> Derive from project</label>
+          <label><input type="radio" value="load" v-model="topologyMode" /> Load ilograph.yaml</label>
+        </div>
+        <label class="conformance__file-btn">
+          Import target file…
+          <input type="file" accept=".yaml,.yml" class="conformance__file-input" @change="void importSollFile($event)" />
+        </label>
       </div>
 
       <div v-if="topologyMode === 'derive' && derivedTopology">
@@ -579,6 +619,24 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
         </div>
       </div>
     </section>
+
+    <ChoiceDialog
+      :open="savedTargetChoiceOpen"
+      title="Target architecture found"
+      :message="`${loadedWorkspace?.workspaceName ?? 'This repository'} already has a saved target architecture (.triton/target.ilograph.yaml). Check against it, or start from the as-is code?`"
+      :actions="SAVED_TARGET_ACTIONS"
+      cancel-value="load"
+      @choose="chooseSavedTarget"
+    />
+    <ChoiceDialog
+      :open="importError !== null"
+      title="Invalid file"
+      :message="`${importError?.fileName ?? 'The file'} was not loaded.`"
+      :detail="importError?.message"
+      :actions="IMPORT_ERROR_ACTIONS"
+      cancel-value="ok"
+      @choose="importError = null"
+    />
   </div>
 </template>
 
@@ -674,6 +732,20 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
 }
 .conformance__segmented input[type='radio'] { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
 .conformance__segmented label:has(input:checked) { background: #0f172a; color: #fff; }
+.conformance__soll-source { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.conformance__file-btn {
+  position: relative;
+  padding: 7px 14px;
+  border: 1px solid #0d9488;
+  border-radius: 8px;
+  color: #0d9488;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.conformance__file-btn:hover { background: #f0fdfa; }
+.conformance__file-input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.conformance__file-btn:focus-within { outline: 2px solid #0ea5e9; outline-offset: 2px; }
 
 /* Toggle switch (checkboxes) */
 .conformance__toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; font-size: 14px; }
