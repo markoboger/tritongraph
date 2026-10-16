@@ -458,12 +458,19 @@ async function runWithHistory(soll: SollModel, t: ResolvedTopology): Promise<Vio
 
 const violations = computed<ViolationRecord[]>(() => (results.value ?? []).flatMap((r) => r.violations))
 
+/**
+ * Heading for findings without a file: rule-engine findings computed on the whole CodeModel (the
+ * new/legacy/fixed comparison) only know the importing module, which their text names.
+ */
+const NO_FILE_GROUP = 'Component level (module named in each finding)'
+
 function groupByFile(list: readonly ViolationRecord[]): [string, ViolationRecord[]][] {
   const map = new Map<string, ViolationRecord[]>()
   for (const v of list) {
-    const list2 = map.get(v.location.file) ?? []
+    const file = v.location.file || NO_FILE_GROUP
+    const list2 = map.get(file) ?? []
     list2.push(v)
-    map.set(v.location.file, list2)
+    map.set(file, list2)
   }
   return [...map.entries()].sort(([a], [b]) => a.localeCompare(b))
 }
