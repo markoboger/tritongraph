@@ -771,6 +771,9 @@ function reconcileActiveTargetEditorTab(tab: DiagramTab): void {
   if (!isTargetEditorKey(tab.key)) return
   const session = targetEditorSessionForTabKey(tab.key)
   if (!session) return
+  // An empty canvas means "not rendered yet" (or flushed mid-tab-switch), never "every box deleted".
+  // ponytail: deleting literally every box of a scope is not representable; fine for a target model.
+  if (!(nodes.value as unknown as unknown[]).length) return
   const scopeId = targetEditorScopeIdForTabKey(tab.key)
   const reconcileNodes = (nodes.value as unknown as { id: string; data?: { label?: string } }[]).map((n) => ({
     id: String(n.id),
@@ -838,8 +841,6 @@ const activeSollDiff = computed(() => {
 function syncSollDiffFromCanvas(): void {
   const tab = activeTab.value
   if (!tab || !isTargetEditorKey(tab.key)) return
-  // Mid-tab-switch the refs are flushed to [] — reconciling then would record every box as deleted.
-  if (!(nodes.value as unknown as unknown[]).length) return
   reconcileActiveTargetEditorTab(tab)
   sollDiffRefresh.value++
 }
