@@ -8,13 +8,11 @@
  * Repositories are read at the head of the shared diff range (working tree when no head is set).
  */
 import { ref, computed, onMounted, shallowRef, watch } from 'vue'
-import yaml from 'js-yaml'
 import { check } from '../../../packages/triton-conformance/src/check'
 import { observedImportsFromCodeModel, runRuleEngine } from '../../../packages/triton-conformance/src/ruleEngine'
 import { deriveTopologyFromCodeModel } from '../../../packages/triton-conformance/src/deriveTopology'
-import { resolveTopology } from '../../../packages/triton-conformance/src/topology'
 import { summaryToChangedFact } from '../../../packages/triton-conformance/src/astExtractor'
-import { defaultRules, parseArchitectureRules } from '../../../packages/triton-conformance/src/rules'
+import { defaultRules } from '../../../packages/triton-conformance/src/rules'
 import type {
   CheckResult,
   ViolationRecord,
@@ -22,7 +20,6 @@ import type {
   SollModel,
   ArchitectureRule,
 } from '../../../packages/triton-conformance/src/types'
-import type { IlographDocument } from '../../../packages/triton-core/src/ilographTypes'
 import { listPythonExamples, type PythonExampleEntry } from '../python/pythonExampleDiagrams'
 import {
   fetchChangedPythonFiles,
@@ -34,6 +31,7 @@ import {
   type LoadedProject,
   type RuntimeRepoOption,
 } from '../conformance/loadProject'
+import { readRulesYaml, readSollYaml } from '../conformance/yamlImport'
 import { splitViolationsByHistory, type ViolationHistory } from '../conformance/violationHistory'
 import { createServerLlmClient } from '../conformance/serverLlmClient'
 import { DEFAULT_DIFF_RANGE, diffRangeFor, diffRangeLabel } from '../conformance/diffRange'
@@ -216,15 +214,16 @@ const topology = computed<ResolvedTopology | null>(() => {
   }
 })
 
-const loadedTopology = computed<ResolvedTopology | null>(() => {
-  if (topologyMode.value !== 'load' || sollYamlText.value.trim() === '') return null
+/** The loaded ilograph.yaml, or why it cannot be used. */
+const loadedSoll = computed<{ topology: ResolvedTopology | null; error: string | null }>(() => {
+  if (topologyMode.value !== 'load' || sollYamlText.value.trim() === '') return { topology: null, error: null }
   try {
-    const doc = yaml.load(sollYamlText.value) as IlographDocument
-    return resolveTopology(doc)
-  } catch {
-    return null
+    return { topology: readSollYaml(sollYamlText.value), error: null }
+  } catch (err) {
+    return { topology: null, error: errorMessage(err) }
   }
 })
+const loadedTopology = computed(() => loadedSoll.value.topology)
 
 const projectRulesText = computed<string | null>(() => {
   const files = entry.value?.files ?? {}
@@ -232,19 +231,26 @@ const projectRulesText = computed<string | null>(() => {
   return key ? files[key]! : null
 })
 
+/** The project's rules file, or why it is invalid — an invalid file blocks the run, never falls back. */
+const projectRules = computed<{ rules: ArchitectureRule[] | null; error: string | null }>(() => {
+  const text = projectRulesText.value
+  if (!text) return { rules: null, error: null }
+  try {
+    return { rules: readRulesYaml(text), error: null }
+  } catch (err) {
+    return { rules: null, error: errorMessage(err) }
+  }
+})
+
 const rules = computed<ArchitectureRule[]>(() => {
   const t = topology.value
-  if (!t) return []
-  const text = projectRulesText.value
-  if (text) {
-    try {
-      return parseArchitectureRules(yaml.load(text))
-    } catch {
-      return defaultRules(t)
-    }
-  }
-  return defaultRules(t)
+  if (!t || projectRules.value.error) return []
+  return projectRules.value.rules ?? defaultRules(t)
 })
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
 
 const rulesSource = computed(() => (projectRulesText.value ? 'project architecture-rules.yaml' : 'built-in default'))
 
@@ -259,6 +265,10 @@ async function run(): Promise<void> {
   const t = topology.value
   if (!project.value || !t) {
     error.value = topologyMode.value === 'load' ? 'Load a valid ilograph.yaml first.' : 'Select a project first.'
+    return
+  }
+  if (projectRules.value.error) {
+    error.value = `Invalid architecture-rules.yaml: ${projectRules.value.error}`
     return
   }
   running.value = true
@@ -494,10 +504,11 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
           rows="8"
           placeholder="Paste an ilograph.yaml (resources + perspectives[].relations)…"
         ></textarea>
-        <p v-if="sollYamlText.trim() && !loadedTopology" class="conformance__error">Could not parse topology from YAML.</p>
+        <p v-if="loadedSoll.error" class="conformance__error">Invalid ilograph.yaml: {{ loadedSoll.error }}</p>
       </div>
 
-      <p class="conformance__muted">Rules: {{ rules.length }} ({{ rulesSource }})</p>
+      <p v-if="projectRules.error" class="conformance__error">Invalid architecture-rules.yaml: {{ projectRules.error }}</p>
+      <p v-else class="conformance__muted">Rules: {{ rules.length }} ({{ rulesSource }})</p>
     </section>
 
     <section v-if="project" class="conformance__card">
