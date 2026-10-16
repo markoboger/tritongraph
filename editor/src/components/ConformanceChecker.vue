@@ -160,7 +160,7 @@ const error = ref<string | null>(null)
 const results = ref<CheckResult[] | null>(null)
 const useLlm = ref(false)
 
-/** Phase 3: for repositories, split violations into new/legacy/fixed against the base of the diff range. */
+/** Phase 3: for repositories, split violations into new/legacy/fixed against the base of the diff range (on by default). */
 const historyMode = ref(false)
 const history = ref<ViolationHistory | null>(null)
 
@@ -212,6 +212,9 @@ async function loadRepository(): Promise<void> {
       diffRangeFor(workspacePath).head,
     )
     loadedWorkspace.value = { workspacePath, workspaceName }
+    // On by default for repositories: it limits the LLM to the changed files. Without it every file
+    // of the repository is sent, which takes very long on a local model.
+    historyMode.value = true
     disabledEdges.value = new Set()
     const savedTarget = await fetchTargetTopologyYaml(props.runtimeBaseUrl, workspacePath).catch(() => null)
     // Start from the as-is code; a saved target is offered, kept in the YAML field either way.
@@ -683,6 +686,10 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
         Structural violations are split along {{ rangeLabel }}. LLM findings (if enabled) run on changed files
         only and all count as new — legacy semantics are not re-checked.
       </p>
+      <p v-else-if="useLlm && project && loadedWorkspace" class="conformance__warning">
+        The LLM will check all {{ project.summaries.length }} files of the project, not just the changed ones —
+        this can take long on a local model. Turn on "Compare vs base" to check only the changes.
+      </p>
     </section>
 
     <p v-if="error" class="conformance__error" role="alert">{{ error }}</p>
@@ -834,6 +841,7 @@ const canOpenDiagram = computed(() => !!entry.value || !!loadedWorkspace.value)
   box-sizing: border-box;
 }
 .conformance__error { color: #b42318; }
+.conformance__warning { color: #b45309; font-size: 13px; }
 .conformance__ok { color: #15803d; font-weight: 600; }
 
 /* Segmented control (radio pairs) */
