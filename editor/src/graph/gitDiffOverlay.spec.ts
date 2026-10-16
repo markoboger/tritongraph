@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffStatusByNode, importDiffFromModels, type ChurnByFile } from './gitDiffOverlay'
+import { diffStatusByNode, importDiffAtVisibleLevel, importEdgeSetsFromModels, type ChurnByFile } from './gitDiffOverlay'
 import type { CodeModel, CodeRelation } from '../../../packages/triton-core/src/languageModel'
 
 /** Minimal model: root `app` with two child modules, each backed by one file, plus one artefact. */
@@ -75,13 +75,43 @@ function modelWithImports(rels: CodeRelation[]): CodeModel {
   return { id: 'app', name: 'app', language: 'python', relations: rels, root: model().root }
 }
 
-describe('importDiffFromModels', () => {
-  it('reports added and removed container imports, ignoring unchanged ones', () => {
+describe('importDiffAtVisibleLevel', () => {
+  it('reports added and removed imports between visible modules, ignoring unchanged ones', () => {
     const base = modelWithImports([importRel('app.a', 'app.b'), importRel('app.a', 'app.c')])
     const current = modelWithImports([importRel('app.a', 'app.b'), importRel('app.a', 'app.d')])
-    const diff = importDiffFromModels(base, current)
+    const visible = new Set(['app.a', 'app.b', 'app.c', 'app.d'])
+    const diff = importDiffAtVisibleLevel(importEdgeSetsFromModels(base, current), visible)
 
     expect([...diff.added]).toEqual(['app.a->app.d'])
     expect(diff.removed).toEqual([{ from: 'app.a', to: 'app.c' }])
+  })
+
+  it('rolls module imports up to the package boxes on the canvas', () => {
+    const base = modelWithImports([importRel('app.core.config', 'app.shared.util'), importRel('app.orders.svc', 'app.identity.api')])
+    const current = modelWithImports([
+      importRel('app.core.config', 'app.shared.util'),
+      importRel('app.core.config', 'app.billing.repo'),
+    ])
+    const visible = new Set(['app.core', 'app.shared', 'app.billing', 'app.orders', 'app.identity'])
+    const diff = importDiffAtVisibleLevel(importEdgeSetsFromModels(base, current), visible)
+
+    expect([...diff.added]).toEqual(['app.core->app.billing'])
+    expect(diff.removed).toEqual([{ from: 'app.orders', to: 'app.identity' }])
+  })
+
+  it('does not mark an edge as added when the two boxes were already connected', () => {
+    const base = modelWithImports([importRel('app.core.a', 'app.billing.x')])
+    const current = modelWithImports([importRel('app.core.a', 'app.billing.x'), importRel('app.core.b', 'app.billing.y')])
+    const diff = importDiffAtVisibleLevel(importEdgeSetsFromModels(base, current), new Set(['app.core', 'app.billing']))
+
+    expect(diff.added.size).toBe(0)
+    expect(diff.removed).toEqual([])
+  })
+
+  it('ignores imports inside one box and modules without a box', () => {
+    const current = modelWithImports([importRel('app.core.a', 'app.core.b'), importRel('app.core.a', 'flask')])
+    const diff = importDiffAtVisibleLevel(importEdgeSetsFromModels(modelWithImports([]), current), new Set(['app.core']))
+
+    expect(diff.added.size).toBe(0)
   })
 })

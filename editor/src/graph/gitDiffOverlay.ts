@@ -82,10 +82,6 @@ export interface ImportDiff {
   removed: { from: string; to: string }[]
 }
 
-export function emptyImportDiff(): ImportDiff {
-  return { added: new Set(), removed: [] }
-}
-
 export function importEdgeKey(from: string, to: string): string {
   return `${from}->${to}`
 }
@@ -99,19 +95,59 @@ function containerImportKeys(model: CodeModel): Set<string> {
   return out
 }
 
-/** Diff container imports: `added` = in current not base, `removed` = in base not current. */
-export function importDiffFromModels(base: CodeModel, current: CodeModel): ImportDiff {
-  const oldKeys = containerImportKeys(base)
-  const newKeys = containerImportKeys(current)
+/** Container imports of both revisions. Module-level; rolled up to the visible boxes on demand. */
+export interface ImportEdgeSets {
+  base: Set<string>
+  current: Set<string>
+}
+
+export function emptyImportEdgeSets(): ImportEdgeSets {
+  return { base: new Set(), current: new Set() }
+}
+
+export function importEdgeSetsFromModels(base: CodeModel, current: CodeModel): ImportEdgeSets {
+  return { base: containerImportKeys(base), current: containerImportKeys(current) }
+}
+
+/**
+ * Diff the imports between the boxes on the canvas: each module import counts for the nearest box
+ * that contains it. An edge is `added` when the base had no import between those two boxes at all,
+ * `removed` when the current revision has none left — one more import between already connected
+ * boxes changes nothing. Imports inside one box, or from/to modules with no box, are ignored.
+ */
+export function importDiffAtVisibleLevel(edges: ImportEdgeSets, visibleIds: ReadonlySet<string>): ImportDiff {
+  const base = rollUpImportKeys(edges.base, visibleIds)
+  const current = rollUpImportKeys(edges.current, visibleIds)
   const added = new Set<string>()
-  for (const k of newKeys) if (!oldKeys.has(k)) added.add(k)
+  for (const k of current) if (!base.has(k)) added.add(k)
   const removed: { from: string; to: string }[] = []
-  for (const k of oldKeys) {
-    if (newKeys.has(k)) continue
+  for (const k of base) {
+    if (current.has(k)) continue
     const [from, to] = k.split('->')
     removed.push({ from, to })
   }
   return { added, removed }
+}
+
+function rollUpImportKeys(keys: ReadonlySet<string>, visibleIds: ReadonlySet<string>): Set<string> {
+  const out = new Set<string>()
+  for (const k of keys) {
+    const [from, to] = k.split('->')
+    const fromBox = visibleBoxOf(from, visibleIds)
+    const toBox = visibleBoxOf(to, visibleIds)
+    if (fromBox && toBox && fromBox !== toBox) out.add(importEdgeKey(fromBox, toBox))
+  }
+  return out
+}
+
+/** The module itself if it is on the canvas, else its nearest visible ancestor (`a.b.c` → `a.b` → `a`). */
+function visibleBoxOf(moduleId: string, visibleIds: ReadonlySet<string>): string | null {
+  let id = moduleId
+  while (id) {
+    if (visibleIds.has(id)) return id
+    id = id.slice(0, Math.max(id.lastIndexOf('.'), id.lastIndexOf('/'), 0))
+  }
+  return null
 }
 
 export function isGhostEdge(edgeId: string | undefined): boolean {

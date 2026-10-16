@@ -120,14 +120,16 @@ import {
 import type { CodeModel } from '../../packages/triton-core/src/languageModel'
 import {
   diffStatusByNode,
-  emptyImportDiff,
+  emptyImportEdgeSets,
   gitDiffKey,
-  importDiffFromModels,
+  importDiffAtVisibleLevel,
+  importEdgeSetsFromModels,
   isGhostEdge,
   makeGhostImportEdge,
   type ChurnByFile,
   type DiffStatus,
   type ImportDiff,
+  type ImportEdgeSets,
 } from './graph/gitDiffOverlay'
 import { saveTargetTopologyYaml } from './conformance/loadProject'
 import { downloadTextFile } from './downloadTextFile'
@@ -229,7 +231,11 @@ const showLayerBands = ref(false)
 /** Git-diff overlay: grey every box, colour the ones changed in the active diff range. */
 const gitDiffVisible = ref(false)
 const gitDiffStatusByNodeId = ref<Record<string, DiffStatus>>({})
-const gitDiffImportDiff = ref<ImportDiff>(emptyImportDiff())
+/** Module-level imports of the diff base and head; `gitDiffImportDiff` rolls them up to the boxes on the canvas. */
+const gitDiffImportEdges = ref<ImportEdgeSets>(emptyImportEdgeSets())
+const gitDiffImportDiff = computed<ImportDiff>(() =>
+  importDiffAtVisibleLevel(gitDiffImportEdges.value, new Set((nodes.value as unknown as { id: string }[]).map((n) => n.id))),
+)
 
 function requestedPerspectiveFromUrl(): string {
   if (typeof window === 'undefined') return ''
@@ -1698,14 +1704,14 @@ async function fetchWorkspaceBasePython(
   return body.pyFiles ?? []
 }
 
-/** Diff container imports between the base revision and the current model (added / removed edges). */
-async function computeImportDiff(
+/** Container imports of the base revision and the current model, for the added / removed edge overlay. */
+async function computeImportEdges(
   runtimeUrl: string,
   workspacePath: string,
   currentModel: CodeModel,
-): Promise<ImportDiff> {
+): Promise<ImportEdgeSets> {
   const baseFiles = await fetchWorkspaceBasePython(runtimeUrl, workspacePath)
-  if (!baseFiles.length) return emptyImportDiff()
+  if (!baseFiles.length) return emptyImportEdgeSets()
   const roots = pythonSourceRootsByWorkspacePath.get(workspacePath) ?? []
   const [{ summarizePython }, { buildPythonCodeModelFromSummaries }] = await importPythonModules()
   const summaries = await Promise.all(
@@ -1715,7 +1721,7 @@ async function computeImportDiff(
     summaries.map((s, i) => ({ filePath: baseFiles[i]!.relPath, summary: s })),
     { name: 'base' },
   )
-  return importDiffFromModels(baseModel, currentModel)
+  return importEdgeSetsFromModels(baseModel, currentModel)
 }
 
 /**
@@ -1751,7 +1757,7 @@ watch(
     const seq = ++gitDiffRequestSeq
     if (!visible || !model) {
       gitDiffStatusByNodeId.value = {}
-      gitDiffImportDiff.value = emptyImportDiff()
+      gitDiffImportEdges.value = emptyImportEdgeSets()
       applyGhostEdges()
       return
     }
@@ -1759,10 +1765,10 @@ watch(
     if (!session) return
     try {
       const churn = await fetchWorkspaceGitDiff(session.runtimeUrl, session.workspacePath)
-      const importDiff = await computeImportDiff(session.runtimeUrl, session.workspacePath, model)
+      const importEdges = await computeImportEdges(session.runtimeUrl, session.workspacePath, model)
       if (seq !== gitDiffRequestSeq) return // a newer range or model superseded this request
       gitDiffStatusByNodeId.value = diffStatusByNode(model, churn)
-      gitDiffImportDiff.value = importDiff
+      gitDiffImportEdges.value = importEdges
       applyGhostEdges()
     } catch (err) {
       if (seq !== gitDiffRequestSeq) return
