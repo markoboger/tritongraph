@@ -39,20 +39,6 @@ rules:
 
 const CLEAN_RESPONSE = JSON.stringify({ violations: [] })
 
-const VIOLATION_RESPONSE = JSON.stringify({
-  violations: [
-    {
-      rule_id: 'no-domain-framework-coupling',
-      symbol: 'quote',
-      line: 1,
-      subject: { offending_type: 'flask.Request', via: 'signature' },
-      reason: 'Parameter req is typed flask.Request; the domain layer references a web framework.',
-      suggestion: 'Accept a plain DTO; map the request in the api layer.',
-      confidence: 0.8,
-    },
-  ],
-})
-
 const BASE_FILES: Record<string, string> = {
   'soll.ilograph.yaml': SOLL_YAML,
   'architecture-rules.yaml': RULES_YAML,

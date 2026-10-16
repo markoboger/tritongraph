@@ -30,7 +30,7 @@ function writeRepo(files: Record<string, string>): string {
   return root
 }
 
-function runRules(repoRoot: string, graphFacts: Parameters<typeof observedImportsFromFacts>[0]) {
+function runRules(graphFacts: Parameters<typeof observedImportsFromFacts>[0]) {
   return check({
     soll: sollModel,
     changedFacts: [],
@@ -58,11 +58,11 @@ describe('rule-graph full', () => {
       'app/infra/db.py',
     ])
 
-    const diffResults = await runRules(repo, diff.facts)
+    const diffResults = await runRules(diff.facts)
     expect(categories(diffResults)).toEqual([]) // api → domain is allowed; the rest is invisible
     expect(exitCode(diffResults)).toBe(0)
 
-    const fullResults = await runRules(repo, full.facts)
+    const fullResults = await runRules(full.facts)
     expect(categories(fullResults)).toContain('cycle')
     expect(exitCode(fullResults)).toBe(1)
   })
@@ -80,6 +80,6 @@ describe('rule-graph full', () => {
     expect(extracted.facts.map((f) => f.path)).toEqual(['app/domain/order.py'])
 
     // The surviving file has no violation, so the run still exits 0 despite the skipped file.
-    expect(exitCode(await runRules(repo, extracted.facts))).toBe(0)
+    expect(exitCode(await runRules(extracted.facts))).toBe(0)
   })
 })
