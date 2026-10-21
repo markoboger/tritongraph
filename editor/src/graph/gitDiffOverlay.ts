@@ -145,12 +145,19 @@ function rollUpImportKeys(keys: ReadonlySet<string>, visibleIds: ReadonlySet<str
  * base did not — e.g. a box that newly reaches into one tile of another box.
  */
 export function importIsNewBetween(edges: ImportEdgeSets, fromScope: string, toScope: string): boolean {
-  const reaches = (keys: ReadonlySet<string>) =>
-    [...keys].some((k) => {
-      const [from, to] = k.split('->')
-      return isInside(from, fromScope) && isInside(to, toScope)
-    })
-  return reaches(edges.current) && !reaches(edges.base)
+  return reachesBetween(edges.current, fromScope, toScope) && !reachesBetween(edges.base, fromScope, toScope)
+}
+
+/** True when the base imported from anywhere inside `fromScope` into anywhere inside `toScope` and the head no longer does. */
+export function importIsRemovedBetween(edges: ImportEdgeSets, fromScope: string, toScope: string): boolean {
+  return reachesBetween(edges.base, fromScope, toScope) && !reachesBetween(edges.current, fromScope, toScope)
+}
+
+function reachesBetween(keys: ReadonlySet<string>, fromScope: string, toScope: string): boolean {
+  return [...keys].some((k) => {
+    const [from, to] = k.split('->')
+    return isInside(from, fromScope) && isInside(to, toScope)
+  })
 }
 
 function isInside(id: string, scope: string): boolean {
@@ -202,6 +209,8 @@ export interface GitDiffContext {
   importDiff: Ref<ImportDiff>
   /** Is the import from box `fromScope` into tile `toScope` new? Git diff only; absent for the Ist/Soll diff. */
   isNewImportInto?: (fromScope: string, toScope: string) => boolean
+  /** Did box `fromScope` import into tile `toScope` at the diff base, but no longer? Git diff only. */
+  isRemovedImportInto?: (fromScope: string, toScope: string) => boolean
 }
 
 export const gitDiffKey = Symbol('tritonGitDiff') as InjectionKey<GitDiffContext>

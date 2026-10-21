@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { gitDiffImportEdgeColor, gitDiffKey, isGhostEdge } from '../../graph/gitDiffOverlay'
+import { REMOVED_EDGE_COLOR, gitDiffImportEdgeColor, gitDiffKey, isGhostEdge } from '../../graph/gitDiffOverlay'
 import {
   aggregateFanTopPctForUsedSlots,
   aggregateSourceHandleId,
@@ -9,6 +9,7 @@ import {
 } from '../../graph/handles'
 import type { ModuleAnchorTops } from '../../graph/layoutDependencyLayers'
 import { edgeContributesToClasspathDepth, strokeColorForFlowEdge } from '../../graph/relationKinds'
+import { tileAccessLines, type TileAccessAnchor, type TileAccessHandle } from '../../graph/tileAccessLines'
 import { usedHandlesForNode } from '../../graph/usedFlowHandles'
 
 const props = defineProps<{
@@ -94,7 +95,10 @@ function endpointPortTopForOtherPackage(otherPackageId: string, side: 'left' | '
   const root = ownNodeEl()
   if (!root) return null
 
-  const endpoints = Array.from(root.querySelectorAll<HTMLElement>('.package-box__external-endpoint'))
+  // Tile anchors are reached by the inner tile-access lines instead; the handle keeps its slot.
+  const endpoints = Array.from(
+    root.querySelectorAll<HTMLElement>('.package-box__external-endpoint:not(.tile-entry-anchor)'),
+  )
   const ports = endpoints
     .filter((el) => el.dataset.tritonForeignPackageId === otherPackageId)
     .filter((el) => el.classList.contains('package-box__external-endpoint--right') === (side === 'right'))
@@ -117,15 +121,19 @@ function endpointPortTopForOtherPackage(otherPackageId: string, side: 'left' | '
   return Math.max(0, Math.min(100, (y / rootLayoutH) * 100))
 }
 
-function edgeForAggInSlot(slot: number) {
+function edgesForAggInSlot(slot: number) {
   const hid = aggregateTargetHandleId(slot)
-  return getEdges.value.find(
+  return getEdges.value.filter(
     (e) =>
       edgeVisible(e) &&
       edgeContributesToClasspathDepth(e) &&
       String(e.target) === props.nodeId &&
       String(e.targetHandle ?? aggregateTargetHandleId(0)) === hid,
   )
+}
+
+function edgeForAggInSlot(slot: number) {
+  return edgesForAggInSlot(slot)[0]
 }
 
 function edgeForAggOutSlot(slot: number) {
@@ -139,15 +147,80 @@ function edgeForAggOutSlot(slot: number) {
   )
 }
 
-function anchorAggInTop(slot: number): string {
+function anchorAggInTopPct(slot: number): number {
   const fb = aggregateFanTopPctForUsedSlots(slot, used.value.aggInSlots)
   const e = edgeForAggInSlot(slot)
   if (e) {
     const portTop = endpointPortTopForOtherPackage(String(e.source), 'left')
-    if (portTop !== null) return `${portTop}%`
+    if (portTop !== null) return portTop
   }
   const v = props.anchorTops?.aggIn?.[String(slot)]
-  return `${v != null && Number.isFinite(v) ? v : fb}%`
+  return v != null && Number.isFinite(v) ? v : fb
+}
+
+function anchorAggInTop(slot: number): string {
+  return `${anchorAggInTopPct(slot)}%`
+}
+
+/** Box-local layout px of a tile entry point: the left edge, vertically centred, of `el`. */
+function tileEntryPoint(el: HTMLElement, rootRect: DOMRect, scale: number): { x: number; y: number } {
+  const r = el.getBoundingClientRect()
+  return { x: (r.left - rootRect.left) * scale, y: (r.top + r.height / 2 - rootRect.top) * scale }
+}
+
+/** Removed imports end in their own lane, so they never merge with a live import from the same box. */
+function removedImportSourceKey(sourceId: string): string {
+  return `removed:${sourceId}`
+}
+
+/**
+ * Where incoming edges enter the shown tiles: the tile anchors (see TileEntryAnchors) of live imports,
+ * plus — in the git diff — every tile a box imported into at the base but no longer does.
+ */
+function measureTileAnchors(root: HTMLElement, removedSources: readonly string[]): TileAccessAnchor[] {
+  const rootRect = root.getBoundingClientRect()
+  const scale = rootRect.width > 0 ? root.offsetWidth / rootRect.width : 1
+  const live = Array.from(root.querySelectorAll<HTMLElement>('.tile-entry-anchor')).map((el) => ({
+    sourceId: el.dataset.tritonForeignPackageId ?? '',
+    ...tileEntryPoint(el, rootRect, scale),
+  }))
+  const tiles = Array.from(root.querySelectorAll<HTMLElement>('[data-triton-tile-id]'))
+  const removed = removedSources.flatMap((sourceId) =>
+    tiles
+      .filter((tile) => gitDiff?.isRemovedImportInto?.(sourceId, tile.dataset.tritonTileId ?? ''))
+      .map((tile) => ({ sourceId: removedImportSourceKey(sourceId), ...tileEntryPoint(tile, rootRect, scale) })),
+  )
+  return [...live, ...removed]
+}
+
+function isEmphasized(e: { class?: unknown }): boolean {
+  return String(e.class ?? '').split(/\s+/).includes('tg-edge-emph')
+}
+
+/** Incoming edges continue inside a focused box of tiles: from their handle to each tile they reach. */
+const tileLines = computed(() => {
+  measureVersion.value
+  const root = ownNodeEl()
+  if (!root || !root.querySelector('[data-triton-tile-id]')) return null
+  const height = root.offsetHeight
+  const handles: TileAccessHandle[] = used.value.aggInSlots.flatMap((slot) => {
+    const y = (anchorAggInTopPct(slot) / 100) * height
+    return edgesForAggInSlot(slot).map((e) =>
+      isGhostEdge(e.id)
+        ? { sourceId: removedImportSourceKey(String(e.source)), y, color: REMOVED_EDGE_COLOR, dashed: true, emphasized: isEmphasized(e) }
+        : { sourceId: String(e.source), y, color: strokeForHit(e), emphasized: isEmphasized(e) },
+    )
+  })
+  const removedSources = used.value.aggInSlots.flatMap((slot) =>
+    edgesForAggInSlot(slot).filter((e) => isGhostEdge(e.id)).map((e) => String(e.source)),
+  )
+  const anchors = measureTileAnchors(root, removedSources)
+  if (!anchors.length) return null
+  return { width: root.offsetWidth, height, lines: tileAccessLines(handles, anchors) }
+})
+
+function arrowTip([x, y]: [number, number]): string {
+  return `${x},${y} ${x - 7},${y - 4} ${x - 7},${y + 4}`
 }
 
 function anchorAggOutTop(slot: number): string {
@@ -167,7 +240,7 @@ onMounted(() => {
     if (root) {
       ro = new ResizeObserver(scheduleMeasureRefresh)
       ro.observe(root)
-      for (const endpoint of root.querySelectorAll('.package-box__external-endpoint')) {
+      for (const endpoint of root.querySelectorAll('.package-box__external-endpoint, .package-box__inner-package-row')) {
         ro.observe(endpoint)
       }
     }
@@ -191,6 +264,22 @@ watch(
 </script>
 
 <template>
+  <svg
+    v-if="tileLines?.lines.length"
+    class="tile-access-lines"
+    :viewBox="`0 0 ${tileLines.width} ${tileLines.height}`"
+    aria-hidden="true"
+  >
+    <g v-for="(line, i) in tileLines.lines" :key="i" :stroke="line.color" :fill="line.color">
+      <polyline
+        :points="line.points.map((p) => p.join(',')).join(' ')"
+        fill="none"
+        :stroke-width="line.emphasized ? 3 : 1.5"
+        :stroke-dasharray="line.dashed ? '6 4' : undefined"
+      />
+      <polygon :points="arrowTip(line.points[line.points.length - 1]!)" stroke="none" />
+    </g>
+  </svg>
   <Handle
     v-for="slot in used.aggInSlots"
     :key="aggregateTargetHandleId(slot)"
@@ -218,6 +307,15 @@ watch(
 </template>
 
 <style scoped>
+.tile-access-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 11;
+}
 .handle {
   position: absolute;
   z-index: 12;

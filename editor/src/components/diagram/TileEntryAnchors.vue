@@ -2,7 +2,7 @@
 /**
  * Invisible landing points for the outer edges of a focused box: one per box that imports into this
  * tile, at the tile's left edge and vertical middle. {@link DepthRelationHandles} measures them and
- * moves the incoming edge's handle there, so the edge visibly arrives at the tile it reaches.
+ * draws a line from the incoming edge's handle to each, so the edge visibly continues to its tiles.
  */
 defineProps<{ accessedFrom: readonly string[] }>()
 </script>

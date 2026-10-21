@@ -30,7 +30,7 @@ const emit = defineEmits<{
   >
     <template v-if="(packageColumns?.length ?? 0) > 0">
       <div v-for="(col, ci) in packageColumns" :key="'pkgcol-' + ci" class="package-box__inner-package-col">
-        <div v-for="child in col" :key="child.id" class="package-box__inner-package-row">
+        <div v-for="child in col" :key="child.id" class="package-box__inner-package-row" :data-triton-tile-id="child.fixed ? child.id : undefined">
           <TileEntryAnchors v-if="child.accessedFrom?.length" :accessed-from="child.accessedFrom" />
           <div
             v-if="childPackagePortsById.get(childPackagePortId(child.id, 'left'))"
@@ -83,7 +83,7 @@ const emit = defineEmits<{
       </div>
     </template>
     <template v-else>
-      <div v-for="child in packages" :key="child.id" class="package-box__inner-package-row">
+      <div v-for="child in packages" :key="child.id" class="package-box__inner-package-row" :data-triton-tile-id="child.fixed ? child.id : undefined">
       <TileEntryAnchors v-if="child.accessedFrom?.length" :accessed-from="child.accessedFrom" />
       <div
         v-if="childPackagePortsById.get(childPackagePortId(child.id, 'left'))"
@@ -249,7 +249,7 @@ const emit = defineEmits<{
 /* Entry point of the box: some sibling box imports into this tile. */
 .package-box__inner-slot--accessed {
   border-radius: 10px;
-  box-shadow: 0 0 0 2px #3b82f6;
+  box-shadow: 0 0 0 1px #3b82f6;
 }
 .package-box__port {
   width: 14px;

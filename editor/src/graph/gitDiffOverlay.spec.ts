@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffStatusByNode, importDiffAtVisibleLevel, importEdgeSetsFromModels, importIsNewBetween, type ChurnByFile } from './gitDiffOverlay'
+import { diffStatusByNode, importDiffAtVisibleLevel, importEdgeSetsFromModels, importIsNewBetween, importIsRemovedBetween, type ChurnByFile } from './gitDiffOverlay'
 import type { CodeModel, CodeRelation } from '../../../packages/triton-core/src/languageModel'
 
 /** Minimal model: root `app` with two child modules, each backed by one file, plus one artefact. */
@@ -128,5 +128,20 @@ describe('importIsNewBetween', () => {
 
   it('is false for an import that already existed', () => {
     expect(importIsNewBetween(edges, 'app.core', 'app.billing.repo')).toBe(false)
+  })
+})
+
+describe('importIsRemovedBetween', () => {
+  const edges = importEdgeSetsFromModels(
+    modelWithImports([importRel('app.orders.a', 'app.identity.services.x'), importRel('app.core.b', 'app.identity.api.y')]),
+    modelWithImports([importRel('app.core.b', 'app.identity.api.y')]),
+  )
+
+  it('is true for an import into a tile that the head no longer has', () => {
+    expect(importIsRemovedBetween(edges, 'app.orders', 'app.identity.services')).toBe(true)
+  })
+
+  it('is false for an import that still exists', () => {
+    expect(importIsRemovedBetween(edges, 'app.core', 'app.identity.api')).toBe(false)
   })
 })
