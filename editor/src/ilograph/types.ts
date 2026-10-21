@@ -30,6 +30,10 @@ export type TritonInnerPackageSpec = {
   name: string
   subtitle?: string
   innerPackages?: readonly TritonInnerPackageSpec[]
+  /** Display-only tile: no click, no further drill. */
+  fixed?: boolean
+  /** Sibling boxes whose code imports into this tile from outside its parent box. */
+  accessedFrom?: readonly string[]
 }
 
 /**

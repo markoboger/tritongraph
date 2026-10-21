@@ -979,6 +979,10 @@ const FOCUS_INNER_ARTEFACT_MAX_W_PX = 1200
 /** Floor for a focused package whose hosting node renders inner sub-packages. */
 const FOCUS_INNER_PACKAGE_MIN_W_PX = 540
 
+function allTilesFixed(innerPackages: unknown): boolean {
+  return Array.isArray(innerPackages) && innerPackages.every((p) => (p as { fixed?: unknown } | null)?.fixed === true)
+}
+
 /**
  * Filter inner relations down to **member↔member** edges (drop foreign / cross-package endpoints).
  * Same membership rule as {@link assignInnerArtefactLayers} and {@link packageInnerLayoutPressure01ForOuterDrill}.
@@ -1042,7 +1046,10 @@ export function preferredPackageFocusWidth(data: PackageContentLike | undefined)
   }
 
   let packageWidth = 0
-  if (innerPackageCount) {
+  if (innerPackageCount && allTilesFixed(data.innerPackages)) {
+    // Fixed tiles (package graph) have no relations between them, so they stack in ONE column.
+    packageWidth = FOCUS_INNER_PACKAGE_MIN_W_PX
+  } else if (innerPackageCount) {
     /** Sub-packages get a generous per-tile target since their inner chrome is full module-card sized. */
     const innerEdgeCount = arrayLength(data.innerArtefactRelations)
     const subPackageRelationGap = innerEdgeCount > 0 ? Math.min(160, 64 + innerEdgeCount * 8) : 36

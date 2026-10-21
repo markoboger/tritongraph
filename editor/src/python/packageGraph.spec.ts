@@ -96,3 +96,39 @@ describe('codeModelToIlographDocument — package-graph projection', () => {
     expect(inner.map((a) => a.name)).toContain('Conn')
   })
 })
+
+describe('codeModelToIlographDocument — package-graph tiles', () => {
+  const app = pkg('app', 'app', [
+    pkg('app.billing', 'billing', [
+      pkg('app.billing.services', 'services', [mod('app.billing.services.invoice', 'invoice')]),
+      pkg('app.billing.repository', 'repository', [mod('app.billing.repository.repo', 'repo')]),
+      mod('app.billing.config', 'config'),
+    ]),
+    pkg('app.orders', 'orders', [mod('app.orders.checkout', 'checkout')]),
+    pkg('app.core', 'core', [mod('app.core.settings', 'settings')]),
+  ])
+  const relations = [
+    imp('app.orders.checkout', 'app.billing.services.invoice'),
+    imp('app.core.settings', 'app.billing.repository.repo'),
+    imp('app.orders.checkout', 'app.billing.repository.repo'),
+    imp('app.billing.services.invoice', 'app.billing.repository.repo'), // inside billing: ignored
+    imp('app.billing.services.invoice', 'flask'), // to an unknown module: ignored
+  ]
+  const tilesOf = (id: string) =>
+    pg(model(app, relations)).resources.find((r) => r.id === id)?.['x-triton-inner-packages'] as
+      | Array<{ id: string; fixed?: boolean; accessedFrom?: string[]; innerPackages?: unknown }>
+      | undefined
+
+  it('gives every box its direct children as fixed tiles, one level deep', () => {
+    const tiles = tilesOf('app.billing')!
+    expect(tiles.map((t) => t.id)).toEqual(['app.billing.services', 'app.billing.repository', 'app.billing.config'])
+    expect(tiles.every((t) => t.fixed === true && t.innerPackages === undefined)).toBe(true)
+  })
+
+  it('lists the sibling boxes that import into each tile, not imports from inside the box', () => {
+    const byId = new Map(tilesOf('app.billing')!.map((t) => [t.id, t.accessedFrom]))
+    expect(byId.get('app.billing.services')).toEqual(['app.orders'])
+    expect(byId.get('app.billing.repository')).toEqual(['app.core', 'app.orders'])
+    expect(byId.get('app.billing.config')).toBeUndefined()
+  })
+})

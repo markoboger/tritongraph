@@ -24,6 +24,10 @@ type TritonInnerPackageSpec = {
   name: string
   subtitle?: string
   innerPackages?: readonly TritonInnerPackageSpec[]
+  /** Display-only tile: no click, no further drill. */
+  fixed?: boolean
+  /** Sibling boxes whose code imports into this tile from outside its parent box. */
+  accessedFrom?: readonly string[]
 }
 
 type TritonInnerArtefactSpec = {
@@ -792,13 +796,17 @@ function codeModelToPackageGraphDocument(
     }
   }
 
-  const resources: TritonCodeResource[] = scope.children.map((child) => ({
-    id: child.id,
-    name: child.name,
-    subtitle: withLoc(packageGraphSubtitle(child), subtreeLoc(child, model.fileLineCounts)),
-    'x-triton-node-type': 'package',
-    'x-triton-package-language': model.language,
-  }))
+  const resources: TritonCodeResource[] = scope.children.map((child) => {
+    const tiles = packageGraphTiles(child, scope.children, model.relations, model.fileLineCounts)
+    return {
+      id: child.id,
+      name: child.name,
+      subtitle: withLoc(packageGraphSubtitle(child), subtreeLoc(child, model.fileLineCounts)),
+      'x-triton-node-type': 'package',
+      'x-triton-package-language': model.language,
+      ...(tiles.length ? { 'x-triton-inner-packages': tiles } : {}),
+    }
+  })
   return {
     description,
     resources,
@@ -811,6 +819,46 @@ function codeModelToPackageGraphDocument(
       },
     ],
   }
+}
+
+/**
+ * The direct children of a package-graph box as fixed tiles, shown when the box is focused: one level
+ * only (no deeper drill), each listing the sibling boxes whose code imports into it — the box's entry
+ * points as seen from outside. Imports between the tiles themselves are left out on purpose.
+ */
+export function packageGraphTiles(
+  box: CodeContainer,
+  siblings: readonly CodeContainer[],
+  relations: readonly CodeRelation[],
+  counts?: FileLineCounts,
+): TritonInnerPackageSpec[] {
+  return box.children.map((tile) => {
+    const accessedFrom = siblingsImportingInto(tile, box, siblings, relations)
+    return {
+      id: tile.id,
+      name: tile.name,
+      subtitle: withLoc(packageGraphSubtitle(tile), subtreeLoc(tile, counts)),
+      fixed: true,
+      ...(accessedFrom.length ? { accessedFrom } : {}),
+    }
+  })
+}
+
+function siblingsImportingInto(
+  tile: CodeContainer,
+  box: CodeContainer,
+  siblings: readonly CodeContainer[],
+  relations: readonly CodeRelation[],
+): string[] {
+  const out = new Set<string>()
+  for (const rel of relations) {
+    if (rel.kind !== 'imports') continue
+    const from = endpointContainerId(rel.from)
+    if (!containerInScope(endpointContainerId(rel.to), tile.id) || containerInScope(from, box.id)) continue
+    const sibling = siblings.find((s) => containerInScope(from, s.id))
+    if (sibling) out.add(sibling.id)
+  }
+  return [...out].sort()
 }
 
 /** Separator-agnostic "is `containerId` inside `scopeId`" test (Python uses `.`, TS uses `/`). */

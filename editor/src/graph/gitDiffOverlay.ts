@@ -140,6 +140,23 @@ function rollUpImportKeys(keys: ReadonlySet<string>, visibleIds: ReadonlySet<str
   return out
 }
 
+/**
+ * True when the head imports from anywhere inside `fromScope` into anywhere inside `toScope` and the
+ * base did not — e.g. a box that newly reaches into one tile of another box.
+ */
+export function importIsNewBetween(edges: ImportEdgeSets, fromScope: string, toScope: string): boolean {
+  const reaches = (keys: ReadonlySet<string>) =>
+    [...keys].some((k) => {
+      const [from, to] = k.split('->')
+      return isInside(from, fromScope) && isInside(to, toScope)
+    })
+  return reaches(edges.current) && !reaches(edges.base)
+}
+
+function isInside(id: string, scope: string): boolean {
+  return id === scope || id.startsWith(`${scope}.`) || id.startsWith(`${scope}/`)
+}
+
 /** The module itself if it is on the canvas, else its nearest visible ancestor (`a.b.c` → `a.b` → `a`). */
 function visibleBoxOf(moduleId: string, visibleIds: ReadonlySet<string>): string | null {
   let id = moduleId
@@ -183,6 +200,8 @@ export interface GitDiffContext {
   visible: Ref<boolean>
   statusById: Ref<Record<string, DiffStatus>>
   importDiff: Ref<ImportDiff>
+  /** Is the import from box `fromScope` into tile `toScope` new? Git diff only; absent for the Ist/Soll diff. */
+  isNewImportInto?: (fromScope: string, toScope: string) => boolean
 }
 
 export const gitDiffKey = Symbol('tritonGitDiff') as InjectionKey<GitDiffContext>

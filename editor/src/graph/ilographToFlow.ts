@@ -98,11 +98,16 @@ function normalizeInnerPackageSpec(raw: unknown): TritonInnerPackageSpec | null 
           .map(normalizeInnerPackageSpec)
           .filter((x): x is TritonInnerPackageSpec => x !== null)
       : []
+  const accessedFrom = Array.isArray(o.accessedFrom)
+    ? o.accessedFrom.filter((x): x is string => typeof x === 'string')
+    : []
   return {
     id: o.id,
     name,
     ...(subtitle ? { subtitle } : {}),
     ...(innerNested.length ? { innerPackages: innerNested } : {}),
+    ...(o.fixed === true ? { fixed: true } : {}),
+    ...(accessedFrom.length ? { accessedFrom } : {}),
   }
 }
 

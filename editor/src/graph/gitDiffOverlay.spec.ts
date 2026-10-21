@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffStatusByNode, importDiffAtVisibleLevel, importEdgeSetsFromModels, type ChurnByFile } from './gitDiffOverlay'
+import { diffStatusByNode, importDiffAtVisibleLevel, importEdgeSetsFromModels, importIsNewBetween, type ChurnByFile } from './gitDiffOverlay'
 import type { CodeModel, CodeRelation } from '../../../packages/triton-core/src/languageModel'
 
 /** Minimal model: root `app` with two child modules, each backed by one file, plus one artefact. */
@@ -113,5 +113,20 @@ describe('importDiffAtVisibleLevel', () => {
     const diff = importDiffAtVisibleLevel(importEdgeSetsFromModels(modelWithImports([]), current), new Set(['app.core']))
 
     expect(diff.added.size).toBe(0)
+  })
+})
+
+describe('importIsNewBetween', () => {
+  const edges = importEdgeSetsFromModels(
+    modelWithImports([importRel('app.core.a', 'app.billing.repo.x')]),
+    modelWithImports([importRel('app.core.a', 'app.billing.repo.x'), importRel('app.orders.b', 'app.billing.services.y')]),
+  )
+
+  it('is true for an import into a tile that the base did not have', () => {
+    expect(importIsNewBetween(edges, 'app.orders', 'app.billing.services')).toBe(true)
+  })
+
+  it('is false for an import that already existed', () => {
+    expect(importIsNewBetween(edges, 'app.core', 'app.billing.repo')).toBe(false)
   })
 })

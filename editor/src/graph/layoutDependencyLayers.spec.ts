@@ -386,6 +386,14 @@ describe('preferredPackageFocusWidth', () => {
     expect(preferredPackageFocusWidth({ innerArtefacts: [], innerPackages: [] })).toBeUndefined()
   })
 
+  it('keeps fixed package-graph tiles to one stacked column, however many there are', () => {
+    const tiles = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `app.box.t${i}`, name: `t${i}`, fixed: true }))
+    expect(preferredPackageFocusWidth({ innerPackages: tiles(5) })).toBe(540)
+    expect(preferredPackageFocusWidth({ innerPackages: tiles(12) })).toBe(540)
+    // Non-fixed (drillable) inner packages keep the per-tile budget.
+    expect(preferredPackageFocusWidth({ innerPackages: [{ id: 'a', name: 'a' }, { id: 'b', name: 'b' }, { id: 'c', name: 'c' }] })).toBeGreaterThan(540)
+  })
+
   it('keeps a single-column class-stacking package compact (no relations between members)', () => {
     const innerArtefacts = Array.from({ length: 7 }, (_, i) => ({
       id: `p::class:C${i}`,

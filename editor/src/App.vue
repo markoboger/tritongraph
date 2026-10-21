@@ -124,6 +124,7 @@ import {
   gitDiffKey,
   importDiffAtVisibleLevel,
   importEdgeSetsFromModels,
+  importIsNewBetween,
   isGhostEdge,
   makeGhostImportEdge,
   type ChurnByFile,
@@ -1915,6 +1916,8 @@ provide(gitDiffKey, {
   visible: effectiveDiffVisible,
   statusById: effectiveDiffStatusById,
   importDiff: effectiveDiffImportDiff,
+  isNewImportInto: (fromScope, toScope) =>
+    !activeSollDiff.value && importIsNewBetween(gitDiffImportEdges.value, fromScope, toScope),
 })
 
 const nodeTypes = {

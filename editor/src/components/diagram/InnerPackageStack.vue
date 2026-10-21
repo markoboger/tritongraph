@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { TritonInnerPackageSpec } from '../../ilograph/types'
 import PackageBox from './PackageBox.vue'
+import InnerPackageAccessChips from './InnerPackageAccessChips.vue'
 import { childPackagePortId, type PortEndpoint } from './innerArtefactGraphHelpers'
 
 defineProps<{
@@ -21,7 +22,10 @@ const emit = defineEmits<{
   <div
     v-if="packages.length"
     class="package-box__inner-package-stack"
-    :class="{ 'package-box__inner-package-stack--columns': (packageColumns?.length ?? 0) > 1 }"
+    :class="{
+      'package-box__inner-package-stack--columns': (packageColumns?.length ?? 0) > 1,
+      'package-box__inner-package-stack--fixed': packages.every((p) => p.fixed),
+    }"
   >
     <template v-if="(packageColumns?.length ?? 0) > 0">
       <div v-for="(col, ci) in packageColumns" :key="'pkgcol-' + ci" class="package-box__inner-package-col">
@@ -38,9 +42,13 @@ const emit = defineEmits<{
           </div>
           <div
             :ref="(el) => bindSlotEl(child.id, el)"
-            class="package-box__inner-slot package-box__inner-slot--clickable package-box__inner-slot--inner-package"
-            :class="{ 'package-box__inner-slot--inner-package-expanded': expandedPackageId === child.id }"
-            @click.stop="onInnerCardClick(child.id)"
+            class="package-box__inner-slot package-box__inner-slot--inner-package"
+            :class="{
+              'package-box__inner-slot--clickable': !child.fixed,
+              'package-box__inner-slot--accessed': !!child.accessedFrom?.length,
+              'package-box__inner-slot--inner-package-expanded': expandedPackageId === child.id,
+            }"
+            @click.stop="child.fixed ? undefined : onInnerCardClick(child.id)"
           >
             <PackageBox
               embedded
@@ -53,6 +61,7 @@ const emit = defineEmits<{
               :show-color-tool="false"
               @link-action="emit('link-action', $event)"
             >
+              <InnerPackageAccessChips v-if="child.accessedFrom?.length" :tile-id="child.id" :accessed-from="child.accessedFrom" />
               <div v-if="expandedPackageId === child.id" class="package-box__expanded-inner-diagram" @click.stop>
                 <slot name="expanded-package" />
               </div>
@@ -85,9 +94,13 @@ const emit = defineEmits<{
       </div>
       <div
         :ref="(el) => bindSlotEl(child.id, el)"
-        class="package-box__inner-slot package-box__inner-slot--clickable package-box__inner-slot--inner-package"
-        :class="{ 'package-box__inner-slot--inner-package-expanded': expandedPackageId === child.id }"
-        @click.stop="onInnerCardClick(child.id)"
+        class="package-box__inner-slot package-box__inner-slot--inner-package"
+        :class="{
+              'package-box__inner-slot--clickable': !child.fixed,
+              'package-box__inner-slot--accessed': !!child.accessedFrom?.length,
+              'package-box__inner-slot--inner-package-expanded': expandedPackageId === child.id,
+            }"
+        @click.stop="child.fixed ? undefined : onInnerCardClick(child.id)"
       >
         <PackageBox
           embedded
@@ -100,7 +113,8 @@ const emit = defineEmits<{
           :show-color-tool="false"
           @link-action="emit('link-action', $event)"
         >
-          <div v-if="expandedPackageId === child.id" class="package-box__expanded-inner-diagram" @click.stop>
+          <InnerPackageAccessChips v-if="child.accessedFrom?.length" :tile-id="child.id" :accessed-from="child.accessedFrom" />
+              <div v-if="expandedPackageId === child.id" class="package-box__expanded-inner-diagram" @click.stop>
             <slot name="expanded-package" />
           </div>
         </PackageBox>
@@ -218,6 +232,15 @@ const emit = defineEmits<{
 }
 .package-box__inner-slot--clickable {
   cursor: pointer;
+}
+/* Fixed tiles stack in one column: let it use the box width instead of the 280px column cap. */
+.package-box__inner-package-stack--fixed .package-box__inner-package-col {
+  max-width: none;
+}
+/* Entry point of the box: some sibling box imports into this tile. */
+.package-box__inner-slot--accessed {
+  border-radius: 10px;
+  box-shadow: 0 0 0 2px #3b82f6;
 }
 .package-box__port {
   width: 14px;
