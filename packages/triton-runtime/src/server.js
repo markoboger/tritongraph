@@ -2433,8 +2433,10 @@ function createRuntimeServer(options = {}) {
             messages: body.messages,
             temperature: 0,
             seed: 42,
+            // Not strict: OpenAI's strict mode rejects the frozen schema (it has optional fields), and
+            // this proxy does not measure. The checker validates every answer itself either way.
             response_format: body.schema
-              ? { type: 'json_schema', json_schema: { name: body.schemaName || 'conformance_violations', schema: body.schema, strict: true } }
+              ? { type: 'json_schema', json_schema: { name: body.schemaName || 'conformance_violations', schema: body.schema, strict: false } }
               : undefined,
           }),
         })
