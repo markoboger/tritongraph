@@ -31,6 +31,7 @@ import {
   loadRuntimeWorkspaceProject,
   type LoadedProject,
   saveArchitectureRulesYaml,
+  saveTargetTopologyYaml,
   type RuntimeRepoOption,
 } from '../conformance/loadProject'
 import { readRulesYaml, readSollYaml, writeRulesYaml } from '../conformance/sollYaml'
@@ -122,7 +123,7 @@ async function importSollFile(event: Event): Promise<void> {
   }
   const editorSession = loadedWorkspace.value ? peekSession(loadedWorkspace.value.workspacePath) : null
   if (editorSession?.dirty) pendingSollImport.value = text
-  else applyImportedSoll(text)
+  else void applyImportedSoll(text)
 }
 
 /** A valid imported Soll that waits until the user agrees to drop the editor's unsaved changes. */
@@ -135,14 +136,22 @@ const DISCARD_EDITS_ACTIONS: ChoiceDialogAction[] = [
 function resolvePendingSollImport(choice: string): void {
   const text = pendingSollImport.value
   pendingSollImport.value = null
-  if (text !== null && choice === 'import') applyImportedSoll(text)
+  if (text !== null && choice === 'import') void applyImportedSoll(text)
 }
 
-function applyImportedSoll(text: string): void {
+/** Use an imported Soll; for a repository it also becomes the saved target in `.triton/`, like a Soll saved in the editor. */
+async function applyImportedSoll(text: string): Promise<void> {
+  const ws = loadedWorkspace.value
   // An open editor would keep showing its old session; closing it makes the next open start from this Soll.
-  if (loadedWorkspace.value) emit('closeTargetEditor', loadedWorkspace.value.workspacePath)
+  if (ws) emit('closeTargetEditor', ws.workspacePath)
   sollYamlText.value = text
   topologyMode.value = 'load'
+  if (!ws) return
+  try {
+    await saveTargetTopologyYaml(props.runtimeBaseUrl, ws.workspacePath, text)
+  } catch (err) {
+    error.value = `Imported target architecture could not be saved to the repository: ${errorMessage(err)}`
+  }
 }
 
 /** Called by the app after the editor saved a target: check against it right away. */
