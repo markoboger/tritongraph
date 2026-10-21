@@ -2,6 +2,7 @@
 import type { TritonInnerPackageSpec } from '../../ilograph/types'
 import PackageBox from './PackageBox.vue'
 import InnerPackageAccessChips from './InnerPackageAccessChips.vue'
+import TileEntryAnchors from './TileEntryAnchors.vue'
 import { childPackagePortId, type PortEndpoint } from './innerArtefactGraphHelpers'
 
 defineProps<{
@@ -30,6 +31,7 @@ const emit = defineEmits<{
     <template v-if="(packageColumns?.length ?? 0) > 0">
       <div v-for="(col, ci) in packageColumns" :key="'pkgcol-' + ci" class="package-box__inner-package-col">
         <div v-for="child in col" :key="child.id" class="package-box__inner-package-row">
+          <TileEntryAnchors v-if="child.accessedFrom?.length" :accessed-from="child.accessedFrom" />
           <div
             v-if="childPackagePortsById.get(childPackagePortId(child.id, 'left'))"
             class="package-box__inner-package-port-anchor package-box__inner-package-port-anchor--left"
@@ -82,6 +84,7 @@ const emit = defineEmits<{
     </template>
     <template v-else>
       <div v-for="child in packages" :key="child.id" class="package-box__inner-package-row">
+      <TileEntryAnchors v-if="child.accessedFrom?.length" :accessed-from="child.accessedFrom" />
       <div
         v-if="childPackagePortsById.get(childPackagePortId(child.id, 'left'))"
         class="package-box__inner-package-port-anchor package-box__inner-package-port-anchor--left"
@@ -233,9 +236,15 @@ const emit = defineEmits<{
 .package-box__inner-slot--clickable {
   cursor: pointer;
 }
-/* Fixed tiles stack in one column: let it use the box width instead of the 280px column cap. */
+/* Fixed tiles stack in one centred column with air around them instead of filling the box. */
 .package-box__inner-package-stack--fixed .package-box__inner-package-col {
   max-width: none;
+  align-items: center;
+  gap: clamp(16px, 3cqh, 32px);
+  padding: clamp(8px, 2cqh, 24px) 0;
+}
+.package-box__inner-package-stack--fixed .package-box__inner-package-row {
+  width: min(100%, 300px);
 }
 /* Entry point of the box: some sibling box imports into this tile. */
 .package-box__inner-slot--accessed {

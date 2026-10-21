@@ -84,7 +84,12 @@ function ownNodeEl(): HTMLElement | null {
   return document.querySelector(`[data-node-id="${props.nodeId}"]`)
 }
 
-function endpointPortTopForOtherPackage(otherPackageId: string): number | null {
+/**
+ * Where inside this box the edge to/from `otherPackageId` lands, as % of the box height: the median of
+ * the matching inner endpoints. Left endpoints receive incoming edges, right ones send outgoing — so a
+ * cycle's two directions never pull each other's handle.
+ */
+function endpointPortTopForOtherPackage(otherPackageId: string, side: 'left' | 'right'): number | null {
   measureVersion.value
   const root = ownNodeEl()
   if (!root) return null
@@ -92,6 +97,7 @@ function endpointPortTopForOtherPackage(otherPackageId: string): number | null {
   const endpoints = Array.from(root.querySelectorAll<HTMLElement>('.package-box__external-endpoint'))
   const ports = endpoints
     .filter((el) => el.dataset.tritonForeignPackageId === otherPackageId)
+    .filter((el) => el.classList.contains('package-box__external-endpoint--right') === (side === 'right'))
     .map((el) => el.querySelector<HTMLElement>('.package-box__port'))
     .filter((el): el is HTMLElement => el instanceof HTMLElement)
   if (!ports.length) return null
@@ -137,7 +143,7 @@ function anchorAggInTop(slot: number): string {
   const fb = aggregateFanTopPctForUsedSlots(slot, used.value.aggInSlots)
   const e = edgeForAggInSlot(slot)
   if (e) {
-    const portTop = endpointPortTopForOtherPackage(String(e.source))
+    const portTop = endpointPortTopForOtherPackage(String(e.source), 'left')
     if (portTop !== null) return `${portTop}%`
   }
   const v = props.anchorTops?.aggIn?.[String(slot)]
@@ -148,7 +154,7 @@ function anchorAggOutTop(slot: number): string {
   const fb = aggregateFanTopPctForUsedSlots(slot, used.value.aggOutSlots)
   const e = edgeForAggOutSlot(slot)
   if (e) {
-    const portTop = endpointPortTopForOtherPackage(String(e.target))
+    const portTop = endpointPortTopForOtherPackage(String(e.target), 'right')
     if (portTop !== null) return `${portTop}%`
   }
   const v = props.anchorTops?.aggOut?.[String(slot)]
