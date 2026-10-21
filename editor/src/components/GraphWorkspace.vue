@@ -36,6 +36,7 @@ import { boxColorForId } from '../graph/boxColors'
 import { isLeafBoxNode } from '../graph/nodeKinds'
 import { languageIconForId } from '../graph/languages'
 import { strokeColorForFlowEdge } from '../graph/relationKinds'
+import { findingComponentKey } from '../graph/findingFocus'
 import { drillNoteForModuleId } from '../graph/sbtStyleDrillNotes'
 import { assignInnerArtefactLayers } from '../graph/innerArtefactLayerLayout'
 import {
@@ -270,10 +271,11 @@ async function doubleRaf(): Promise<void> {
   await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
 }
 
-function mergeEdgeEmphClass(existing: string | undefined, emph: boolean): string | undefined {
+/** Add or remove one class in a Vue Flow element's `class` string, leaving the others alone. */
+function mergeEdgeClass(existing: string | undefined, cls: string, on: boolean): string | undefined {
   const parts = new Set(String(existing ?? '').split(/\s+/).filter(Boolean))
-  parts.delete('tg-edge-emph')
-  if (emph) parts.add('tg-edge-emph')
+  parts.delete(cls)
+  if (on) parts.add(cls)
   const out = [...parts].join(' ')
   return out || undefined
 }
@@ -692,7 +694,7 @@ function syncEdgeVisualState() {
   const next = edges.value.map((e) => {
     const id = String(e.id)
     const emph = heid ? id === heid : !!(hid && (e.source === hid || e.target === hid))
-    const newClass = mergeEdgeEmphClass((e as { class?: string }).class, emph)
+    const newClass = mergeEdgeClass(mergeEdgeClass((e as { class?: string }).class, 'tg-edge-emph', emph), 'tg-edge-finding', isFindingEdge(e))
     const stroke = strokeColorForFlowEdge(e)
     const newLabelStyle = dependencyEdgeLabelStyle(stroke, emph)
     const newZIndex = emph ? 1200 : 0
@@ -1363,6 +1365,7 @@ watch(
 )
 
 function onPaneClickClearHover() {
+  clearFindingFocus()
   /**
    * Vue Flow’s pane handler runs after `@pane-click` listeners return and calls
    * `removeSelectedElements()`, which clears `node.selected` / `edge.selected` (the focus ring).
@@ -1649,40 +1652,79 @@ async function applyLayerDrill(nodeId: string): Promise<boolean> {
   return layerDrillActive()
 }
 
+/** The conformance finding the diagram currently shows (see {@link focusOn}); `null` when none. */
+const findingFocus = ref<{ nodeIds: ReadonlySet<string>; edge?: { from: string; to: string }; component?: string } | null>(
+  null,
+)
+provide(
+  findingComponentKey,
+  computed(() => findingFocus.value?.component ?? null),
+)
+
+function isFindingEdge(e: { source?: unknown; target?: unknown }): boolean {
+  const edge = findingFocus.value?.edge
+  return !!edge && String(e.source) === edge.from && String(e.target) === edge.to
+}
+
+function applyFindingNodeClasses(): void {
+  const ids = findingFocus.value?.nodeIds
+  nodes.value = nodes.value.map((n) => {
+    const cls = (n as { class?: string }).class
+    const next = mergeEdgeClass(cls, 'tg-node-finding', !!ids?.has(String(n.id)))
+    return next === cls ? n : ({ ...n, class: next } as typeof n)
+  })
+}
+
 /**
- * Highlight and zoom to a specific set of nodes (and optionally the edge between two of them),
- * e.g. when arriving from a conformance finding's "View diagram" link. Sets `.selected` (the same
- * focus-ring flag Vue Flow renders, reused from {@link onPaneClickClearHover}) and scopes the camera
- * to just those nodes via Vue Flow's native `fitView({ nodes })`.
+ * Show a conformance finding ("View diagram"): its edge turns red while every other edge fades, and
+ * its boxes get a red frame. A finding about one component inside a box focuses that box so the
+ * component's tile shows, framed red too. Stays until a pane click, Esc or the next finding.
  *
  * ponytail: matches only currently-visible nodes; both callers load a fresh, undrilled package
  * graph, so there is nothing hidden to expand. Add ancestor-expansion here if a pre-drilled entry
  * point ever needs it.
  */
-async function focusOn(target: { nodeIds: string[]; edge?: { from: string; to: string } }): Promise<void> {
+async function focusOn(target: {
+  nodeIds: string[]
+  edge?: { from: string; to: string }
+  component?: string
+}): Promise<void> {
   const wanted = new Set(target.nodeIds.filter(Boolean))
   if (!wanted.size) return
-  const edge = target.edge
-
-  nodes.value = nodes.value.map((n) =>
-    ({ ...n, selected: wanted.has(String(n.id)) }) as typeof n,
-  )
-  edges.value = edges.value.map((e) => {
-    const match =
-      !!edge &&
-      String((e as { source?: unknown }).source) === edge.from &&
-      String((e as { target?: unknown }).target) === edge.to
-    return { ...e, selected: match } as typeof e
-  })
+  findingFocus.value = { nodeIds: wanted, edge: target.edge, component: target.component }
+  // Fade the other edges only when the finding's edge is really drawn — never leave nothing in focus.
+  if (!edges.value.some(isFindingEdge)) findingFocus.value = { ...findingFocus.value, edge: undefined }
+  applyFindingNodeClasses()
+  syncEdgeVisualState()
 
   await nextTick()
   const present = nodes.value.filter((n) => wanted.has(String(n.id)))
   if (!present.length) return
+  const [boxId] = wanted
+  const componentInsideBox = !target.edge && !!target.component && target.component !== boxId
+  if (componentInsideBox && boxId && activeLayerDrillId() !== boxId) {
+    await applyLayerDrill(boxId)
+    return
+  }
   await fitView({ nodes: present.map((n) => String(n.id)), padding: 0.3, duration: 400, maxZoom: 1.6 })
 }
 
+function clearFindingFocus(): void {
+  if (!findingFocus.value) return
+  findingFocus.value = null
+  applyFindingNodeClasses()
+  syncEdgeVisualState()
+}
+
+function onFindingKeydown(ev: KeyboardEvent): void {
+  if (ev.key === 'Escape') clearFindingFocus()
+}
+onMounted(() => window.addEventListener('keydown', onFindingKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onFindingKeydown))
+
 /** Clear drill/focus snapshot after structural doc replace; parent should call `fitToViewport` next. */
 function resetNavigationAfterDocReplace() {
+  findingFocus.value = null
   resetVerticalScrollChrome()
   drillRef.value?.resetNavigationAfterDocReplace?.()
 }
@@ -1931,6 +1973,7 @@ defineExpose({
           {
             'tg-depth-layout-animate': depthLayoutAnimate,
             'tg-resize-priority': !!abstractionDojoResize,
+            'tg-finding-edge-active': !!findingFocus?.edge,
           },
         ]"
         :node-types="nodeTypes"
@@ -2274,6 +2317,25 @@ defineExpose({
 .flow.vue-flow .vue-flow__edge.tg-edge-emph .vue-flow__edge-text {
   opacity: 1;
   font-weight: 600;
+}
+
+/* A conformance finding (focusOn): its edge in red, every other edge faded, its boxes framed. */
+.flow.vue-flow.tg-finding-edge-active .vue-flow__edge:not(.tg-edge-finding) {
+  opacity: 0.15;
+}
+.flow.vue-flow .vue-flow__edge.tg-edge-finding .vue-flow__edge-path {
+  stroke: #dc2626 !important;
+  stroke-width: 3.5 !important;
+}
+.flow.vue-flow .vue-flow__edge.tg-edge-finding .vue-flow__edge-text {
+  fill: #dc2626 !important;
+  opacity: 1;
+  font-weight: 700;
+}
+.flow.vue-flow .vue-flow__node.tg-node-finding {
+  outline: 3px solid #dc2626;
+  outline-offset: 3px;
+  border-radius: 12px;
 }
 
 /* Core marks edges `.inactive` unless selectable or @edge-click; re-enable hits so @edge-mouse-* runs (pan is off). */

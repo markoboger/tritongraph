@@ -500,8 +500,12 @@ const buckets = computed(() => {
   ]
 })
 
-/** Root-cause focus from a violation: the offending edge's two components, or a single node. */
+/**
+ * Root-cause focus from a violation: the offending edge's two components, or a single node. An LLM
+ * finding is about one file, and its subject is model-written — so it points at the file's module.
+ */
 function focusForViolation(v: ViolationRecord): DiagramFocus {
+  if (v.source === 'llm') return { component: v.location.module || v.location.component || '' }
   const component = v.subject.from ?? v.location.component ?? v.location.module
   return v.subject.to ? { component, toComponent: v.subject.to } : { component }
 }

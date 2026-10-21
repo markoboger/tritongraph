@@ -2104,6 +2104,7 @@ async function applyDoc(
       await graphRef.value?.focusOn?.({
         nodeIds,
         edge: fromId && toId ? { from: fromId, to: toId } : undefined,
+        component: focus.toComponent ? undefined : focus.component,
       })
     }
   }
@@ -4251,6 +4252,7 @@ async function openConformanceDiagram(target: ConformanceDiagramTarget): Promise
     await graphRef.value?.focusOn?.({
       nodeIds: [topFrom, topTo].filter((id): id is string => !!id),
       edge: topFrom && topTo ? { from: topFrom, to: topTo } : undefined,
+      component: focus.toComponent ? undefined : focus.component,
     })
     return
   }

@@ -4,6 +4,8 @@ import PackageBox from './PackageBox.vue'
 import InnerPackageAccessChips from './InnerPackageAccessChips.vue'
 import TileEntryAnchors from './TileEntryAnchors.vue'
 import { childPackagePortId, type PortEndpoint } from './innerArtefactGraphHelpers'
+import { inject } from 'vue'
+import { componentIsInside, findingComponentKey } from '../../graph/findingFocus'
 
 defineProps<{
   packages: readonly TritonInnerPackageSpec[]
@@ -17,6 +19,14 @@ defineProps<{
 const emit = defineEmits<{
   'link-action': [string]
 }>()
+
+const findingComponent = inject(findingComponentKey, null)
+
+/** The tile holds the component of the conformance finding the diagram is showing. */
+function holdsFinding(tileId: string): boolean {
+  const component = findingComponent?.value
+  return !!component && componentIsInside(component, tileId)
+}
 </script>
 
 <template>
@@ -48,6 +58,7 @@ const emit = defineEmits<{
             :class="{
               'package-box__inner-slot--clickable': !child.fixed,
               'package-box__inner-slot--accessed': !!child.accessedFrom?.length,
+              'package-box__inner-slot--finding': child.fixed && holdsFinding(child.id),
               'package-box__inner-slot--inner-package-expanded': expandedPackageId === child.id,
             }"
             @click.stop="child.fixed ? undefined : onInnerCardClick(child.id)"
@@ -101,6 +112,7 @@ const emit = defineEmits<{
         :class="{
               'package-box__inner-slot--clickable': !child.fixed,
               'package-box__inner-slot--accessed': !!child.accessedFrom?.length,
+              'package-box__inner-slot--finding': child.fixed && holdsFinding(child.id),
               'package-box__inner-slot--inner-package-expanded': expandedPackageId === child.id,
             }"
         @click.stop="child.fixed ? undefined : onInnerCardClick(child.id)"
@@ -245,6 +257,11 @@ const emit = defineEmits<{
 }
 .package-box__inner-package-stack--fixed .package-box__inner-package-row {
   width: min(100%, 300px);
+}
+/* The component of the finding being shown lies in this tile. */
+.package-box__inner-slot.package-box__inner-slot--finding {
+  border-radius: 10px;
+  box-shadow: 0 0 0 3px #dc2626;
 }
 /* Entry point of the box: some sibling box imports into this tile. */
 .package-box__inner-slot--accessed {
