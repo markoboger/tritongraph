@@ -6,6 +6,7 @@
 import { useVueFlow, type GraphEdge, type GraphNode, type Styles } from '@vue-flow/core'
 import { inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import {
+  allTilesFixed,
   compressRelationLaneGuttersForBand,
   computeLayerDrillColumnLayout,
   dependencyDepthsInRegion,
@@ -924,6 +925,10 @@ async function applyLayerDrill(moduleId: string) {
     regionModules: layoutParticipants,
     focusId: moduleId,
     focusWidth: focusW,
+    // A box of fixed tiles needs no more than its preferred width; more just stretches the tiles.
+    maxFocusWidth: allTilesFixed((target.data as Record<string, unknown> | undefined)?.innerPackages)
+      ? preferredFocusWidth
+      : undefined,
     siblingWidthScale,
     wideAtFocusDepthIds,
     allowFocusTrackExpansion: typeof preferredFocusWidth === 'number',

@@ -978,8 +978,10 @@ const FOCUS_INNER_ARTEFACT_MIN_W_PX = 380
 const FOCUS_INNER_ARTEFACT_MAX_W_PX = 1200
 /** Floor for a focused package whose hosting node renders inner sub-packages. */
 const FOCUS_INNER_PACKAGE_MIN_W_PX = 540
+/** Width of a focused box whose tiles are fixed: one centred column of tiles plus margin. */
+const FOCUS_FIXED_TILES_W_PX = 420
 
-function allTilesFixed(innerPackages: unknown): boolean {
+export function allTilesFixed(innerPackages: unknown): boolean {
   return Array.isArray(innerPackages) && innerPackages.every((p) => (p as { fixed?: unknown } | null)?.fixed === true)
 }
 
@@ -1048,7 +1050,7 @@ export function preferredPackageFocusWidth(data: PackageContentLike | undefined)
   let packageWidth = 0
   if (innerPackageCount && allTilesFixed(data.innerPackages)) {
     // Fixed tiles (package graph) have no relations between them, so they stack in ONE column.
-    packageWidth = FOCUS_INNER_PACKAGE_MIN_W_PX
+    packageWidth = FOCUS_FIXED_TILES_W_PX
   } else if (innerPackageCount) {
     /** Sub-packages get a generous per-tile target since their inner chrome is full module-card sized. */
     const innerEdgeCount = arrayLength(data.innerArtefactRelations)
@@ -1118,6 +1120,8 @@ export function computeLayerDrillColumnLayout(input: {
   }>
   focusId: string
   focusWidth: number
+  /** Upper bound for the focused box itself; its track keeps the spare room as air around it. */
+  maxFocusWidth?: number
   siblingWidthScale: number
   /** Same-depth peers in this set keep full column inner width (e.g. pinned modules). */
   wideAtFocusDepthIds?: ReadonlySet<string>
@@ -1137,6 +1141,7 @@ export function computeLayerDrillColumnLayout(input: {
     regionModules,
     focusId,
     focusWidth: focusWReq,
+    maxFocusWidth,
     siblingWidthScale,
     wideAtFocusDepthIds,
     allowFocusTrackExpansion,
@@ -1293,7 +1298,7 @@ export function computeLayerDrillColumnLayout(input: {
       const nh = m.height
       const ny = m.position.y
       let nw: number
-      if (m.id === focusId) nw = inner
+      if (m.id === focusId) nw = Math.min(inner, maxFocusWidth ?? inner)
       else if (m.depth === fd && m.id !== focusId) {
         nw = wideAtFocusDepthIds?.has(m.id) ? inner : Math.min(wSib, inner)
       } else if (innerDrillPeerLayout && String(m.nodeType ?? '') === 'package') {
