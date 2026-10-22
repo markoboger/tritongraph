@@ -3,6 +3,7 @@ import {
   FLAT_LAYOUT_MAX_H_PX,
   nextFlatLayout,
   nextMetricsBreakLayout,
+  nextSlimLayout,
 } from './boxChromeLayout'
 
 describe('nextFlatLayout', () => {
@@ -23,5 +24,15 @@ describe('nextMetricsBreakLayout', () => {
 
   it('still uses narrow break below the strip stacking width', () => {
     expect(nextMetricsBreakLayout(148, 100, false)).toBe(true)
+  })
+})
+
+describe('nextSlimLayout', () => {
+  it('uses a vertical title rail on a box taller than wide', () => {
+    expect(nextSlimLayout(120, 400)).toBe(true)
+  })
+
+  it('keeps the title horizontal on a wide, shallow tile', () => {
+    expect(nextSlimLayout(270, 100)).toBe(false)
   })
 })

@@ -238,6 +238,8 @@ onMounted(() => {
   void nextTick(() => {
     const root = ownNodeEl()
     if (root) {
+      // Tiles scroll inside a crowded box; their lines must follow.
+      root.addEventListener('scroll', scheduleMeasureRefresh, { capture: true, passive: true })
       ro = new ResizeObserver(scheduleMeasureRefresh)
       ro.observe(root)
       for (const endpoint of root.querySelectorAll('.package-box__external-endpoint, .package-box__inner-package-row')) {
@@ -253,6 +255,7 @@ onUnmounted(() => {
   measureRaf = 0
   ro?.disconnect()
   ro = null
+  ownNodeEl()?.removeEventListener('scroll', scheduleMeasureRefresh, { capture: true })
 })
 
 /** Structural signature, not `deep`: Vue Flow writes `sourceX`/`targetY` into every edge on each
@@ -312,7 +315,8 @@ watch(
   inset: 0;
   width: 100%;
   height: 100%;
-  overflow: visible;
+  /* Lines to tiles scrolled out of view end at the box edge instead of running past it. */
+  overflow: hidden;
   pointer-events: none;
   z-index: 11;
 }

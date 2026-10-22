@@ -147,3 +147,12 @@ export function nextTightLayout(boxWidthPx: number, boxHeightPx: number): boolea
     boxHeightPx > FLAT_LAYOUT_MAX_H_PX
   )
 }
+
+/**
+ * Inside the metrics break, a title turns into a vertical rail only on a box taller than wide. A
+ * wide, shallow box (e.g. a tile in a focused box) keeps a horizontal title — a vertical one there
+ * is clipped to a few letters.
+ */
+export function nextSlimLayout(boxWidthPx: number, boxHeightPx: number): boolean {
+  return boxHeightPx > boxWidthPx
+}

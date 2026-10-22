@@ -1,6 +1,13 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { subtitleHasMarkdownLinks } from '../common/subtitleMarkdownLinks'
-import { nextCompactLayout, nextFlatLayout, nextMetricsBreakLayout, nextSuperflatLayout, nextSuperslimLayout } from './boxChromeLayout'
+import {
+  nextCompactLayout,
+  nextFlatLayout,
+  nextMetricsBreakLayout,
+  nextSlimLayout,
+  nextSuperflatLayout,
+  nextSuperslimLayout,
+} from './boxChromeLayout'
 
 type PackageBoxChromeLayoutOptions = {
   embedded: () => boolean
@@ -60,7 +67,7 @@ export function usePackageBoxChromeLayout(options: PackageBoxChromeLayoutOptions
       slimLayout.value = false
       return
     }
-    slimLayout.value = true
+    slimLayout.value = nextSlimLayout(w, root.clientHeight)
   }
 
   let measureCanvas: CanvasRenderingContext2D | null = null

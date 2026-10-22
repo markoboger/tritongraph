@@ -252,11 +252,13 @@ function holdsFinding(tileId: string): boolean {
 .package-box__inner-package-stack--fixed .package-box__inner-package-col {
   max-width: none;
   align-items: center;
-  gap: clamp(16px, 3cqh, 32px);
+  gap: clamp(12px, 2.5cqh, 28px);
   padding: clamp(8px, 2cqh, 24px) 0;
 }
 .package-box__inner-package-stack--fixed .package-box__inner-package-row {
   width: min(100%, 300px);
+  /* Room for the header plus the access chips; with many tiles the stack scrolls instead. */
+  min-height: 124px;
 }
 /* The component of the finding being shown lies in this tile. */
 .package-box__inner-slot.package-box__inner-slot--finding {
